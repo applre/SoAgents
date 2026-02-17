@@ -14,7 +14,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "incremental": true,
-    "types": ["node", "bun"],
+    "types": ["node", "bun-types"],
     "paths": {
       "@/*": ["./src/renderer/*"]
     }

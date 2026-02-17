@@ -1,0 +1,265 @@
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { broadcast } from './sse';
+import crypto from 'crypto';
+import * as SessionStore from './SessionStore';
+import type { SessionMetadata, SessionMessage } from './types/session';
+import type { ProviderEnv } from './types/config';
+
+interface StoredMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+}
+
+class AgentSession {
+  private sessionId: string = crypto.randomUUID();
+  private messages: StoredMessage[] = [];
+  private isRunning = false;
+  private currentQuery: ReturnType<typeof query> | null = null;
+  private pendingPermissions = new Map<string, (allow: boolean) => void>();
+  private sdkSessionId: string | null = null;
+  private currentSessionId: string | null = null;
+  private currentProviderEnv: ProviderEnv | undefined = undefined;
+
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv): Promise<void> {
+    if (this.isRunning) return;
+
+    // 如果没有当前 session，创建一个新的
+    if (this.currentSessionId === null) {
+      const session = SessionStore.createSession(agentDir, text.slice(0, 50));
+      this.currentSessionId = session.id;
+    }
+
+    const userMsgId = crypto.randomUUID();
+    const userTimestamp = new Date().toISOString();
+
+    // 保存用户消息到 SessionStore
+    SessionStore.saveMessage(this.currentSessionId, {
+      id: userMsgId,
+      role: 'user',
+      content: text,
+      timestamp: userTimestamp,
+    });
+
+    this.messages.push({
+      id: userMsgId,
+      role: 'user',
+      content: text,
+      createdAt: Date.now(),
+    });
+
+    // 检测 provider 切换：provider 变了就清除 sdkSessionId（不 resume）
+    const providerChanged =
+      (providerEnv?.baseUrl ?? '') !== (this.currentProviderEnv?.baseUrl ?? '') ||
+      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '');
+    if (providerChanged) {
+      this.sdkSessionId = null;
+      this.currentProviderEnv = providerEnv;
+    }
+
+    // 设置环境变量给 SDK 子进程继承
+    if (providerEnv?.baseUrl) {
+      process.env.ANTHROPIC_BASE_URL = providerEnv.baseUrl;
+    } else {
+      delete process.env.ANTHROPIC_BASE_URL;
+    }
+    if (providerEnv?.apiKey) {
+      process.env.ANTHROPIC_AUTH_TOKEN = providerEnv.apiKey;
+      process.env.ANTHROPIC_API_KEY = providerEnv.apiKey;
+    } else {
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+
+    this.isRunning = true;
+    let assistantContent = '';
+
+    try {
+      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}`);
+      const q = query({
+        prompt: text,
+        options: {
+          allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+          cwd: agentDir,
+          permissionMode: 'acceptEdits',
+          includePartialMessages: true,
+          resume: this.sdkSessionId ?? undefined,
+          canUseTool: async (toolName, toolInput, { toolUseID, signal }) => {
+            // 广播权限请求
+            broadcast('permission:request', { toolName, toolUseId: toolUseID, toolInput });
+
+            // 等待用户响应或超时
+            const allowed = await new Promise<boolean>((resolve) => {
+              // 30s 超时自动 allow
+              const timeout = setTimeout(() => {
+                this.pendingPermissions.delete(toolUseID);
+                resolve(true);
+              }, 30000);
+
+              // 监听 abort
+              signal?.addEventListener('abort', () => {
+                clearTimeout(timeout);
+                this.pendingPermissions.delete(toolUseID);
+                resolve(false);
+              });
+
+              // 包装 resolve 以清理 timeout
+              this.pendingPermissions.set(toolUseID, (allow: boolean) => {
+                clearTimeout(timeout);
+                this.pendingPermissions.delete(toolUseID);
+                resolve(allow);
+              });
+            });
+
+            return allowed
+              ? { behavior: 'allow' as const, updatedInput: toolInput as Record<string, unknown> }
+              : { behavior: 'deny' as const, message: '用户拒绝' };
+          },
+        },
+      });
+      this.currentQuery = q;
+
+      let hasStreamedContent = false;
+      let currentToolId = '';
+
+      for await (const event of q) {
+        const msg = event as SDKMessage;
+
+        if (msg.type === 'stream_event') {
+          // streaming chunks — broadcast only, don't accumulate (assistant msg handles storage)
+          const streamEvent = msg.event as { type: string; delta?: { type: string; text?: string; thinking?: string; partial_json?: string }; content_block?: { type: string; name?: string; id?: string } };
+
+          if (streamEvent.type === 'content_block_delta') {
+            const delta = streamEvent.delta;
+            if (delta?.type === 'text_delta' && delta.text) {
+              hasStreamedContent = true;
+              broadcast('chat:message-chunk', { text: delta.text });
+            } else if (delta?.type === 'thinking_delta' && delta.thinking) {
+              broadcast('chat:thinking-chunk', { thinking: delta.thinking });
+            } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+              broadcast('chat:tool-input-delta', { id: currentToolId, partial_json: delta.partial_json });
+            }
+          } else if (streamEvent.type === 'content_block_start') {
+            const block = streamEvent.content_block;
+            if (block?.type === 'tool_use') {
+              currentToolId = block.id ?? '';
+              broadcast('chat:tool-use-start', { name: block.name, id: block.id });
+            }
+          }
+        } else if (msg.type === 'assistant') {
+          // full assistant message — accumulate for storage; if no streaming, also broadcast
+          const betaMsg = msg.message as { content: Array<{ type: string; text?: string }> };
+          for (const block of betaMsg.content) {
+            if (block.type === 'text' && block.text) {
+              assistantContent += block.text;
+              if (!hasStreamedContent) {
+                broadcast('chat:message-chunk', { text: block.text });
+              }
+            }
+          }
+        } else if (msg.type === 'user') {
+          const userMsg = msg.message as { content: Array<{ type: string; tool_use_id?: string; content?: string; is_error?: boolean }> };
+          for (const block of userMsg.content ?? []) {
+            if (block.type === 'tool_result') {
+              broadcast('chat:tool-result', {
+                id: block.tool_use_id ?? '',
+                content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+                isError: block.is_error ?? false,
+              });
+            }
+          }
+        } else if (msg.type === 'result') {
+          // 提取 sdkSessionId
+          if ((msg as SDKMessage & { session_id?: string }).session_id) {
+            this.sdkSessionId = (msg as SDKMessage & { session_id?: string }).session_id!;
+          }
+          broadcast('chat:message-complete', null);
+        }
+      }
+    } catch (err: unknown) {
+      const e = err as Error;
+      console.error('[AgentSession] Error:', err);
+      if (e?.name !== 'AbortError') {
+        broadcast('chat:message-error', { error: String(err) });
+      }
+      broadcast('chat:message-complete', null);
+    } finally {
+      this.isRunning = false;
+      this.currentQuery = null;
+      if (assistantContent) {
+        const assistantMsgId = crypto.randomUUID();
+        this.messages.push({
+          id: assistantMsgId,
+          role: 'assistant',
+          content: assistantContent,
+          createdAt: Date.now(),
+        });
+        // 保存 assistant 消息到 SessionStore
+        if (this.currentSessionId) {
+          SessionStore.saveMessage(this.currentSessionId, {
+            id: assistantMsgId,
+            role: 'assistant',
+            content: assistantContent,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  }
+
+  respondPermission(toolUseId: string, allow: boolean): void {
+    const resolve = this.pendingPermissions.get(toolUseId);
+    if (resolve) resolve(allow);
+  }
+
+  stop(): void {
+    if (this.currentQuery) {
+      this.currentQuery.interrupt().catch(() => {});
+    }
+  }
+
+  reset(): void {
+    this.stop();
+    this.messages = [];
+    this.sessionId = crypto.randomUUID();
+    this.isRunning = false;
+    this.currentQuery = null;
+    this.currentSessionId = null;
+    this.sdkSessionId = null;
+  }
+
+  loadSession(sessionId: string): void {
+    this.stop();
+    this.isRunning = false;
+    this.currentSessionId = sessionId;
+    this.sdkSessionId = null;
+    const storedMessages = SessionStore.getSessionMessages(sessionId);
+    this.messages = storedMessages.map((m: SessionMessage) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      createdAt: new Date(m.timestamp).getTime(),
+    }));
+    SessionStore.touchSession(sessionId);
+  }
+
+  getSessions(): SessionMetadata[] {
+    return SessionStore.listSessions();
+  }
+
+  getCurrentMessages(): StoredMessage[] {
+    return this.messages;
+  }
+
+  getState() {
+    return { sessionId: this.sessionId, isRunning: this.isRunning };
+  }
+
+  getMessages() {
+    return this.messages;
+  }
+}
+
+export const agentSession = new AgentSession();
