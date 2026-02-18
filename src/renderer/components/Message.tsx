@@ -19,8 +19,8 @@ export default function MessageItem({ message }: Props) {
         className={[
           'max-w-[80%] rounded-lg px-4 py-3 text-sm',
           isUser
-            ? 'bg-[var(--accent-warm)] text-white'
-            : 'bg-[var(--paper-light)] text-[var(--ink)] border border-[var(--border)]',
+            ? 'bg-[var(--accent)] text-white'
+            : 'bg-white text-[var(--ink)] border border-[var(--border)]',
         ].join(' ')}
       >
         {message.blocks.map((block, i) => {

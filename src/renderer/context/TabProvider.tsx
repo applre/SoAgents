@@ -25,6 +25,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<{ question: string; options?: string[]; toolUseId: string } | null>(null);
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
+  const [sessionsFetched, setSessionsFetched] = useState(false);
 
   const sseRef = useRef<SseConnection | null>(null);
   const serverUrlRef = useRef<string>('');
@@ -34,8 +35,9 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
     const url = serverUrlRef.current;
     if (!url) return;
     const data = await apiGetJson<SessionMetadata[]>(url, '/chat/sessions');
-    setSessions(data);
-  }, []);
+    setSessions(data.filter((s) => s.agentDir === agentDir));
+    setSessionsFetched(true);
+  }, [agentDir]);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,6 +161,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       sse.on('chat:message-complete', () => {
         setIsLoading(false);
         setSessionState('idle');
+        refreshSessions().catch(console.error);
       });
 
       sse.on('chat:message-error', () => {
@@ -222,17 +225,22 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
     setMessages([]);
     setIsLoading(false);
     setSessionState('idle');
-    await apiPostJson(url, '/chat/reset', {});
-    await refreshSessions();
+    setSessionId(null);
+    try {
+      await apiPostJson(url, '/chat/reset', {});
+      await refreshSessions();
+    } catch {
+      // sidecar 可能未就绪，UI 状态已重置，忽略网络错误
+    }
   }, [refreshSessions]);
 
-  const loadSession = useCallback(async (sessionId: string) => {
+  const loadSession = useCallback(async (sid: string) => {
     const url = serverUrlRef.current;
     if (!url) return;
     isNewSessionRef.current = true;
     setIsLoading(false);
     setSessionState('idle');
-    const resp = await apiPostJson<{ ok: boolean; messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: number }> }>(url, '/chat/load-session', { sessionId });
+    const resp = await apiPostJson<{ ok: boolean; messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: number }> }>(url, '/chat/load-session', { sessionId: sid });
     const msgs = (resp.messages ?? []).map((m) => ({
       id: m.id,
       role: m.role,
@@ -240,6 +248,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       createdAt: m.createdAt,
     }));
     setMessages(msgs);
+    setSessionId(sid);
     isNewSessionRef.current = false;
   }, []);
 
@@ -302,11 +311,12 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       respondPermission,
       respondQuestion,
       sessions,
+      sessionsFetched,
       loadSession,
       deleteSession,
       refreshSessions,
     }),
-    [tabId, agentDir, sessionId, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, loadSession, deleteSession, refreshSessions]
+    [tabId, agentDir, sessionId, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, refreshSessions]
   );
 
   return <TabContext.Provider value={value}>{children}</TabContext.Provider>;

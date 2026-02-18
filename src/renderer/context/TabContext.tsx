@@ -19,6 +19,7 @@ export interface TabState {
   respondPermission: (toolUseId: string, allow: boolean) => Promise<void>;
   respondQuestion: (toolUseId: string, response: string) => Promise<void>;
   sessions: SessionMetadata[];
+  sessionsFetched: boolean;
   loadSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   refreshSessions: () => Promise<void>;

@@ -83,6 +83,7 @@ class AgentSession {
         options: {
           allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
           cwd: agentDir,
+          appendSystemPrompt: `当前工作目录为：${agentDir}\n所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。`,
           permissionMode: 'acceptEdits',
           includePartialMessages: true,
           resume: this.sdkSessionId ?? undefined,
