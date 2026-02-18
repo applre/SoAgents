@@ -1,21 +1,27 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
+import { javascript } from '@codemirror/lang-javascript';
+import { python } from '@codemirror/lang-python';
+import { rust } from '@codemirror/lang-rust';
+import { css } from '@codemirror/lang-css';
+import { html } from '@codemirror/lang-html';
+import { json } from '@codemirror/lang-json';
 import { EditorView } from '@codemirror/view';
 import { EditorSelection } from '@codemirror/state';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import EditorToolbar from '../components/EditorToolbar';
 import type { ToolbarAction } from '../components/EditorToolbar';
 import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 
 interface Props {
-  tabId: string;
-  initialFilePath: string | null;
-  onTitleChange?: (tabId: string, title: string, filePath: string) => void;
+  filePath: string;
+  mode: 'edit' | 'preview';
+  onSave?: (filePath: string) => void;
+  onActionRef?: (ref: { handleAction: (action: ToolbarAction) => void; save: () => void }) => void;
 }
 
 const cmTheme = EditorView.theme({
@@ -26,34 +32,54 @@ const cmTheme = EditorView.theme({
   '.cm-line': { padding: '0' },
 });
 
-export default function Editor({ tabId, initialFilePath, onTitleChange }: Props) {
-  const [content, setContent] = useState('');
-  const [mode, setMode] = useState<'edit' | 'preview'>('edit');
-  const [filePath, setFilePath] = useState<string | null>(initialFilePath);
-  const [isSaving, setIsSaving] = useState(false);
-  const editorViewRef = useRef<EditorView | null>(null);
+// 根据扩展名返回 CodeMirror 语言插件
+function getLangExtension(filePath: string) {
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+  switch (ext) {
+    case 'js': return javascript();
+    case 'jsx': return javascript({ jsx: true });
+    case 'ts': return javascript({ typescript: true });
+    case 'tsx': return javascript({ jsx: true, typescript: true });
+    case 'py': return python();
+    case 'rs': return rust();
+    case 'css': return css();
+    case 'html': case 'htm': return html();
+    case 'json': return json();
+    case 'md': case 'markdown': return markdown();
+    default: return markdown(); // 其他文件用 markdown（无额外高亮但可编辑）
+  }
+}
 
-  const fileName = filePath ? filePath.split('/').pop() ?? 'untitled.md' : 'untitled.md';
+// 是否为 Markdown 文件（支持预览模式）
+function isMarkdownFile(filePath: string) {
+  return /\.(md|markdown)$/i.test(filePath);
+}
+
+export default function Editor({ filePath, mode, onSave, onActionRef }: Props) {
+  const [content, setContent] = useState('');
+  const editorViewRef = useRef<EditorView | null>(null);
+  const langExtension = useMemo(() => getLangExtension(filePath), [filePath]);
+  const isMarkdown = useMemo(() => isMarkdownFile(filePath), [filePath]);
+  // 非 Markdown 文件强制 edit 模式
+  const effectiveMode = isMarkdown ? mode : 'edit';
 
   // 加载文件内容
   useEffect(() => {
-    if (!initialFilePath) return;
-    globalApiGetJson<{ content: string }>(`/api/file-read?path=${encodeURIComponent(initialFilePath)}`)
+    if (!filePath) return;
+    globalApiGetJson<{ content: string }>(`/api/file-read?path=${encodeURIComponent(filePath)}`)
       .then((res) => setContent(res.content))
       .catch(console.error);
-  }, [initialFilePath]);
+  }, [filePath]);
 
-  const saveToPath = useCallback(async (path: string, text: string) => {
-    setIsSaving(true);
+  const save = useCallback(async () => {
+    if (!filePath) return;
     try {
-      await globalApiPostJson('/api/file-write', { path, content: text });
-      setFilePath(path);
-      const title = path.split('/').pop() ?? 'untitled.md';
-      onTitleChange?.(tabId, title, path);
-    } finally {
-      setIsSaving(false);
+      await globalApiPostJson('/api/file-write', { path: filePath, content });
+      onSave?.(filePath);
+    } catch (e) {
+      console.error(e);
     }
-  }, [tabId, onTitleChange]);
+  }, [filePath, content, onSave]);
 
   // Cmd+S 保存
   useEffect(() => {
@@ -61,16 +87,19 @@ export default function Editor({ tabId, initialFilePath, onTitleChange }: Props)
       if (!(e.metaKey || e.ctrlKey) || e.key !== 's') return;
       e.preventDefault();
       if (filePath) {
-        await saveToPath(filePath, content);
+        await save();
       } else if (isTauri()) {
-        const { save } = await import('@tauri-apps/plugin-dialog');
-        const chosen = await save({ filters: [{ name: 'Markdown', extensions: ['md'] }], defaultPath: 'untitled.md' });
-        if (chosen) await saveToPath(chosen, content);
+        const { save: saveDialog } = await import('@tauri-apps/plugin-dialog');
+        const chosen = await saveDialog({ filters: [{ name: 'Markdown', extensions: ['md'] }], defaultPath: 'untitled.md' });
+        if (chosen) {
+          await globalApiPostJson('/api/file-write', { path: chosen, content });
+          onSave?.(chosen);
+        }
       }
     };
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [filePath, content, saveToPath]);
+  }, [filePath, content, save, onSave]);
 
   // 工具栏操作 — 在 CodeMirror 光标处插入 / 包裹文本
   const handleAction = useCallback((action: ToolbarAction) => {
@@ -94,11 +123,12 @@ export default function Editor({ tabId, initialFilePath, onTitleChange }: Props)
         break;
       case 'h1':
         insert = `\n# ${selected || '标题'}`;
-        cursorOffset = selected ? 0 : 0;
         break;
       case 'h2':
         insert = `\n## ${selected || '标题'}`;
-        cursorOffset = selected ? 0 : 0;
+        break;
+      case 'h3':
+        insert = `\n### ${selected || '标题'}`;
         break;
       case 'code':
         insert = selected ? `\`${selected}\`` : '`代码`';
@@ -106,7 +136,6 @@ export default function Editor({ tabId, initialFilePath, onTitleChange }: Props)
         break;
       case 'codeblock':
         insert = `\n\`\`\`\n${selected || ''}\n\`\`\`\n`;
-        cursorOffset = 0;
         break;
       case 'link':
         insert = selected ? `[${selected}](url)` : '[链接文字](url)';
@@ -114,7 +143,18 @@ export default function Editor({ tabId, initialFilePath, onTitleChange }: Props)
         break;
       case 'divider':
         insert = '\n---\n';
-        cursorOffset = 0;
+        break;
+      case 'ul':
+        insert = `\n- ${selected || '列表项'}`;
+        break;
+      case 'ol':
+        insert = `\n1. ${selected || '列表项'}`;
+        break;
+      case 'quote':
+        insert = `\n> ${selected || '引用'}`;
+        break;
+      case 'table':
+        insert = '\n| 列1 | 列2 |\n| --- | --- |\n| 内容 | 内容 |\n';
         break;
     }
 
@@ -127,62 +167,58 @@ export default function Editor({ tabId, initialFilePath, onTitleChange }: Props)
     view.focus();
   }, []);
 
-  return (
-    <div className="flex h-full flex-col bg-[var(--paper)] overflow-hidden">
-      <EditorToolbar
-        mode={mode}
-        onModeChange={setMode}
-        onAction={handleAction}
-        fileName={isSaving ? `${fileName} 保存中…` : fileName}
-      />
+  // 暴露 handleAction 和 save 给父组件
+  useEffect(() => {
+    onActionRef?.({ handleAction, save });
+  }, [handleAction, save, onActionRef]);
 
-      <div className="flex-1 overflow-hidden">
-        {mode === 'edit' ? (
-          <CodeMirror
-            value={content}
-            extensions={[markdown(), cmTheme]}
-            onChange={setContent}
-            onCreateEditor={(view) => { editorViewRef.current = view; }}
-            basicSetup={{
-              lineNumbers: false,
-              foldGutter: false,
-              highlightActiveLine: false,
-              autocompletion: false,
-            }}
-            style={{ height: '100%' }}
-          />
-        ) : (
-          <div className="h-full overflow-y-auto px-8 py-6">
-            <div
-              className="mx-auto prose prose-sm max-w-3xl text-[var(--ink)]"
-              style={{ '--tw-prose-body': 'var(--ink)', '--tw-prose-headings': 'var(--ink)' } as React.CSSProperties}
-            >
-              {content ? (
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    code({ className, children, ...props }: any) {
-                      const match = /language-(\w+)/.exec(className || '');
-                      return match ? (
-                        <SyntaxHighlighter style={oneLight} language={match[1]} PreTag="div">
-                          {String(children).replace(/\n$/, '')}
-                        </SyntaxHighlighter>
-                      ) : (
-                        <code className={className} {...props}>{children}</code>
-                      );
-                    },
-                  }}
-                >
-                  {content}
-                </ReactMarkdown>
-              ) : (
-                <p className="text-[var(--ink-tertiary)] italic">空文档</p>
-              )}
-            </div>
+  return (
+    <div className="flex-1 overflow-hidden">
+      {effectiveMode === 'edit' ? (
+        <CodeMirror
+          value={content}
+          extensions={[langExtension, cmTheme]}
+          onChange={setContent}
+          onCreateEditor={(view) => { editorViewRef.current = view; }}
+          basicSetup={{
+            lineNumbers: !isMarkdown,
+            foldGutter: false,
+            highlightActiveLine: true,
+            autocompletion: false,
+          }}
+          style={{ height: '100%' }}
+        />
+      ) : (
+        <div className="h-full overflow-y-auto px-8 py-6">
+          <div
+            className="mx-auto prose prose-sm max-w-3xl text-[var(--ink)]"
+            style={{ '--tw-prose-body': 'var(--ink)', '--tw-prose-headings': 'var(--ink)' } as React.CSSProperties}
+          >
+            {content ? (
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  code({ className, children, ...props }: any) {
+                    const match = /language-(\w+)/.exec(className || '');
+                    return match ? (
+                      <SyntaxHighlighter style={oneLight} language={match[1]} PreTag="div">
+                        {String(children).replace(/\n$/, '')}
+                      </SyntaxHighlighter>
+                    ) : (
+                      <code className={className} {...props}>{children}</code>
+                    );
+                  },
+                }}
+              >
+                {content}
+              </ReactMarkdown>
+            ) : (
+              <p className="text-[var(--ink-tertiary)] italic">空文档</p>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

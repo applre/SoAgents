@@ -51,3 +51,12 @@ pub fn cmd_stop_all_sidecars(state: tauri::State<'_, SidecarState>) -> Result<()
     manager.stop_all();
     Ok(())
 }
+
+#[tauri::command]
+pub fn cmd_open_in_finder(path: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Failed to open in Finder: {}", e))?;
+    Ok(())
+}

@@ -43,7 +43,12 @@ async function getGlobalUrl(): Promise<string> {
 
 export async function globalApiGetJson<T>(path: string): Promise<T> {
   const url = await getGlobalUrl();
-  return apiGetJson<T>(url, path);
+  try {
+    return await apiGetJson<T>(url, path);
+  } catch (e) {
+    _globalUrl = null; // 请求失败时清缓存，下次重新获取端口
+    throw e;
+  }
 }
 
 export async function globalApiPostJson<T>(path: string, body: unknown): Promise<T> {

@@ -17,10 +17,10 @@ export default function MessageItem({ message }: Props) {
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
         className={[
-          'max-w-[80%] rounded-lg px-4 py-3 text-sm',
+          'max-w-[80%] rounded-2xl px-4 py-3 text-sm',
           isUser
-            ? 'bg-[var(--accent)] text-white'
-            : 'bg-white text-[var(--ink)] border border-[var(--border)]',
+            ? 'bg-[var(--accent)] text-white [--tw-prose-body:theme(colors.white)] [--tw-prose-headings:theme(colors.white)] [--tw-prose-code:theme(colors.white)] [--tw-prose-bold:theme(colors.white)] [--tw-prose-links:theme(colors.white)]'
+            : 'bg-[var(--surface)] text-[var(--ink)] border border-[var(--border)]',
         ].join(' ')}
       >
         {message.blocks.map((block, i) => {
@@ -31,7 +31,7 @@ export default function MessageItem({ message }: Props) {
             return <ToolUse key={i} block={block} />;
           }
           return (
-            <div key={i} className="prose prose-sm max-w-none">
+            <div key={i} className={`prose prose-sm max-w-none ${isUser ? '[&_*]:!text-white [&_code]:bg-white/20 [&_a]:text-white/90' : ''}`}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{

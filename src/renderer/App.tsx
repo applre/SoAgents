@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Tab } from './types/tab';
+import { PanelRightOpen, PanelRightClose } from 'lucide-react';
+import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
 import { startGlobalSidecar } from './api/tauriClient';
 import Launcher from './pages/Launcher';
@@ -7,6 +8,8 @@ import Chat from './pages/Chat';
 import Settings from './pages/Settings';
 import Editor from './pages/Editor';
 import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
+import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
+import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
 import type { SessionMetadata } from './types/session';
 
@@ -17,8 +20,9 @@ function createTab(overrides: Partial<Tab> = {}): Tab {
     view: 'launcher',
     agentDir: null,
     sessionId: null,
-    filePath: null,
     isGenerating: false,
+    openFiles: [],
+    activeSubTab: 'chat',
     ...overrides,
   };
 }
@@ -32,21 +36,22 @@ const INITIAL_TAB = createTab({
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([INITIAL_TAB]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB.id);
-  // 每个 tab 独立存储自己的 sessions
   const [tabSessions, setTabSessions] = useState<Record<string, SessionMetadata[]>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showFilesPanel, setShowFilesPanel] = useState(false);
+  const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
   const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
+  // 编辑器 action ref：由 Editor 组件通过 onActionRef 暴露
+  const editorActionRef = useRef<{ handleAction: (a: ToolbarAction) => void; save: () => void } | null>(null);
 
-  // 启动全局 sidecar（Settings / WorkspaceFilesPanel 依赖）
   useEffect(() => {
     startGlobalSidecar().catch(console.error);
   }, []);
+
   const handleExposeReset = useCallback((fn: () => Promise<void>) => {
     resetSessionRef.current = fn;
   }, []);
 
-  // tabId 由 Chat 内部通过 context 读取后传入，此回调无需依赖 activeTabId，保持稳定
   const handleSessionsChange = useCallback((tabId: string, s: SessionMetadata[]) => {
     setTabSessions((prev) => ({ ...prev, [tabId]: s }));
   }, []);
@@ -56,7 +61,12 @@ export default function App() {
     [tabs, activeTabId]
   );
 
-  // 新建对话（在当前 chat tab 中）
+  // 当前活跃的 OpenFile
+  const activeOpenFile = useMemo<OpenFile | null>(() => {
+    if (!activeTab || activeTab.activeSubTab === 'chat') return null;
+    return activeTab.openFiles.find((f) => f.filePath === activeTab.activeSubTab) ?? null;
+  }, [activeTab]);
+
   const handleNewChat = useCallback(() => {
     setActiveSessionId(null);
     setTabs((prev) => {
@@ -64,12 +74,11 @@ export default function App() {
         ?? prev.find((t) => t.view === 'chat');
       if (!target) return prev;
       setActiveTabId(target.id);
-      return prev.map((t) => (t.id === target.id ? { ...t, sessionId: null } : t));
+      return prev.map((t) => (t.id === target.id ? { ...t, sessionId: null, activeSubTab: 'chat' } : t));
     });
     resetSessionRef.current?.().catch(console.error);
   }, [activeTabId]);
 
-  // 选择历史 session
   const handleSelectSession = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId);
     setTabs((prev) => {
@@ -77,39 +86,10 @@ export default function App() {
         ?? prev.find((t) => t.view === 'chat');
       if (!target) return prev;
       setActiveTabId(target.id);
-      return prev.map((t) => (t.id === target.id ? { ...t, sessionId } : t));
+      return prev.map((t) => (t.id === target.id ? { ...t, sessionId, activeSubTab: 'chat' } : t));
     });
   }, [activeTabId]);
 
-  // editor tab：标题/路径更新
-  const handleEditorTitleChange = useCallback((tabId: string, title: string, filePath: string) => {
-    setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, title, filePath } : t));
-  }, []);
-
-  // 新建空白文档
-  const handleNewEditor = useCallback(() => {
-    const tab = createTab({ title: 'untitled.md', view: 'editor' });
-    setTabs((prev) => [...prev, tab]);
-    setActiveTabId(tab.id);
-  }, []);
-
-  // 打开 .md 文件
-  const handleOpenEditorFile = useCallback(async () => {
-    const { isTauri } = await import('./utils/env');
-    if (!isTauri()) return;
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    const selected = await open({ filters: [{ name: 'Markdown', extensions: ['md', 'txt'] }], multiple: false });
-    if (!selected || typeof selected !== 'string') return;
-    const title = selected.split('/').pop() ?? 'untitled.md';
-    // 若已打开同路径 tab，直接激活
-    const existing = tabs.find((t) => t.view === 'editor' && t.filePath === selected);
-    if (existing) { setActiveTabId(existing.id); return; }
-    const tab = createTab({ title, view: 'editor', filePath: selected });
-    setTabs((prev) => [...prev, tab]);
-    setActiveTabId(tab.id);
-  }, [tabs]);
-
-  // 打开设置
   const handleOpenSettings = useCallback(() => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.view === 'settings');
@@ -123,14 +103,12 @@ export default function App() {
     });
   }, []);
 
-  // 新增工作区：创建新的 launcher tab
   const handleAddWorkspace = useCallback(() => {
     const tab = createTab();
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
   }, []);
 
-  // 从下拉菜单打开工作区：已打开则跳转，否则新建 tab
   const handleOpenWorkspace = useCallback((agentDir: string) => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.agentDir === agentDir && t.view === 'chat');
@@ -150,7 +128,6 @@ export default function App() {
     setActiveSessionId(null);
   }, []);
 
-  // 关闭 tab，同时清理该 tab 的 sessions 缓存
   const handleCloseTab = useCallback((tabId: string) => {
     setTabSessions((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
     setTabs((prev) => {
@@ -165,20 +142,78 @@ export default function App() {
     });
   }, [activeTabId]);
 
-  // 工作区选择后更新 tab，清空该 tab 的旧 sessions 缓存
   const handleSelectWorkspace = useCallback((tabId: string, agentDir: string) => {
-    setTabSessions((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
-    setActiveSessionId(null);
-    setTabs((prev) =>
-      prev.map((t) =>
+    setTabs((prev) => {
+      // 若目标 agentDir 已在其他 tab 打开，直接跳转
+      const existing = prev.find((t) => t.agentDir === agentDir && t.view === 'chat' && t.id !== tabId);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      setTabSessions((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
+      setActiveSessionId(null);
+      return prev.map((t) =>
         t.id === tabId
           ? { ...t, agentDir, view: 'chat' as const, title: agentDir.split('/').pop() ?? agentDir, sessionId: null }
           : t
-      )
-    );
+      );
+    });
   }, []);
 
-  // 键盘快捷键：Cmd+T 新建工作区
+  // 打开文件：加入当前 workspace tab 的 openFiles，并切换 activeSubTab
+  const openEditorFile = useCallback((filePath: string) => {
+    const title = filePath.split('/').pop() ?? filePath;
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabId) return t;
+        const existing = t.openFiles.find((f) => f.filePath === filePath);
+        const openFiles = existing
+          ? t.openFiles
+          : [...t.openFiles, { filePath, title, mode: 'edit' as const }];
+        return { ...t, openFiles, activeSubTab: filePath };
+      })
+    );
+  }, [activeTabId]);
+
+  // 关闭文件 tab
+  const handleCloseFileTab = useCallback((filePath: string) => {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabId) return t;
+        const openFiles = t.openFiles.filter((f) => f.filePath !== filePath);
+        const activeSubTab = t.activeSubTab === filePath
+          ? (openFiles[openFiles.length - 1]?.filePath ?? 'chat')
+          : t.activeSubTab;
+        return { ...t, openFiles, activeSubTab };
+      })
+    );
+  }, [activeTabId]);
+
+  // 切换 SecondTabBar；从文件切到对话时注入文件路径引用
+  const handleSwitchSubTab = useCallback((subTab: 'chat' | string, fromFilePath?: string) => {
+    setTabs((prev) =>
+      prev.map((t) => t.id === activeTabId ? { ...t, activeSubTab: subTab } : t)
+    );
+    if (subTab === 'chat' && fromFilePath) {
+      setPendingInjects((prev) => ({ ...prev, [activeTabId]: fromFilePath }));
+    }
+  }, [activeTabId]);
+
+  // 切换编辑/预览模式
+  const handleSetFileMode = useCallback((mode: 'edit' | 'preview') => {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabId) return t;
+        return {
+          ...t,
+          openFiles: t.openFiles.map((f) =>
+            f.filePath === t.activeSubTab ? { ...f, mode } : f
+          ),
+        };
+      })
+    );
+  }, [activeTabId]);
+
   useEffect(() => {
     const onKeydown = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -191,16 +226,16 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeydown);
   }, [handleAddWorkspace]);
 
-  // 工作区 tab 列表（排除 settings），用于 WorkspaceTabBar
   const workspaceTabs = useMemo(
     () => tabs.filter((t) => t.view !== 'settings'),
     [tabs]
   );
 
+  const isEditorActive = activeTab?.activeSubTab !== 'chat' && activeTab?.activeSubTab !== undefined;
+
   return (
     <ConfigProvider>
       <div className="flex h-screen overflow-hidden bg-[var(--paper)]">
-        {/* 左侧栏：显示当前活跃工作区的 sessions */}
         <LeftSidebar
           sessions={tabSessions[activeTabId] ?? []}
           activeSessionId={activeSessionId}
@@ -209,9 +244,8 @@ export default function App() {
           onOpenSettings={handleOpenSettings}
         />
 
-        {/* 主内容区 */}
         <div className="flex flex-1 flex-col overflow-hidden">
-          {/* 工作区 TabBar（始终显示） */}
+          {/* TopTabBar：工作区 */}
           <WorkspaceTabBar
             tabs={workspaceTabs}
             activeTabId={activeTabId}
@@ -224,67 +258,168 @@ export default function App() {
             onToggleFilesPanel={() => setShowFilesPanel((v) => !v)}
           />
 
-          <div className="flex flex-1 overflow-hidden">
-          <main className="flex-1 overflow-hidden">
-            {/* 所有 chat tab 持久挂载，切换时仅切换 display，保持 sidecar 连接不断 */}
+          {/* SecondTabBar：对话 + 打开的文件 tabs */}
+          {activeTab && activeTab.view === 'chat' && (
+            <div
+              className="flex items-center shrink-0 bg-[var(--paper)]"
+              style={{ borderBottom: '1px solid var(--border)', padding: '0 20px', gap: 4, height: 44 }}
+            >
+              <button
+                onClick={() => handleSwitchSubTab('chat')}
+                className="flex items-center gap-2 rounded-lg px-3 transition-colors"
+                style={{
+                  height: 34,
+                  fontSize: 14,
+                  fontWeight: activeTab.activeSubTab === 'chat' ? 600 : 500,
+                  color: activeTab.activeSubTab === 'chat' ? 'var(--ink)' : 'var(--ink-tertiary)',
+                  borderBottom: activeTab.activeSubTab === 'chat' ? '2px solid var(--accent)' : '2px solid transparent',
+                  borderRadius: 0,
+                }}
+              >
+                对话
+              </button>
+
+              {activeTab.openFiles.map((f) => {
+                const isActive = activeTab.activeSubTab === f.filePath;
+                return (
+                  <div
+                    key={f.filePath}
+                    className="flex items-center gap-1.5"
+                    style={{
+                      height: 34,
+                      borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                      padding: '0 8px',
+                    }}
+                  >
+                    <button
+                      onClick={() => handleSwitchSubTab(f.filePath)}
+                      style={{
+                        fontSize: 14,
+                        fontWeight: isActive ? 600 : 500,
+                        color: isActive ? 'var(--ink)' : 'var(--ink-tertiary)',
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {f.title}
+                    </button>
+                    <button
+                      onClick={() => handleCloseFileTab(f.filePath)}
+                      style={{
+                        fontSize: 14,
+                        color: 'var(--ink-tertiary)',
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        lineHeight: 1,
+                      }}
+                      className="hover:text-[var(--ink)] transition-colors"
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 编辑器工具栏：仅文件 tab 激活时显示 */}
+          {isEditorActive && activeOpenFile && (() => {
+            const isMarkdown = /\.(md|markdown)$/i.test(activeOpenFile.filePath);
+            return (
+              <>
+                <EditorActionBar
+                  mode={isMarkdown ? activeOpenFile.mode : 'edit'}
+                  onModeChange={isMarkdown ? handleSetFileMode : undefined}
+                  onSave={() => editorActionRef.current?.save()}
+                  onGoToChat={() => handleSwitchSubTab('chat', activeOpenFile.filePath)}
+                />
+                {isMarkdown && (
+                  <RichTextToolbar
+                    mode={activeOpenFile.mode}
+                    onAction={(action) => editorActionRef.current?.handleAction(action)}
+                  />
+                )}
+              </>
+            );
+          })()}
+
+          {/* 内容区：chat / editor */}
+          <main className="flex-1 overflow-hidden flex flex-col">
             {tabs
               .filter((t) => t.view === 'chat' && t.agentDir)
-              .map((t) => (
-                <div
-                  key={t.id}
-                  style={{
-                    display: activeTab?.id === t.id ? 'flex' : 'none',
-                    height: '100%',
-                    flexDirection: 'column',
-                    overflow: 'hidden',
-                    flex: 1,
-                  }}
-                >
-                  <Chat
-                    tab={t}
-                    onSessionsChange={handleSessionsChange}
-                    onActiveSessionChange={t.id === activeTabId ? setActiveSessionId : undefined}
-                    onExposeReset={t.id === activeTabId ? handleExposeReset : undefined}
-                  />
-                </div>
-              ))}
-            {/* editor tabs — 持久挂载，切换时仅 display 切换 */}
+              .map((t) => {
+                const chatVisible = activeTab?.id === t.id && t.activeSubTab === 'chat';
+                return (
+                  <div
+                    key={t.id}
+                    style={{
+                      display: chatVisible ? 'flex' : 'none',
+                      height: '100%',
+                      flexDirection: 'column',
+                      overflow: 'hidden',
+                      flex: 1,
+                    }}
+                  >
+                    <Chat
+                      tab={t}
+                      onSessionsChange={handleSessionsChange}
+                      onActiveSessionChange={t.id === activeTabId ? setActiveSessionId : undefined}
+                      onExposeReset={t.id === activeTabId ? handleExposeReset : undefined}
+                      injectText={pendingInjects[t.id] ?? null}
+                      onInjectConsumed={() => setPendingInjects((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
+                    />
+                  </div>
+                );
+              })}
+
             {tabs
-              .filter((t) => t.view === 'editor')
-              .map((t) => (
-                <div
-                  key={t.id}
-                  style={{
-                    display: activeTab?.id === t.id ? 'flex' : 'none',
-                    height: '100%',
-                    flexDirection: 'column',
-                    overflow: 'hidden',
-                    flex: 1,
-                  }}
-                >
-                  <Editor
-                    tabId={t.id}
-                    initialFilePath={t.filePath}
-                    onTitleChange={handleEditorTitleChange}
-                  />
-                </div>
-              ))}
+              .filter((t) => t.view === 'chat')
+              .flatMap((t) =>
+                t.openFiles.map((f) => {
+                  const fileVisible = activeTab?.id === t.id && t.activeSubTab === f.filePath;
+                  return (
+                    <div
+                      key={`${t.id}:${f.filePath}`}
+                      style={{
+                        display: fileVisible ? 'flex' : 'none',
+                        height: '100%',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                        flex: 1,
+                      }}
+                    >
+                      <Editor
+                        filePath={f.filePath}
+                        mode={f.mode}
+                        onActionRef={(ref) => { if (fileVisible) editorActionRef.current = ref; }}
+                      />
+                    </div>
+                  );
+                })
+              )}
+
             {activeTab?.view === 'launcher' && (
               <Launcher tabId={activeTab.id} onSelectWorkspace={handleSelectWorkspace} />
             )}
             {activeTab?.view === 'settings' && <Settings />}
           </main>
-          {showFilesPanel && (
-            <WorkspaceFilesPanel agentDir={activeTab?.agentDir ?? null} />
-          )}
-          </div>
         </div>
+
+        {/* 文件面板：与 LeftSidebar 同级，全高列，内部自行管理对齐 */}
+        {showFilesPanel && (
+          <WorkspaceFilesPanel
+            agentDir={activeTab?.agentDir ?? null}
+            onOpenFile={openEditorFile}
+          />
+        )}
       </div>
     </ConfigProvider>
   );
 }
 
-// 工作区 TabBar
+// ── WorkspaceTabBar ───────────────────────────────────────────────────
 const RECENT_DIRS_KEY = 'soagents:recent-dirs';
 
 function loadRecentDirs(): string[] {
@@ -313,9 +448,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
 
   useEffect(() => {
-    if (openDropdownTabId) {
-      setRecentDirs(loadRecentDirs());
-    }
+    if (openDropdownTabId) setRecentDirs(loadRecentDirs());
   }, [openDropdownTabId]);
 
   return (
@@ -323,7 +456,6 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
       className="relative flex items-center justify-between px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
       style={{ height: 48 }}
     >
-      {/* 点击遮罩，关闭下拉 */}
       {openDropdownTabId && (
         <div className="fixed inset-0 z-40" onClick={() => setOpenDropdownTabId(null)} />
       )}
@@ -371,7 +503,6 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                 )}
               </div>
 
-              {/* 工作区切换下拉菜单 */}
               {isDropdownOpen && (
                 <div
                   className="absolute left-0 top-full mt-1 z-50 min-w-[280px] rounded-xl border border-[var(--border)] bg-white py-1.5"
@@ -386,10 +517,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                       return (
                         <button
                           key={dir}
-                          onClick={() => {
-                            onOpenWorkspace(dir);
-                            setOpenDropdownTabId(null);
-                          }}
+                          onClick={() => { onOpenWorkspace(dir); setOpenDropdownTabId(null); }}
                           className="flex w-full items-center gap-2.5 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
                         >
                           <svg className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" viewBox="0 0 20 20" fill="currentColor">
@@ -410,10 +538,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                   )}
                   <div className="mx-2 my-1 border-t border-[var(--border)]" />
                   <button
-                    onClick={() => {
-                      onAddWorkspace();
-                      setOpenDropdownTabId(null);
-                    }}
+                    onClick={() => { onAddWorkspace(); setOpenDropdownTabId(null); }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
                   >
                     <svg className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -428,7 +553,6 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
           );
         })}
 
-        {/* 新增工作区 */}
         <button
           onClick={onAddWorkspace}
           className="text-[18px] font-medium leading-none text-[var(--ink-tertiary)] hover:text-[var(--ink)] w-7 h-7 flex items-center justify-center rounded transition-colors"
@@ -447,10 +571,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
             : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
         }`}
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.4"/>
-          <line x1="10" y1="1.7" x2="10" y2="14.3" stroke="currentColor" strokeWidth="1.4"/>
-        </svg>
+        {showFilesPanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
       </button>
     </div>
   );

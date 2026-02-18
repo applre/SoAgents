@@ -13,6 +13,8 @@ interface Props {
   onSessionsChange?: (tabId: string, sessions: SessionMetadata[]) => void;
   onActiveSessionChange?: (sessionId: string | null) => void;
   onExposeReset?: (resetFn: () => Promise<void>) => void;
+  injectText?: string | null;
+  onInjectConsumed?: () => void;
 }
 
 interface ChatContentProps {
@@ -21,9 +23,11 @@ interface ChatContentProps {
   onSessionsChange?: (tabId: string, sessions: SessionMetadata[]) => void;
   onActiveSessionChange?: (sessionId: string | null) => void;
   onExposeReset?: (resetFn: () => Promise<void>) => void;
+  injectText?: string | null;
+  onInjectConsumed?: () => void;
 }
 
-function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset }: ChatContentProps) {
+function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, injectText, onInjectConsumed }: ChatContentProps) {
   const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady } = useTabState();
 
   // sidecar 就绪后拉取一次，确保左侧栏有数据
@@ -64,7 +68,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
             <div className="mb-6 text-center">
               <h1 className="text-[26px] font-semibold text-[var(--ink)]">👋 有什么可以帮你的？</h1>
             </div>
-            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} />
+            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} />
           </div>
         </div>
         {pendingPermission && (
@@ -95,6 +99,8 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
         onStop={stopResponse}
         isLoading={isLoading}
         agentDir={agentDir}
+        injectText={injectText}
+        onInjectConsumed={onInjectConsumed}
       />
       {pendingPermission && (
         <PermissionPrompt
@@ -116,7 +122,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
   );
 }
 
-export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onExposeReset }: Props) {
+export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onExposeReset, injectText, onInjectConsumed }: Props) {
   if (!tab.agentDir) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -133,6 +139,8 @@ export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onE
         onSessionsChange={onSessionsChange}
         onActiveSessionChange={onActiveSessionChange}
         onExposeReset={onExposeReset}
+        injectText={injectText}
+        onInjectConsumed={onInjectConsumed}
       />
     </TabProvider>
   );

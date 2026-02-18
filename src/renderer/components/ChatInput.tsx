@@ -13,6 +13,8 @@ interface Props {
   onStop: () => void;
   isLoading: boolean;
   agentDir?: string;
+  injectText?: string | null;
+  onInjectConsumed?: () => void;
 }
 
 interface MCPServer {
@@ -33,7 +35,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1000 * 1000)).toFixed(1)} MB`;
 }
 
-export default function ChatInput({ onSend, onStop, isLoading, agentDir }: Props) {
+export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed }: Props) {
   const [text, setText] = useState('');
   const [showSlash, setShowSlash] = useState(false);
   const [skillCommands, setSkillCommands] = useState<CommandItem[]>([]);
@@ -50,6 +52,32 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir }: Props
   const { currentProvider, updateConfig } = useConfig();
   const { apiGet } = useTabState();
   const slashQuery = showSlash && text.startsWith('/') ? text.slice(1) : '';
+
+  // 文件注入：从编辑器「去对话」时以附件卡片形式带入文件，同步获取真实文件大小
+  useEffect(() => {
+    if (!injectText) return;
+    const filePath = injectText;
+    const name = filePath.split('/').pop() || filePath;
+    onInjectConsumed?.();
+    let cancelled = false;
+    apiGet<{ size: number }>(`/api/file-stat?path=${encodeURIComponent(filePath)}`)
+      .then((info) => {
+        if (cancelled) return;
+        setAttachedFiles((prev) => {
+          if (prev.some((f) => f.path === filePath)) return prev;
+          return [...prev, { path: filePath, name, size: info.size }];
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAttachedFiles((prev) => {
+          if (prev.some((f) => f.path === filePath)) return prev;
+          return [...prev, { path: filePath, name, size: 0 }];
+        });
+      });
+    setTimeout(() => textareaRef.current?.focus(), 50);
+    return () => { cancelled = true; };
+  }, [injectText, onInjectConsumed, apiGet]);
 
   // 加载 skills
   useEffect(() => {

@@ -92,6 +92,44 @@ if (msg.type === 'stream_event') {
 
 ---
 
+### 6. 附件卡片文件大小显示 0 B
+
+**现象**：从编辑器点「去对话」后，文件以附件卡片出现在对话框中，但大小始终显示 0 B。
+
+**原因**：`injectText` effect 中直接构造 `AttachedFile` 时硬编码了 `size: 0`，没有调用 `/api/file-stat` 接口获取真实大小。用户通过文件选择框添加的附件走的是 `handleAttach`，该函数会查询 `/api/file-stat`，因此大小显示正确；只有注入路径跳过了这步。
+
+**修复**：`src/renderer/components/ChatInput.tsx`，`injectText` effect 改为异步获取文件大小：
+```typescript
+useEffect(() => {
+  if (!injectText) return;
+  const filePath = injectText;
+  const name = filePath.split('/').pop() || filePath;
+  onInjectConsumed?.();          // 立即清除 pending，防止重复触发
+  let cancelled = false;
+  apiGet<{ size: number }>(`/api/file-stat?path=${encodeURIComponent(filePath)}`)
+    .then((info) => {
+      if (cancelled) return;
+      setAttachedFiles((prev) => {
+        if (prev.some((f) => f.path === filePath)) return prev;
+        return [...prev, { path: filePath, name, size: info.size }];
+      });
+    })
+    .catch(() => {
+      if (cancelled) return;
+      setAttachedFiles((prev) => {
+        if (prev.some((f) => f.path === filePath)) return prev;
+        return [...prev, { path: filePath, name, size: 0 }];
+      });
+    });
+  setTimeout(() => textareaRef.current?.focus(), 50);
+  return () => { cancelled = true; };
+}, [injectText, onInjectConsumed, apiGet]);
+```
+
+**关键细节**：`onInjectConsumed` 在异步请求发出后立即调用（而非在 `.then()` 里），这样 `pendingInjects` 能及时清空，避免因组件重渲染导致 effect 重复执行。
+
+---
+
 ## 架构说明
 
 ### 为什么用 `.no_proxy()` 而非依赖 VPN bypass 配置

@@ -1,4 +1,10 @@
-export type TabView = 'launcher' | 'chat' | 'settings' | 'editor';
+export type TabView = 'launcher' | 'chat' | 'settings';
+
+export interface OpenFile {
+  filePath: string;
+  title: string;
+  mode: 'edit' | 'preview';
+}
 
 export interface Tab {
   id: string;
@@ -6,6 +12,7 @@ export interface Tab {
   view: TabView;
   agentDir: string | null;
   sessionId: string | null;
-  filePath: string | null;
   isGenerating?: boolean;
+  openFiles: OpenFile[];
+  activeSubTab: 'chat' | string; // string = filePath
 }

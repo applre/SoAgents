@@ -31,9 +31,13 @@ impl SidecarManager {
         tab_id: String,
         agent_dir: Option<PathBuf>,
     ) -> Result<u16, String> {
-        // 如果已存在，先停止
-        if self.instances.contains_key(&tab_id) {
-            self.stop_sidecar(&tab_id)?;
+        // 如果已存在且进程仍在运行，直接返回现有端口（幂等）
+        if let Some(instance) = self.instances.get_mut(&tab_id) {
+            if let Ok(None) = instance.process.try_wait() {
+                return Ok(instance.port);
+            }
+            // 进程已退出，移除后重启
+            self.instances.remove(&tab_id);
         }
 
         // 分配端口
