@@ -199,8 +199,6 @@ export default function App() {
           onNewChat={handleNewChat}
           onSelectSession={handleSelectSession}
           onOpenSettings={handleOpenSettings}
-          onNewEditor={handleNewEditor}
-          onOpenEditorFile={handleOpenEditorFile}
         />
 
         {/* 主内容区 */}

@@ -8,8 +8,6 @@ interface Props {
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onOpenSettings: () => void;
-  onNewEditor?: () => void;
-  onOpenEditorFile?: () => void;
 }
 
 export default function LeftSidebar({
@@ -18,8 +16,6 @@ export default function LeftSidebar({
   onNewChat,
   onSelectSession,
   onOpenSettings,
-  onNewEditor,
-  onOpenEditorFile,
 }: Props) {
   const sessionTitle = useCallback((s: SessionMetadata) => {
     return s.title || '未命名对话';
@@ -65,18 +61,6 @@ export default function LeftSidebar({
           className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
         >
           搜索对话
-        </button>
-        <button
-          onClick={onNewEditor}
-          className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
-        >
-          新建文档
-        </button>
-        <button
-          onClick={onOpenEditorFile}
-          className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
-        >
-          打开文件
         </button>
         <button
           onClick={onOpenSettings}
