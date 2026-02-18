@@ -17,7 +17,7 @@ export default function WorkspaceFilesPanel({ agentDir }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (retryMs?: number) => {
     if (!agentDir) return;
     setLoading(true);
     try {
@@ -26,14 +26,22 @@ export default function WorkspaceFilesPanel({ agentDir }: Props) {
       );
       setFiles(data);
     } catch (e) {
+      if (retryMs) {
+        // 全局 sidecar 可能还在启动，等待后重试一次
+        setTimeout(() => {
+          refresh().catch(console.error);
+        }, retryMs);
+        return; // 保持 loading 状态直到重试
+      }
       console.error(e);
     } finally {
-      setLoading(false);
+      if (!retryMs) setLoading(false);
     }
   }, [agentDir]);
 
   useEffect(() => {
-    refresh();
+    // 首次加载：失败后 2s 自动重试（等待全局 sidecar 就绪）
+    refresh(2000);
   }, [refresh]);
 
   const handleOpenExternal = useCallback(async () => {
@@ -57,7 +65,7 @@ export default function WorkspaceFilesPanel({ agentDir }: Props) {
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
           <button
-            onClick={refresh}
+            onClick={() => refresh()}
             title="刷新"
             className="p-1.5 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
           >

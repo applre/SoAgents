@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Tab } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
+import { startGlobalSidecar } from './api/tauriClient';
 import Launcher from './pages/Launcher';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
@@ -36,6 +37,11 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
+
+  // 启动全局 sidecar（Settings / WorkspaceFilesPanel 依赖）
+  useEffect(() => {
+    startGlobalSidecar().catch(console.error);
+  }, []);
   const handleExposeReset = useCallback((fn: () => Promise<void>) => {
     resetSessionRef.current = fn;
   }, []);
