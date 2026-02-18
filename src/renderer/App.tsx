@@ -5,6 +5,7 @@ import Launcher from './pages/Launcher';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
 import Editor from './pages/Editor';
+import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
 import { ConfigProvider } from './context/ConfigProvider';
 import type { SessionMetadata } from './types/session';
 
@@ -33,6 +34,7 @@ export default function App() {
   // 每个 tab 独立存储自己的 sessions
   const [tabSessions, setTabSessions] = useState<Record<string, SessionMetadata[]>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [showFilesPanel, setShowFilesPanel] = useState(false);
   const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
   const handleExposeReset = useCallback((fn: () => Promise<void>) => {
     resetSessionRef.current = fn;
@@ -212,8 +214,11 @@ export default function App() {
             onCloseTab={handleCloseTab}
             onSelectWorkspace={handleSelectWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
+            showFilesPanel={showFilesPanel}
+            onToggleFilesPanel={() => setShowFilesPanel((v) => !v)}
           />
 
+          <div className="flex flex-1 overflow-hidden">
           <main className="flex-1 overflow-hidden">
             {/* 所有 chat tab 持久挂载，切换时仅切换 display，保持 sidecar 连接不断 */}
             {tabs
@@ -263,6 +268,10 @@ export default function App() {
             )}
             {activeTab?.view === 'settings' && <Settings />}
           </main>
+          {showFilesPanel && (
+            <WorkspaceFilesPanel agentDir={activeTab?.agentDir ?? null} />
+          )}
+          </div>
         </div>
       </div>
     </ConfigProvider>
@@ -289,9 +298,11 @@ interface WorkspaceTabBarProps {
   onCloseTab: (tabId: string) => void;
   onSelectWorkspace: (tabId: string, agentDir: string) => void;
   onOpenWorkspace: (agentDir: string) => void;
+  showFilesPanel: boolean;
+  onToggleFilesPanel: () => void;
 }
 
-function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onCloseTab, onSelectWorkspace, onOpenWorkspace }: WorkspaceTabBarProps) {
+function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onCloseTab, onSelectWorkspace, onOpenWorkspace, showFilesPanel, onToggleFilesPanel }: WorkspaceTabBarProps) {
   const [openDropdownTabId, setOpenDropdownTabId] = useState<string | null>(null);
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
 
@@ -303,7 +314,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
 
   return (
     <div
-      className="relative flex items-center px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
+      className="relative flex items-center justify-between px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
       style={{ height: 48 }}
     >
       {/* 点击遮罩，关闭下拉 */}
@@ -419,6 +430,22 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
           +
         </button>
       </div>
+
+      {/* 右侧：展开工作区文件面板 */}
+      <button
+        onClick={onToggleFilesPanel}
+        title="工作区文件"
+        className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+          showFilesPanel
+            ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+            : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+        }`}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.4"/>
+          <line x1="10" y1="1.7" x2="10" y2="14.3" stroke="currentColor" strokeWidth="1.4"/>
+        </svg>
+      </button>
     </div>
   );
 }

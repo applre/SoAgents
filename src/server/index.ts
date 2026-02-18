@@ -4,7 +4,7 @@ import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
-import { statSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { dirname } from 'path';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
@@ -100,6 +100,29 @@ const server = Bun.serve({
       try {
         const stat = statSync(filePath);
         return Response.json({ size: stat.size });
+      } catch {
+        return Response.json({ error: 'not found' }, { status: 404 });
+      }
+    }
+
+    // 目录文件列表
+    if (req.method === 'GET' && url.pathname === '/api/dir-files') {
+      const dirPath = url.searchParams.get('path');
+      if (!dirPath) return Response.json({ error: 'missing path' }, { status: 400 });
+      try {
+        const entries = readdirSync(dirPath, { withFileTypes: true });
+        const files = entries
+          .filter((e) => !e.name.startsWith('.'))
+          .map((e) => ({
+            name: e.name,
+            type: e.isDirectory() ? 'dir' : 'file',
+            path: `${dirPath}/${e.name}`,
+          }))
+          .sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          });
+        return Response.json(files);
       } catch {
         return Response.json({ error: 'not found' }, { status: 404 });
       }
