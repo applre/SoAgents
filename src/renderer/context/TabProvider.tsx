@@ -26,6 +26,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   const [pendingQuestion, setPendingQuestion] = useState<{ question: string; options?: string[]; toolUseId: string } | null>(null);
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
   const [sessionsFetched, setSessionsFetched] = useState(false);
+  const [sidecarReady, setSidecarReady] = useState(false);
 
   const sseRef = useRef<SseConnection | null>(null);
   const serverUrlRef = useRef<string>('');
@@ -50,11 +51,11 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       if (cancelled) return;
 
       serverUrlRef.current = url;
+      setSidecarReady(true);
 
       const sse = new SseConnection(tabId, url);
       sseRef.current = sse;
       await sse.connect();
-      refreshSessions().catch(console.error);
 
       sse.on('chat:message-chunk', (data) => {
         if (isNewSessionRef.current) return;
@@ -298,6 +299,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       tabId,
       agentDir,
       sessionId,
+      sidecarReady,
       messages,
       isLoading,
       sessionState,
@@ -316,7 +318,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       deleteSession,
       refreshSessions,
     }),
-    [tabId, agentDir, sessionId, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, refreshSessions]
+    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, refreshSessions]
   );
 
   return <TabContext.Provider value={value}>{children}</TabContext.Provider>;

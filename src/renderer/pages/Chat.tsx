@@ -24,13 +24,14 @@ interface ChatContentProps {
 }
 
 function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset }: ChatContentProps) {
-  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, resetSession, refreshSessions, sessionId: currentSessionId } = useTabState();
+  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady } = useTabState();
 
-  // mount 时主动拉取一次，确保左侧栏有数据
+  // sidecar 就绪后拉取一次，确保左侧栏有数据
   useEffect(() => {
-    refreshSessions().catch(console.error);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (sidecarReady) {
+      refreshSessions().catch(console.error);
+    }
+  }, [sidecarReady, refreshSessions]);
 
   // 把 sessions 同步给 App（LeftSidebar 需要），仅在已完成至少一次 fetch 后才同步
   useEffect(() => {
@@ -63,7 +64,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
             <div className="mb-6 text-center">
               <h1 className="text-[26px] font-semibold text-[var(--ink)]">👋 有什么可以帮你的？</h1>
             </div>
-            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} />
+            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} />
           </div>
         </div>
         {pendingPermission && (
@@ -93,6 +94,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
         onSend={sendMessage}
         onStop={stopResponse}
         isLoading={isLoading}
+        agentDir={agentDir}
       />
       {pendingPermission && (
         <PermissionPrompt

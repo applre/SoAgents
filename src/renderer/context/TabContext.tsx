@@ -6,6 +6,7 @@ export interface TabState {
   tabId: string;
   agentDir: string;
   sessionId: string | null;
+  sidecarReady: boolean;
   messages: Message[];
   isLoading: boolean;
   sessionState: 'idle' | 'running' | 'error';

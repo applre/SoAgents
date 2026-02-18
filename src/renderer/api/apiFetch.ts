@@ -50,3 +50,18 @@ export async function globalApiPostJson<T>(path: string, body: unknown): Promise
   const url = await getGlobalUrl();
   return apiPostJson<T>(url, path, body);
 }
+
+export async function globalApiDeleteJson<T>(path: string): Promise<T> {
+  const url = await getGlobalUrl();
+  const text = await proxyFetch(`${url}${path}`, { method: 'DELETE' });
+  return JSON.parse(text) as T;
+}
+
+export async function globalApiPutJson<T>(path: string, body: unknown): Promise<T> {
+  const url = await getGlobalUrl();
+  const text = await proxyFetch(`${url}${path}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+  return JSON.parse(text) as T;
+}

@@ -5,23 +5,28 @@ const BUILTIN_COMMANDS = [
   { name: 'reset', description: '重置当前会话' },
 ];
 
-interface CommandItem {
+export interface CommandItem {
   name: string;
   description: string;
+  source?: 'global' | 'project' | 'builtin';
 }
 
 interface Props {
   query: string;
   onSelect: (cmd: string) => void;
   onClose: () => void;
+  skillCommands?: CommandItem[];
 }
 
-export default function SlashCommandMenu({ query, onSelect, onClose }: Props) {
-  const [commands] = useState<CommandItem[]>(BUILTIN_COMMANDS);
+export default function SlashCommandMenu({ query, onSelect, onClose, skillCommands }: Props) {
+  const allCommands: CommandItem[] = [
+    ...BUILTIN_COMMANDS.map((c) => ({ ...c, source: 'builtin' as const })),
+    ...(skillCommands || []),
+  ];
   const [activeIdx, setActiveIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const filtered = commands.filter((c) =>
+  const filtered = allCommands.filter((c) =>
     c.name.toLowerCase().includes(query.toLowerCase())
   );
 
@@ -69,6 +74,16 @@ export default function SlashCommandMenu({ query, onSelect, onClose }: Props) {
           <span className={`text-xs ${i === activeIdx ? 'text-white/70' : 'text-[var(--ink-tertiary)]'}`}>
             {cmd.description}
           </span>
+          {cmd.source === 'global' && (
+            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-blue-500'}`}>
+              [全局]
+            </span>
+          )}
+          {cmd.source === 'project' && (
+            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-green-500'}`}>
+              [项目]
+            </span>
+          )}
         </button>
       ))}
     </div>
