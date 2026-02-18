@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, SquarePen, Settings2 } from 'lucide-react';
+import { startWindowDrag } from './utils/env';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
 import { startGlobalSidecar } from './api/tauriClient';
@@ -39,6 +40,7 @@ export default function App() {
   const [tabSessions, setTabSessions] = useState<Record<string, SessionMetadata[]>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showFilesPanel, setShowFilesPanel] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
   const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
   // 编辑器 action ref：由 Editor 组件通过 onActionRef 暴露
@@ -226,23 +228,62 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeydown);
   }, [handleAddWorkspace]);
 
-  const workspaceTabs = useMemo(
-    () => tabs.filter((t) => t.view !== 'settings'),
-    [tabs]
-  );
+  const workspaceTabs = tabs;
 
   const isEditorActive = activeTab?.activeSubTab !== 'chat' && activeTab?.activeSubTab !== undefined;
 
   return (
     <ConfigProvider>
       <div className="flex h-screen overflow-hidden bg-[var(--paper)]">
-        <LeftSidebar
-          sessions={tabSessions[activeTabId] ?? []}
-          activeSessionId={activeSessionId}
-          onNewChat={handleNewChat}
-          onSelectSession={handleSelectSession}
-          onOpenSettings={handleOpenSettings}
-        />
+        {showSidebar ? (
+          <LeftSidebar
+            sessions={tabSessions[activeTabId] ?? []}
+            activeSessionId={activeSessionId}
+            onNewChat={handleNewChat}
+            onSelectSession={handleSelectSession}
+            onOpenSettings={handleOpenSettings}
+            onCollapse={() => setShowSidebar(false)}
+            isSettingsActive={activeTab?.view === 'settings'}
+          />
+        ) : (
+          <div
+            className="flex shrink-0 flex-col items-center bg-[var(--surface)]"
+            style={{ width: 72, borderRight: '1px solid var(--border)', paddingTop: 10, paddingBottom: 14 }}
+            onMouseDown={startWindowDrag}
+          >
+            {/* 展开按钮 */}
+            <div style={{ marginTop: 24, height: 48 }} className="flex items-center justify-center">
+              <PanelRightOpen
+                size={18}
+                className="text-[var(--ink-tertiary)] cursor-pointer hover:text-[var(--ink)] transition-colors"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setShowSidebar(true)}
+              />
+            </div>
+            {/* 新建对话 */}
+            <button
+              onClick={handleNewChat}
+              title="新建对话"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+            >
+              <SquarePen size={18} />
+            </button>
+            {/* 弹性空间 */}
+            <div className="flex-1" />
+            {/* 设置 */}
+            <button
+              onClick={handleOpenSettings}
+              title="设置"
+              className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                activeTab?.view === 'settings'
+                  ? 'bg-[var(--hover)] text-[var(--ink)]'
+                  : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+              }`}
+            >
+              <Settings2 size={18} />
+            </button>
+          </div>
+        )}
 
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* TopTabBar：工作区 */}
@@ -263,10 +304,12 @@ export default function App() {
             <div
               className="flex items-center shrink-0 bg-[var(--paper)]"
               style={{ borderBottom: '1px solid var(--border)', padding: '0 20px', gap: 4, height: 44 }}
+              onMouseDown={startWindowDrag}
             >
               <button
                 onClick={() => handleSwitchSubTab('chat')}
                 className="flex items-center gap-2 rounded-lg px-3 transition-colors"
+                onMouseDown={(e) => e.stopPropagation()}
                 style={{
                   height: 34,
                   fontSize: 14,
@@ -290,6 +333,7 @@ export default function App() {
                       borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                       padding: '0 8px',
                     }}
+                    onMouseDown={(e) => e.stopPropagation()}
                   >
                     <button
                       onClick={() => handleSwitchSubTab(f.filePath)}
@@ -455,15 +499,17 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
     <div
       className="relative flex items-center justify-between px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
       style={{ height: 48 }}
+      onMouseDown={startWindowDrag}
     >
       {openDropdownTabId && (
         <div className="fixed inset-0 z-40" onClick={() => setOpenDropdownTabId(null)} />
       )}
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
-          const label = tab.agentDir?.split('/').filter(Boolean).pop() ?? '新工作区';
+          const isSettings = tab.view === 'settings';
+          const label = isSettings ? '设置' : (tab.agentDir?.split('/').filter(Boolean).pop() ?? '新工作区');
           const isDropdownOpen = openDropdownTabId === tab.id;
 
           return (
@@ -482,16 +528,18 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                 </span>
                 {isActive && (
                   <>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setOpenDropdownTabId(isDropdownOpen ? null : tab.id);
-                      }}
-                      className="text-[12px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors px-0.5"
-                    >
-                      {isDropdownOpen ? '⌄' : '›'}
-                    </button>
-                    {tabs.length > 1 && (
+                    {!isSettings && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenDropdownTabId(isDropdownOpen ? null : tab.id);
+                        }}
+                        className="text-[12px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors px-0.5"
+                      >
+                        {isDropdownOpen ? '⌄' : '›'}
+                      </button>
+                    )}
+                    {(isSettings || tabs.length > 1) && (
                       <button
                         onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
                         className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 text-center"
@@ -561,18 +609,21 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
         </button>
       </div>
 
-      {/* 右侧：展开工作区文件面板 */}
-      <button
-        onClick={onToggleFilesPanel}
-        title="工作区文件"
-        className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-          showFilesPanel
-            ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-            : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
-        }`}
-      >
-        {showFilesPanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
-      </button>
+      {/* 右侧：展开工作区文件面板（设置页隐藏） */}
+      {tabs.find((t) => t.id === activeTabId)?.view !== 'settings' && (
+        <button
+          onClick={onToggleFilesPanel}
+          onMouseDown={(e) => e.stopPropagation()}
+          title="工作区文件"
+          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+            showFilesPanel
+              ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+              : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+          }`}
+        >
+          {showFilesPanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+        </button>
+      )}
     </div>
   );
 }
