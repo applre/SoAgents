@@ -10,6 +10,30 @@
 
 ---
 
+## [0.0.8] - 2026-02-19
+
+### 新增
+- **设置 Tab**：点击侧边栏「设置」时，在 TopTabBar 新增设置 tab 页，无 `>` 按钮，有 `×` 关闭按钮
+- **设置 Tab 激活时**：隐藏 TopTabBar 右侧「展开工作区文件面板」图标
+- **设置 Tab 激活时**：侧边栏隐藏最近对话区域，保持界面干净
+
+---
+
+## [0.0.7] - 2026-02-19
+
+### 新增
+- **WorkspaceFilesPanel 文件树**：支持文件夹点击展开/折叠，递归渲染子目录，缓存已展开目录内容
+- **Editor 多语言代码高亮**：支持 JS/TS/Python/Rust/CSS/HTML/JSON，非 Markdown 文件强制进入 edit 模式
+- **MCP/Skills 集成**：工作区文件面板与 MCP、Skills 入口整合
+- **Markdown 预览**：新增 typography 插件，附件卡片通过 `/api/file-stat` 获取文件大小
+
+### 修复
+- 工具栏图标更新为 Lucide 风格（PanelRightOpen / PanelRightClose / ExternalLink / RefreshCw）
+- 用户消息文字被 prose 样式覆盖为黑色的问题；AI 气泡改为暖灰底色
+- `handleSelectWorkspace`：打开已存在工作区时未跳转到已有 Tab 的问题
+
+---
+
 ## [0.0.6] - 2026-02-18
 
 ### 新增
