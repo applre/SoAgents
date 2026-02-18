@@ -1,4 +1,4 @@
-export type TabView = 'launcher' | 'chat' | 'settings';
+export type TabView = 'launcher' | 'chat' | 'settings' | 'editor';
 
 export interface Tab {
   id: string;
@@ -6,5 +6,6 @@ export interface Tab {
   view: TabView;
   agentDir: string | null;
   sessionId: string | null;
+  filePath: string | null;
   isGenerating?: boolean;
 }

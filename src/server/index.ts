@@ -4,7 +4,8 @@ import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
-import { statSync } from 'fs';
+import { statSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
@@ -101,6 +102,31 @@ const server = Bun.serve({
         return Response.json({ size: stat.size });
       } catch {
         return Response.json({ error: 'not found' }, { status: 404 });
+      }
+    }
+
+    // 文件读取
+    if (req.method === 'GET' && url.pathname === '/api/file-read') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) return Response.json({ error: 'missing path' }, { status: 400 });
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        return Response.json({ content });
+      } catch {
+        return Response.json({ error: 'not found' }, { status: 404 });
+      }
+    }
+
+    // 文件写入
+    if (req.method === 'POST' && url.pathname === '/api/file-write') {
+      const body = await req.json() as { path: string; content: string };
+      if (!body.path) return Response.json({ error: 'missing path' }, { status: 400 });
+      try {
+        mkdirSync(dirname(body.path), { recursive: true });
+        writeFileSync(body.path, body.content, 'utf-8');
+        return Response.json({ ok: true });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 500 });
       }
     }
 

@@ -4,6 +4,7 @@ import LeftSidebar from './components/LeftSidebar';
 import Launcher from './pages/Launcher';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
+import Editor from './pages/Editor';
 import { ConfigProvider } from './context/ConfigProvider';
 import type { SessionMetadata } from './types/session';
 
@@ -14,6 +15,7 @@ function createTab(overrides: Partial<Tab> = {}): Tab {
     view: 'launcher',
     agentDir: null,
     sessionId: null,
+    filePath: null,
     isGenerating: false,
     ...overrides,
   };
@@ -70,6 +72,34 @@ export default function App() {
       return prev.map((t) => (t.id === target.id ? { ...t, sessionId } : t));
     });
   }, [activeTabId]);
+
+  // editor tab：标题/路径更新
+  const handleEditorTitleChange = useCallback((tabId: string, title: string, filePath: string) => {
+    setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, title, filePath } : t));
+  }, []);
+
+  // 新建空白文档
+  const handleNewEditor = useCallback(() => {
+    const tab = createTab({ title: 'untitled.md', view: 'editor' });
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }, []);
+
+  // 打开 .md 文件
+  const handleOpenEditorFile = useCallback(async () => {
+    const { isTauri } = await import('./utils/env');
+    if (!isTauri()) return;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({ filters: [{ name: 'Markdown', extensions: ['md', 'txt'] }], multiple: false });
+    if (!selected || typeof selected !== 'string') return;
+    const title = selected.split('/').pop() ?? 'untitled.md';
+    // 若已打开同路径 tab，直接激活
+    const existing = tabs.find((t) => t.view === 'editor' && t.filePath === selected);
+    if (existing) { setActiveTabId(existing.id); return; }
+    const tab = createTab({ title, view: 'editor', filePath: selected });
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }, [tabs]);
 
   // 打开设置
   const handleOpenSettings = useCallback(() => {
@@ -169,6 +199,8 @@ export default function App() {
           onNewChat={handleNewChat}
           onSelectSession={handleSelectSession}
           onOpenSettings={handleOpenSettings}
+          onNewEditor={handleNewEditor}
+          onOpenEditorFile={handleOpenEditorFile}
         />
 
         {/* 主内容区 */}
@@ -204,6 +236,27 @@ export default function App() {
                     onSessionsChange={handleSessionsChange}
                     onActiveSessionChange={t.id === activeTabId ? setActiveSessionId : undefined}
                     onExposeReset={t.id === activeTabId ? handleExposeReset : undefined}
+                  />
+                </div>
+              ))}
+            {/* editor tabs — 持久挂载，切换时仅 display 切换 */}
+            {tabs
+              .filter((t) => t.view === 'editor')
+              .map((t) => (
+                <div
+                  key={t.id}
+                  style={{
+                    display: activeTab?.id === t.id ? 'flex' : 'none',
+                    height: '100%',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                    flex: 1,
+                  }}
+                >
+                  <Editor
+                    tabId={t.id}
+                    initialFilePath={t.filePath}
+                    onTitleChange={handleEditorTitleChange}
                   />
                 </div>
               ))}
