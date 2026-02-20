@@ -120,20 +120,16 @@ export default function LeftSidebar({
         />
       )}
 
-      {/* 固定底部：用户信息 + 设置 */}
+      {/* 固定底部：设置 */}
       <div style={{ padding: '0 14px 14px' }}>
         <button
           onClick={onOpenSettings}
-          className={`flex items-center justify-between px-2 rounded-lg h-[38px] w-full transition-colors ${
+          className={`flex items-center gap-2.5 px-2 rounded-lg h-[38px] w-full transition-colors text-left ${
             isSettingsActive
               ? 'bg-[var(--hover)] text-[var(--ink)]'
               : 'hover:bg-[var(--hover)] text-[var(--ink)]'
           }`}
         >
-          <div className="flex items-center gap-2">
-            <div className="h-6 w-6 rounded-full bg-[var(--border)] shrink-0" />
-            <span className="text-[14px] font-medium text-[var(--ink-tertiary)]">游客模式</span>
-          </div>
           <span className="text-[14px] font-medium">设置</span>
         </button>
       </div>
