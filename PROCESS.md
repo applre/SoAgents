@@ -165,6 +165,36 @@ lsof -ti:31415 | xargs kill -9
 
 ---
 
+### 8. Rust 健康检查被其他进程"冒充"导致 JSON Parse 错误
+
+**现象**：Tauri 客户端启动后控制台报 `SyntaxError: JSON Parse error: Unexpected identifier "Not"`，前端无法加载 Provider 列表。
+
+**原因**：MyAgents 残留的僵尸 sidecar 进程占用了 IPv4 `127.0.0.1:31415`，SoAgents 的 tab sidecar 只能绑定到 IPv6 `*:31415`。Rust 的健康检查通过 `http://127.0.0.1:{port}/health` 验证，MyAgents 的 `/health` 也返回 200 + JSON（但格式不同：`{status, timestamp}` vs `{status, port}`），所以健康检查通过了，Rust 认为 sidecar 启动成功。后续请求发到 MyAgents 的服务器，它没有 SoAgents 的路由，返回 "Not Found" 纯文本，`JSON.parse("Not Found")` 抛出异常。
+
+**临时修复**：杀掉 MyAgents 残留进程：
+```bash
+lsof -ti:31415 | xargs kill -9
+```
+
+**TODO — 根治方案**：在 `src-tauri/src/sidecar.rs` 的健康检查逻辑中，验证返回的 `port` 字段是否匹配预期端口，避免被其他进程的 `/health` 响应冒充：
+```rust
+// 当前：只检查 HTTP 200
+if client.get(&health_url).send().is_ok() {
+    healthy = true;
+}
+
+// 改进：解析 JSON 并校验 port
+if let Ok(resp) = client.get(&health_url).send() {
+    if let Ok(body) = resp.json::<serde_json::Value>() {
+        if body.get("port").and_then(|v| v.as_u64()) == Some(port as u64) {
+            healthy = true;
+        }
+    }
+}
+```
+
+---
+
 ### SDK 的工作原理
 
 `@anthropic-ai/claude-agent-sdk` 不是直接调用 API，而是 spawn `bun cli.js` 子进程（即 Claude Code CLI），通过 stdio JSON 协议通信。认证复用 `~/.claude/` 下存储的 OAuth token（订阅用户）或 `ANTHROPIC_API_KEY`。
