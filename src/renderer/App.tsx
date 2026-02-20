@@ -370,12 +370,13 @@ export default function App() {
 
           {/* 编辑器工具栏：仅文件 tab 激活时显示 */}
           {isEditorActive && activeOpenFile && (() => {
+            const isPreviewable = /\.(md|markdown|html|htm)$/i.test(activeOpenFile.filePath);
             const isMarkdown = /\.(md|markdown)$/i.test(activeOpenFile.filePath);
             return (
               <>
                 <EditorActionBar
-                  mode={isMarkdown ? activeOpenFile.mode : 'edit'}
-                  onModeChange={isMarkdown ? handleSetFileMode : undefined}
+                  mode={isPreviewable ? activeOpenFile.mode : 'edit'}
+                  onModeChange={isPreviewable ? handleSetFileMode : undefined}
                   onSave={() => editorActionRef.current?.save()}
                   onGoToChat={() => handleSwitchSubTab('chat', activeOpenFile.filePath)}
                 />

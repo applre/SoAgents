@@ -65,15 +65,21 @@ function isMarkdownFile(filePath: string) {
   return /\.(md|markdown)$/i.test(filePath);
 }
 
+// 是否为 HTML 文件（支持预览模式）
+function isHtmlFile(filePath: string) {
+  return /\.(html|htm)$/i.test(filePath);
+}
+
 export default function Editor({ filePath, mode, onSave, onActionRef }: Props) {
   const [content, setContent] = useState('');
   const editorViewRef = useRef<EditorView | null>(null);
   const langExtension = useMemo(() => getLangExtension(filePath), [filePath]);
   const isMarkdown = useMemo(() => isMarkdownFile(filePath), [filePath]);
+  const isHtml = useMemo(() => isHtmlFile(filePath), [filePath]);
   const isImage = useMemo(() => isImageFile(filePath), [filePath]);
   const isBinary = useMemo(() => isBinaryFile(filePath), [filePath]);
-  // 非 Markdown 文件强制 edit 模式
-  const effectiveMode = isMarkdown ? mode : 'edit';
+  // 非 Markdown/HTML 文件强制 edit 模式
+  const effectiveMode = (isMarkdown || isHtml) ? mode : 'edit';
 
   // 加载文件内容（图片/二进制跳过）
   useEffect(() => {
@@ -219,6 +225,13 @@ export default function Editor({ filePath, mode, onSave, onActionRef }: Props) {
             autocompletion: false,
           }}
           style={{ height: '100%' }}
+        />
+      ) : isHtml ? (
+        <iframe
+          srcDoc={content}
+          sandbox="allow-scripts"
+          className="w-full h-full border-0 bg-white"
+          title="HTML Preview"
         />
       ) : (
         <div className="h-full overflow-y-auto px-8 py-6">
