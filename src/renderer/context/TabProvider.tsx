@@ -182,7 +182,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId, agentDir]);
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, permissionMode?: string) => {
     const url = serverUrlRef.current;
     if (!url) return;
 
@@ -198,17 +198,23 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
     setIsLoading(true);
     setSessionState('running');
 
-    // 构建 providerEnv：订阅模式不发送（undefined），第三方模式发送 baseUrl + apiKey
+    // 构建 providerEnv：订阅模式不发送（undefined），api 模式发送 apiKey + 可选 baseUrl + model
     const provider = configCtx?.currentProvider;
     const providerEnv =
-      provider && provider.type === 'api' && provider.baseUrl
+      provider && provider.type === 'api'
         ? {
-            baseUrl: provider.baseUrl,
+            baseUrl: provider.baseUrl,   // anthropic-api 无 baseUrl，第三方有
             apiKey: configCtx.config.apiKeys[provider.id] ?? '',
+            model: provider.primaryModel,
           }
         : undefined;
 
-    await apiPostJson(url, '/chat/send', { message: text, agentDir, providerEnv });
+    try {
+      await apiPostJson(url, '/chat/send', { message: text, agentDir, providerEnv, permissionMode });
+    } catch {
+      setIsLoading(false);
+      setSessionState('error');
+    }
   }, [agentDir, configCtx]);
 
   const stopResponse = useCallback(async () => {
@@ -260,6 +266,21 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       await invoke('cmd_proxy_http', { method: 'DELETE', url: `${url}/chat/sessions/${sessionId}`, headers: {}, body: undefined });
     } else {
       await fetch(`${url}/chat/sessions/${sessionId}`, { method: 'DELETE' });
+    }
+    await refreshSessions();
+  }, [refreshSessions]);
+
+  const updateSessionTitle = useCallback(async (sessionId: string, title: string) => {
+    const url = serverUrlRef.current;
+    if (!url) return;
+    if (isTauri()) {
+      await invoke('cmd_proxy_http', { method: 'PUT', url: `${url}/chat/sessions/${sessionId}/title`, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) });
+    } else {
+      await fetch(`${url}/chat/sessions/${sessionId}/title`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
     }
     await refreshSessions();
   }, [refreshSessions]);
@@ -316,9 +337,10 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       sessionsFetched,
       loadSession,
       deleteSession,
+      updateSessionTitle,
       refreshSessions,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, refreshSessions]
+    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, refreshSessions]
   );
 
   return <TabContext.Provider value={value}>{children}</TabContext.Provider>;

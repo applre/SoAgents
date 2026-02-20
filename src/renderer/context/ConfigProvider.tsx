@@ -1,7 +1,8 @@
-import { useState, useCallback, useMemo, type ReactNode } from 'react';
+import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
 import { ConfigContext } from './ConfigContext';
 import type { AppConfig, Provider } from '../types/config';
-import { PROVIDERS, DEFAULT_CONFIG } from '../types/config';
+import { DEFAULT_CONFIG } from '../types/config';
+import { globalApiGetJson } from '../api/apiFetch';
 
 const STORAGE_KEY = 'soagents:config';
 
@@ -13,6 +14,7 @@ function loadConfig(): AppConfig {
     return {
       currentProviderId: parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
       apiKeys: parsed.apiKeys ?? {},
+      customProviders: parsed.customProviders ?? [],
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -25,10 +27,24 @@ function saveConfig(config: AppConfig): void {
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig>(loadConfig);
+  const [allProviders, setAllProviders] = useState<Provider[]>([]);
+
+  const loadProviders = useCallback(async () => {
+    try {
+      const data = await globalApiGetJson<Provider[]>('/api/providers');
+      setAllProviders(data);
+    } catch {
+      setAllProviders([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProviders();
+  }, [loadProviders]);
 
   const currentProvider = useMemo<Provider>(
-    () => PROVIDERS.find((p) => p.id === config.currentProviderId) ?? PROVIDERS[0],
-    [config.currentProviderId]
+    () => allProviders.find((p) => p.id === config.currentProviderId) ?? allProviders[0] ?? { id: 'anthropic', name: 'Anthropic', type: 'subscription' },
+    [config.currentProviderId, allProviders]
   );
 
   const updateConfig = useCallback(async (partial: Partial<AppConfig>) => {
@@ -36,15 +52,20 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       const next: AppConfig = {
         currentProviderId: partial.currentProviderId ?? prev.currentProviderId,
         apiKeys: partial.apiKeys !== undefined ? partial.apiKeys : prev.apiKeys,
+        customProviders: partial.customProviders !== undefined ? partial.customProviders : prev.customProviders,
       };
       saveConfig(next);
       return next;
     });
   }, []);
 
+  const refreshConfig = useCallback(async () => {
+    await loadProviders();
+  }, [loadProviders]);
+
   const value = useMemo(
-    () => ({ config, currentProvider, updateConfig, isLoading: false }),
-    [config, currentProvider, updateConfig]
+    () => ({ config, currentProvider, updateConfig, refreshConfig, isLoading: false }),
+    [config, currentProvider, updateConfig, refreshConfig]
   );
 
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;

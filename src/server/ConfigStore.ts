@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import type { AppConfig } from './types/config';
-import { DEFAULT_CONFIG } from './types/config';
+import type { AppConfig, Provider } from './types/config';
+import { DEFAULT_CONFIG, PROVIDERS } from './types/config';
 
 const DATA_DIR = join(homedir(), '.soagents');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
@@ -24,6 +24,7 @@ export function readConfig(): AppConfig {
     return {
       currentProviderId: parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
       apiKeys: parsed.apiKeys ?? {},
+      customProviders: parsed.customProviders ?? [],
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -33,4 +34,41 @@ export function readConfig(): AppConfig {
 export function writeConfig(config: AppConfig): void {
   ensureDataDir();
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+// Custom Provider CRUD
+export function addCustomProvider(provider: Provider): void {
+  const config = readConfig();
+  if (!config.customProviders) {
+    config.customProviders = [];
+  }
+  config.customProviders.push(provider);
+  writeConfig(config);
+}
+
+export function updateCustomProvider(id: string, updates: Partial<Provider>): void {
+  const config = readConfig();
+  if (!config.customProviders) {
+    config.customProviders = [];
+  }
+  const index = config.customProviders.findIndex((p) => p.id === id);
+  if (index === -1) {
+    throw new Error(`Provider not found: ${id}`);
+  }
+  config.customProviders[index] = { ...config.customProviders[index], ...updates };
+  writeConfig(config);
+}
+
+export function deleteCustomProvider(id: string): void {
+  const config = readConfig();
+  if (!config.customProviders) {
+    config.customProviders = [];
+  }
+  config.customProviders = config.customProviders.filter((p) => p.id !== id);
+  writeConfig(config);
+}
+
+export function getAllProviders(): Provider[] {
+  const config = readConfig();
+  return [...PROVIDERS, ...(config.customProviders ?? [])];
 }

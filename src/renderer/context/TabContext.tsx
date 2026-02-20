@@ -10,7 +10,7 @@ export interface TabState {
   messages: Message[];
   isLoading: boolean;
   sessionState: 'idle' | 'running' | 'error';
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, permissionMode?: string) => Promise<void>;
   stopResponse: () => Promise<void>;
   resetSession: () => Promise<void>;
   apiGet: <T>(path: string) => Promise<T>;
@@ -23,6 +23,7 @@ export interface TabState {
   sessionsFetched: boolean;
   loadSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
+  updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
 }
 

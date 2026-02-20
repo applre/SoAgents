@@ -198,6 +198,18 @@ export function touchSession(sessionId: string): void {
   });
 }
 
+export function updateTitle(sessionId: string, title: string): void {
+  if (!isValidId(sessionId)) throw new Error('Invalid session ID');
+  withLock(() => {
+    const sessions = readIndex();
+    const idx = sessions.findIndex(s => s.id === sessionId);
+    if (idx === -1) return;
+    sessions[idx].title = title;
+    sessions[idx].lastActiveAt = new Date().toISOString();
+    writeIndex(sessions);
+  });
+}
+
 export function deleteSession(sessionId: string): void {
   if (!isValidId(sessionId)) throw new Error('Invalid session ID');
   const filePath = join(SESSIONS_DIR, `${sessionId}.jsonl`);

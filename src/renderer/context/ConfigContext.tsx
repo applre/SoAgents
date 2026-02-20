@@ -5,6 +5,7 @@ export interface ConfigState {
   config: AppConfig;
   currentProvider: Provider;
   updateConfig: (partial: Partial<AppConfig>) => Promise<void>;
+  refreshConfig: () => Promise<void>;
   isLoading: boolean;
 }
 

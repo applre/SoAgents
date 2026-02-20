@@ -33,8 +33,13 @@ const server = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; providerEnv?: { baseUrl?: string; apiKey?: string } };
-      agentSession.sendMessage(body.message, body.agentDir, body.providerEnv).catch(console.error);
+      const body = await req.json() as { message: string; agentDir: string; providerEnv?: { baseUrl?: string; apiKey?: string }; permissionMode?: string };
+      const VALID_MODES = ['default', 'acceptEdits', 'bypassPermissions'] as const;
+      type PermissionMode = typeof VALID_MODES[number];
+      const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
+        ? (body.permissionMode as PermissionMode)
+        : 'acceptEdits';
+      agentSession.sendMessage(body.message, body.agentDir, body.providerEnv, mode).catch(console.error);
       return Response.json({ ok: true });
     }
 
@@ -66,6 +71,30 @@ const server = Bun.serve({
       return Response.json(agentSession.getSessions());
     }
 
+    if (req.method === 'GET' && url.pathname === '/chat/search') {
+      const q = url.searchParams.get('q')?.trim().toLowerCase() ?? '';
+      if (!q) return Response.json([]);
+      const sessions = SessionStore.listSessions();
+      const results: { sessionId: string; sessionTitle: string; matches: { id: string; role: string; preview: string }[] }[] = [];
+      for (const s of sessions) {
+        try {
+          const messages = SessionStore.getSessionMessages(s.id);
+          const matches = messages
+            .filter((m) => m.content.toLowerCase().includes(q))
+            .slice(0, 3)
+            .map((m) => {
+              const idx = m.content.toLowerCase().indexOf(q);
+              const start = Math.max(0, idx - 40);
+              const end = Math.min(m.content.length, idx + q.length + 60);
+              const preview = (start > 0 ? '…' : '') + m.content.slice(start, end) + (end < m.content.length ? '…' : '');
+              return { id: m.id, role: m.role, preview };
+            });
+          if (matches.length > 0) results.push({ sessionId: s.id, sessionTitle: s.title || '未命名对话', matches });
+        } catch { /* skip */ }
+      }
+      return Response.json(results);
+    }
+
     if (req.method === 'POST' && url.pathname === '/chat/load-session') {
       const body = await req.json() as { sessionId: string };
       agentSession.loadSession(body.sessionId);
@@ -75,6 +104,13 @@ const server = Bun.serve({
     if (req.method === 'DELETE' && url.pathname.startsWith('/chat/sessions/')) {
       const sessionId = url.pathname.replace('/chat/sessions/', '');
       SessionStore.deleteSession(sessionId);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/title$/)) {
+      const sessionId = url.pathname.split('/')[3];
+      const body = await req.json() as { title: string };
+      SessionStore.updateTitle(sessionId, body.title);
       return Response.json({ ok: true });
     }
 
@@ -88,8 +124,33 @@ const server = Bun.serve({
       const updated = {
         currentProviderId: body.currentProviderId ?? current.currentProviderId,
         apiKeys: body.apiKeys ?? current.apiKeys,
+        customProviders: current.customProviders,
       };
       ConfigStore.writeConfig(updated);
+      return Response.json({ ok: true });
+    }
+
+    // Provider CRUD
+    if (req.method === 'GET' && url.pathname === '/api/providers') {
+      return Response.json(ConfigStore.getAllProviders());
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/providers') {
+      const body = await req.json() as { id: string; name: string; type: 'subscription' | 'api'; baseUrl?: string; primaryModel?: string; models?: string };
+      ConfigStore.addCustomProvider(body);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/providers/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/providers/'.length));
+      const body = await req.json() as Partial<{ name: string; type: 'subscription' | 'api'; baseUrl?: string; primaryModel?: string; models?: string }>;
+      ConfigStore.updateCustomProvider(id, body);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/providers/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/providers/'.length));
+      ConfigStore.deleteCustomProvider(id);
       return Response.json({ ok: true });
     }
 
