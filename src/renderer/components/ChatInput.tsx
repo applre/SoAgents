@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
-import { Paperclip, Puzzle, Wrench, ChevronDown, Send, FileText, X, Zap, Image as ImageIcon } from 'lucide-react';
+import { Paperclip, Puzzle, Wrench, ChevronDown, Send, FileText, X, Image as ImageIcon } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
@@ -443,7 +443,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         {selectedSkill && (
           <div className="flex items-center gap-2 px-4 pt-3">
             <div className="flex items-center gap-1.5 rounded-full bg-[var(--surface)] border border-[var(--border)] px-3 py-1.5">
-              <Zap size={13} className="text-[var(--ink-secondary)] shrink-0" />
+              <Puzzle size={13} className="text-[var(--ink-secondary)] shrink-0" />
               <span className="text-sm font-medium text-[var(--ink)]">{selectedSkill.name}</span>
               <button
                 onClick={() => setSelectedSkill(null)}
