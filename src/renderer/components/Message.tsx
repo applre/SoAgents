@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Zap } from 'lucide-react';
 import type { Message } from '../types/chat';
 import ToolUse from './tools/ToolUse';
 
@@ -29,6 +30,16 @@ export default function MessageItem({ message }: Props) {
           }
           if (block.type === 'tool_use') {
             return <ToolUse key={i} block={block} />;
+          }
+          if (block.type === 'skill') {
+            return (
+              <div key={i} className={`flex items-center gap-1.5 rounded-full px-3 py-1 mb-1.5 text-xs font-medium ${
+                isUser ? 'bg-white/15 text-white' : 'bg-[var(--hover)] text-[var(--ink-secondary)] border border-[var(--border)]'
+              }`}>
+                <Zap size={12} className="shrink-0" />
+                <span>{block.name}</span>
+              </div>
+            );
           }
           return (
             <div key={i} className={`prose prose-sm max-w-none ${isUser ? '[&_*]:!text-white [&_code]:bg-white/20 [&_a]:text-white/90' : ''}`}>

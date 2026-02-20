@@ -182,21 +182,38 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId, agentDir]);
 
-  const sendMessage = useCallback(async (text: string, permissionMode?: string) => {
+  const sendMessage = useCallback(async (text: string, permissionMode?: string, skill?: { name: string; content: string }) => {
     const url = serverUrlRef.current;
     if (!url) return;
 
     isNewSessionRef.current = false;
 
+    // ── 前端展示用 blocks（不含 skill 内容原文） ──
+    const blocks: Message['blocks'] = [];
+    if (skill) {
+      blocks.push({ type: 'skill', name: skill.name });
+    }
+    if (text) {
+      blocks.push({ type: 'text', text });
+    }
+    if (blocks.length === 0) {
+      blocks.push({ type: 'text', text: '' });
+    }
+
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: 'user',
-      blocks: [{ type: 'text', text }],
+      blocks,
       createdAt: Date.now(),
     };
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
     setSessionState('running');
+
+    // ── 后端实际发送的消息（skill 内容 + 用户文本拼接） ──
+    const backendMessage = skill
+      ? [skill.content, text].filter(Boolean).join('\n')
+      : text;
 
     // 构建 providerEnv：订阅模式不发送（undefined），api 模式发送 apiKey + 可选 baseUrl + model
     const provider = configCtx?.currentProvider;
@@ -210,7 +227,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
         : undefined;
 
     try {
-      await apiPostJson(url, '/chat/send', { message: text, agentDir, providerEnv, permissionMode });
+      await apiPostJson(url, '/chat/send', { message: backendMessage, agentDir, providerEnv, permissionMode });
     } catch {
       setIsLoading(false);
       setSessionState('error');

@@ -1,6 +1,7 @@
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
+  | { type: 'skill'; name: string }
   | {
       type: 'tool_use';
       name: string;

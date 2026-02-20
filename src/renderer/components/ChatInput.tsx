@@ -17,8 +17,13 @@ const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string }[]
   { value: 'bypassPermissions', label: '自主模式', desc: '全自动执行，跳过所有确认，适合批量任务' },
 ];
 
+interface SkillPayload {
+  name: string;
+  content: string;
+}
+
 interface Props {
-  onSend: (text: string, permissionMode?: string) => void;
+  onSend: (text: string, permissionMode?: string, skill?: SkillPayload) => void;
   onStop: () => void;
   isLoading: boolean;
   agentDir?: string;
@@ -150,10 +155,13 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     const filePaths = attachedFiles.map((f) => f.path).join(' ');
-    const skillContent = selectedSkill?.content ?? '';
-    const fullMessage = [filePaths, skillContent, trimmed].filter(Boolean).join('\n');
-    if (!fullMessage || isLoading) return;
-    onSend(fullMessage, permissionMode);
+    // 用户可见文本（不含 skill 内容）
+    const userText = [filePaths, trimmed].filter(Boolean).join('\n');
+    // skill 信息单独传递
+    const skill = selectedSkill ? { name: selectedSkill.name, content: selectedSkill.content } : undefined;
+    if (!userText && !skill) return;
+    if (isLoading) return;
+    onSend(userText, permissionMode, skill);
     setText('');
     setAttachedFiles([]);
     setSelectedSkill(null);
