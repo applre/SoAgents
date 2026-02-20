@@ -130,6 +130,21 @@ useEffect(() => {
 
 ---
 
+### 7. 白屏问题（HMR 热更新 / 端口冲突）
+
+**现象**：修改代码后在窗口里 reload，界面变成全白。
+
+**原因**：
+1. Vite HMR 在某些情况下不稳定，reload 后应用崩溃。
+2. 旧进程没完全退出，重启时 Vite 换到了 5175 端口，但 `tauri.conf.json` 里 `devUrl` 固定为 `http://localhost:5174`，Tauri 加载空白地址。
+
+**正确重启流程**：改完代码后**不要**在窗口里 reload，直接关掉窗口，然后执行：
+```bash
+lsof -ti:5174,31415,31416 | xargs kill -9 2>/dev/null; sleep 1 && npm run tauri:dev
+```
+
+---
+
 ## 架构说明
 
 ### 为什么用 `.no_proxy()` 而非依赖 VPN bypass 配置

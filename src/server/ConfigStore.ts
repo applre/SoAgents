@@ -37,13 +37,17 @@ export function writeConfig(config: AppConfig): void {
 }
 
 // Custom Provider CRUD
-export function addCustomProvider(provider: Provider): void {
+export function addCustomProvider(provider: Omit<Provider, 'id'>): string {
   const config = readConfig();
   if (!config.customProviders) {
     config.customProviders = [];
   }
-  config.customProviders.push(provider);
+  // 生成唯一 ID: custom-{timestamp}-{random}
+  const id = `custom-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const newProvider: Provider = { ...provider, id };
+  config.customProviders.push(newProvider);
   writeConfig(config);
+  return id;
 }
 
 export function updateCustomProvider(id: string, updates: Partial<Provider>): void {

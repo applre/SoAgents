@@ -136,9 +136,9 @@ const server = Bun.serve({
     }
 
     if (req.method === 'POST' && url.pathname === '/api/providers') {
-      const body = await req.json() as { id: string; name: string; type: 'subscription' | 'api'; baseUrl?: string; primaryModel?: string; models?: string };
-      ConfigStore.addCustomProvider(body);
-      return Response.json({ ok: true });
+      const body = await req.json() as { name: string; type: 'subscription' | 'api'; baseUrl?: string; primaryModel?: string; models?: string };
+      const id = ConfigStore.addCustomProvider(body);
+      return Response.json({ ok: true, id });
     }
 
     if (req.method === 'PUT' && url.pathname.startsWith('/api/providers/')) {

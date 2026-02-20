@@ -13,7 +13,7 @@ export default function MessageList({ messages }: Props) {
     <div
       ref={scrollRef}
       onScroll={checkAtBottom}
-      className="flex-1 overflow-y-auto p-4 space-y-4"
+      className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4"
     >
       {messages.length === 0 && (
         <div className="flex h-full items-center justify-center text-[var(--ink-tertiary)]">

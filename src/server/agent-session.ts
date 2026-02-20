@@ -3,8 +3,11 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
+import * as MCPConfigStore from './MCPConfigStore';
 import type { SessionMetadata, SessionMessage } from './types/session';
 import type { ProviderEnv } from './types/config';
+
+type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
 
 interface StoredMessage {
   id: string;
@@ -23,7 +26,7 @@ class AgentSession {
   private currentSessionId: string | null = null;
   private currentProviderEnv: ProviderEnv | undefined = undefined;
 
-  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv): Promise<void> {
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, permissionMode?: PermissionMode): Promise<void> {
     if (this.isRunning) return;
 
     // 如果没有当前 session，创建一个新的
@@ -50,12 +53,19 @@ class AgentSession {
       createdAt: Date.now(),
     });
 
-    // 检测 provider 切换：provider 变了就清除 sdkSessionId（不 resume）
+    // 检测 provider 切换
     const providerChanged =
       (providerEnv?.baseUrl ?? '') !== (this.currentProviderEnv?.baseUrl ?? '') ||
-      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '');
+      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '') ||
+      (providerEnv?.model ?? '') !== (this.currentProviderEnv?.model ?? '');
     if (providerChanged) {
-      this.sdkSessionId = null;
+      // 三方→官方：不 resume（thinking block 签名不兼容）
+      // 其他切换：保留 sdkSessionId，允许 resume
+      const switchingFromThirdPartyToOfficial =
+        !!this.currentProviderEnv?.baseUrl && !providerEnv?.baseUrl;
+      if (switchingFromThirdPartyToOfficial) {
+        this.sdkSessionId = null;
+      }
       this.currentProviderEnv = providerEnv;
     }
 
@@ -72,52 +82,71 @@ class AgentSession {
       delete process.env.ANTHROPIC_AUTH_TOKEN;
       delete process.env.ANTHROPIC_API_KEY;
     }
+    if (providerEnv?.model) {
+      process.env.ANTHROPIC_MODEL = providerEnv.model;
+    } else {
+      delete process.env.ANTHROPIC_MODEL;
+    }
 
     this.isRunning = true;
     let assistantContent = '';
 
     try {
-      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}`);
-      const q = query({
-        prompt: text,
-        options: {
-          allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-          cwd: agentDir,
-          systemPrompt: `当前工作目录为：${agentDir}\n所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。`,
-          permissionMode: 'acceptEdits',
-          includePartialMessages: true,
-          resume: this.sdkSessionId ?? undefined,
-          canUseTool: async (toolName, toolInput, { toolUseID, signal }) => {
-            // 广播权限请求
-            broadcast('permission:request', { toolName, toolUseId: toolUseID, toolInput });
+      const mcpAll = MCPConfigStore.getAll();
+      let mcpServers: Record<string, unknown> | undefined;
+      if (Object.keys(mcpAll).length > 0) {
+        mcpServers = {};
+        for (const [id, cfg] of Object.entries(mcpAll)) {
+          if (cfg.type === 'stdio') {
+            mcpServers[id] = { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env };
+          } else if (cfg.type === 'sse') {
+            mcpServers[id] = { type: 'sse', url: cfg.url };
+          } else {
+            mcpServers[id] = { type: 'http', url: cfg.url };
+          }
+        }
+      }
+      const resolvedPermissionMode = permissionMode ?? 'acceptEdits';
 
-            // 等待用户响应或超时
+      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}, mode: ${resolvedPermissionMode}`);
+
+      const canUseTool = resolvedPermissionMode !== 'bypassPermissions'
+        ? async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
+            broadcast('permission:request', { toolName, toolUseId: toolUseID, toolInput });
             const allowed = await new Promise<boolean>((resolve) => {
-              // 30s 超时自动 allow
               const timeout = setTimeout(() => {
                 this.pendingPermissions.delete(toolUseID);
                 resolve(true);
               }, 30000);
-
-              // 监听 abort
               signal?.addEventListener('abort', () => {
                 clearTimeout(timeout);
                 this.pendingPermissions.delete(toolUseID);
                 resolve(false);
               });
-
-              // 包装 resolve 以清理 timeout
               this.pendingPermissions.set(toolUseID, (allow: boolean) => {
                 clearTimeout(timeout);
                 this.pendingPermissions.delete(toolUseID);
                 resolve(allow);
               });
             });
-
             return allowed
-              ? { behavior: 'allow' as const, updatedInput: toolInput as Record<string, unknown> }
+              ? { behavior: 'allow' as const, updatedInput: toolInput }
               : { behavior: 'deny' as const, message: '用户拒绝' };
-          },
+          }
+        : undefined;
+
+      const q = query({
+        prompt: text,
+        options: {
+          allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+          cwd: agentDir,
+          systemPrompt: `当前工作目录为：${agentDir}\n所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。`,
+          permissionMode: resolvedPermissionMode,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          mcpServers: mcpServers as any,
+          includePartialMessages: true,
+          resume: this.sdkSessionId ?? undefined,
+          canUseTool,
         },
       });
       this.currentQuery = q;

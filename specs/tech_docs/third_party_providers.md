@@ -1,6 +1,6 @@
 # 第三方 LLM 供应商集成指南
 
-本文档总结了在 MyAgents 中集成第三方 LLM 供应商（DeepSeek、智谱、Moonshot、MiniMax 等）的关键技术经验。
+本文档总结了在 SoAgents 中集成第三方 LLM 供应商（DeepSeek、智谱、Moonshot、MiniMax 等）的关键技术经验。
 
 ---
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, ExternalLink, FileText, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-react';
+import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-react';
 import { globalApiGetJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 
@@ -170,7 +170,7 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
             title="在 Finder 中打开"
             className="p-1.5 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
           >
-            <ExternalLink size={16} />
+            <FolderOpen size={16} />
           </button>
         </div>
       </div>

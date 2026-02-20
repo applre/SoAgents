@@ -9,13 +9,12 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { formatSize } from '../utils/formatSize';
 
-type PermissionMode = 'acceptEdits' | 'default' | 'bypassPermissions' | 'plan';
+type PermissionMode = 'acceptEdits' | 'default' | 'bypassPermissions';
 
 const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string }[] = [
   { value: 'acceptEdits',       label: '协同模式', desc: '自动接受文件编辑，遇到 Shell 命令时弹窗确认' },
   { value: 'default',           label: '确认模式', desc: '每次工具调用都需要手动确认，适合谨慎操作' },
   { value: 'bypassPermissions', label: '自主模式', desc: '全自动执行，跳过所有确认，适合批量任务' },
-  { value: 'plan',              label: '计划模式', desc: '先制定详细计划，经用户批准后再执行，适合复杂任务' },
 ];
 
 interface Props {
@@ -554,8 +553,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                         {permissionMode === m.value && (
                           <div className={`h-2 w-2 rounded-full ${
                             m.value === 'bypassPermissions' ? 'bg-amber-500' :
-                            m.value === 'default' ? 'bg-blue-500' :
-                            m.value === 'plan' ? 'bg-purple-500' : 'bg-[var(--accent)]'
+                            m.value === 'default' ? 'bg-blue-500' : 'bg-[var(--accent)]'
                           }`} />
                         )}
                       </div>
@@ -579,8 +577,6 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                     ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
                     : permissionMode === 'default'
                     ? 'bg-blue-50 text-blue-600 hover:bg-blue-100'
-                    : permissionMode === 'plan'
-                    ? 'bg-purple-50 text-purple-600 hover:bg-purple-100'
                     : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
                 }`}
               >

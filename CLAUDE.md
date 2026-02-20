@@ -2,7 +2,7 @@
 
 ## 产品定位
 
-SoAgents 是基于 Claude Agent SDK 的桌面端 Agent 客户端，通过渐进式重建 MyAgents 项目来学习 Tauri + React + Bun 全栈开发。
+SoAgents 是基于 Claude Agent SDK 的桌面端 Agent 客户端，通过渐进式构建 通用Agent 项目来熟悉 Tauri + React + Bun 全栈开发。
 
 ## 技术栈
 

@@ -6,6 +6,9 @@
 
 ## [Unreleased]
 
+### 修复
+- **供应商 CRUD Bug**：修复 `addCustomProvider` 未自动生成 `id` 导致编辑/删除功能无法使用的问题，现在创建供应商时自动生成 `custom-{timestamp}-{random}` 格式的唯一 ID
+
 ---
 
 ## [0.0.9] - 2026-02-20

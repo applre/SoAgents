@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { javascript } from '@codemirror/lang-javascript';
@@ -32,6 +33,15 @@ const cmTheme = EditorView.theme({
   '.cm-line': { padding: '0' },
 });
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'avif']);
+const BINARY_EXTS = new Set(['pdf', 'zip', 'tar', 'gz', 'exe', 'dmg', 'bin', 'wasm', 'ttf', 'otf', 'woff', 'woff2', 'mp3', 'mp4', 'mov', 'avi']);
+
+function getFileExt(filePath: string) {
+  return filePath.split('.').pop()?.toLowerCase() ?? '';
+}
+function isImageFile(filePath: string) { return IMAGE_EXTS.has(getFileExt(filePath)); }
+function isBinaryFile(filePath: string) { return BINARY_EXTS.has(getFileExt(filePath)); }
+
 // 根据扩展名返回 CodeMirror 语言插件
 function getLangExtension(filePath: string) {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
@@ -60,16 +70,18 @@ export default function Editor({ filePath, mode, onSave, onActionRef }: Props) {
   const editorViewRef = useRef<EditorView | null>(null);
   const langExtension = useMemo(() => getLangExtension(filePath), [filePath]);
   const isMarkdown = useMemo(() => isMarkdownFile(filePath), [filePath]);
+  const isImage = useMemo(() => isImageFile(filePath), [filePath]);
+  const isBinary = useMemo(() => isBinaryFile(filePath), [filePath]);
   // 非 Markdown 文件强制 edit 模式
   const effectiveMode = isMarkdown ? mode : 'edit';
 
-  // 加载文件内容
+  // 加载文件内容（图片/二进制跳过）
   useEffect(() => {
-    if (!filePath) return;
+    if (!filePath || isImage || isBinary) return;
     globalApiGetJson<{ content: string }>(`/api/file-read?path=${encodeURIComponent(filePath)}`)
       .then((res) => setContent(res.content))
       .catch(console.error);
-  }, [filePath]);
+  }, [filePath, isImage, isBinary]);
 
   const save = useCallback(async () => {
     if (!filePath) return;
@@ -171,6 +183,26 @@ export default function Editor({ filePath, mode, onSave, onActionRef }: Props) {
   useEffect(() => {
     onActionRef?.({ handleAction, save });
   }, [handleAction, save, onActionRef]);
+
+  if (isImage) {
+    return (
+      <div className="flex flex-1 items-center justify-center overflow-auto bg-[var(--paper)]" style={{ padding: 32 }}>
+        <img
+          src={convertFileSrc(filePath)}
+          alt={filePath.split('/').pop()}
+          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }}
+        />
+      </div>
+    );
+  }
+
+  if (isBinary) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-[var(--ink-tertiary)] text-[14px]">
+        二进制文件，无法预览
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 overflow-hidden">
