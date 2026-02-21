@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
 import type { Provider } from '../../shared/types/config';
+import { getModelsDisplay } from '../../shared/providers';
 import {
   globalApiGetJson,
   globalApiPostJson,
@@ -83,7 +84,7 @@ function ProviderCard({
             <span className="rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--accent)] text-white">
               使用中
             </span>
-          ) : provider.official ? (
+          ) : provider.cloudProvider === '官方' ? (
             <span className="rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--accent-light)] text-[var(--accent)]">
               官方
             </span>
@@ -107,8 +108,8 @@ function ProviderCard({
           <SettingsIcon size={15} />
         </button>
       </div>
-      {provider.models && (
-        <p className="text-[13px] text-[var(--ink-secondary)]">{provider.models}</p>
+      {provider.models?.length > 0 && (
+        <p className="text-[13px] text-[var(--ink-secondary)]">{getModelsDisplay(provider)}</p>
       )}
     </div>
   );
@@ -133,10 +134,10 @@ function ProviderEditModal({
   const [form, setForm] = useState({
     id: provider?.id ?? '',
     name: provider?.name ?? '',
+    vendor: provider?.vendor ?? '',
     type: (provider?.type ?? 'api') as 'subscription' | 'api',
-    baseUrl: provider?.baseUrl ?? '',
+    baseUrl: provider?.config?.baseUrl ?? '',
     primaryModel: provider?.primaryModel ?? '',
-    models: provider?.models ?? '',
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -174,10 +175,15 @@ function ProviderEditModal({
       await onSave({
         id: form.id.trim(),
         name: form.name.trim(),
+        vendor: form.vendor.trim() || form.name.trim(),
+        cloudProvider: '自定义',
         type: form.type,
-        baseUrl: form.baseUrl.trim() || undefined,
-        primaryModel: form.primaryModel.trim() || undefined,
-        models: form.models.trim() || undefined,
+        primaryModel: form.primaryModel.trim() || '',
+        isBuiltin: false,
+        config: {
+          baseUrl: form.baseUrl.trim() || undefined,
+        },
+        models: [],
       });
       onClose();
     } catch (err) {
@@ -298,7 +304,7 @@ function ProviderEditModal({
                 <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">主模型</label>
                 <input
                   type="text"
-                  placeholder="claude-sonnet-4-5-20250929"
+                  placeholder="claude-sonnet-4-6"
                   value={form.primaryModel}
                   onChange={(e) => setForm((f) => ({ ...f, primaryModel: e.target.value }))}
                   disabled={isBuiltin}
@@ -310,16 +316,16 @@ function ProviderEditModal({
           )}
 
           <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">模型列表</label>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">供应商名称</label>
             <input
               type="text"
-              placeholder="Claude Sonnet 4.5, Claude Opus 4..."
-              value={form.models}
-              onChange={(e) => setForm((f) => ({ ...f, models: e.target.value }))}
+              placeholder="Anthropic"
+              value={form.vendor}
+              onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
               disabled={isBuiltin}
               className={inputCls}
             />
-            <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">供应商支持的模型列表，用于展示（可选）</p>
+            <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">供应商品牌名（可选，默认取名称）</p>
           </div>
         </div>
 
@@ -460,23 +466,13 @@ function ProviderConfigModal({
     setValidating(true);
     setValidResult(null);
     try {
-      const testUrl = provider.baseUrl
-        ? `${provider.baseUrl}/v1/messages`
-        : 'https://api.anthropic.com/v1/messages';
-      const res = await fetch(testUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': input,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: provider.primaryModel ?? 'claude-haiku-4-5-20251001',
-          max_tokens: 1,
-          messages: [{ role: 'user', content: 'hi' }],
-        }),
+      const resp = await globalApiPostJson<{ result: 'ok' | 'fail' }>('/api/verify-provider-key', {
+        baseUrl: provider.config?.baseUrl,
+        apiKey: input,
+        model: provider.primaryModel,
+        authType: provider.authType,
       });
-      setValidResult(res.status !== 401 && res.status !== 403 ? 'ok' : 'fail');
+      setValidResult(resp.result);
     } catch {
       setValidResult('fail');
     } finally {
@@ -498,9 +494,22 @@ function ProviderConfigModal({
         {/* 头部 */}
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h3 className="text-[17px] font-bold text-[var(--ink)]">{provider.name}</h3>
-            {provider.models && (
-              <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">{provider.models}</p>
+            <div className="flex items-center gap-2">
+              <h3 className="text-[17px] font-bold text-[var(--ink)]">{provider.name}</h3>
+              {provider.websiteUrl && (
+                <a
+                  href={provider.websiteUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] text-[var(--accent)] hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  去官网
+                </a>
+              )}
+            </div>
+            {provider.models?.length > 0 && (
+              <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">{getModelsDisplay(provider)}</p>
             )}
           </div>
           <button
@@ -523,11 +532,11 @@ function ProviderConfigModal({
             </div>
           ) : (
             <>
-              {provider.baseUrl && (
+              {provider.config?.baseUrl && (
                 <div>
                   <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API 端点</label>
                   <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2">
-                    <span className="text-[13px] text-[var(--ink-tertiary)] font-mono">{provider.baseUrl}</span>
+                    <span className="text-[13px] text-[var(--ink-tertiary)] font-mono">{provider.config.baseUrl}</span>
                   </div>
                 </div>
               )}
@@ -633,11 +642,13 @@ function ProviderTab() {
     await globalApiPostJson('/api/providers', {
       id: data.id,
       name: data.name,
+      vendor: data.vendor ?? data.name,
+      cloudProvider: data.cloudProvider ?? '自定义',
       type: data.type,
-      baseUrl: data.baseUrl,
-      primaryModel: data.primaryModel,
-      models: data.models,
+      primaryModel: data.primaryModel ?? '',
       isBuiltin: false,
+      config: data.config ?? {},
+      models: data.models ?? [],
     });
     await loadProviders();
     await refreshConfig();
@@ -647,10 +658,10 @@ function ProviderTab() {
     if (!editProvider || editProvider === 'new') return;
     await globalApiPutJson(`/api/providers/${editProvider.id}`, {
       name: data.name,
+      vendor: data.vendor,
       type: data.type,
-      baseUrl: data.baseUrl,
       primaryModel: data.primaryModel,
-      models: data.models,
+      config: data.config,
     });
     await loadProviders();
     await refreshConfig();

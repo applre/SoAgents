@@ -1,90 +1,221 @@
-import type { Provider, AppConfig } from './types/config';
+import type { Provider, AppConfig, ModelEntity } from './types/config';
+
+/** Anthropic 官方预设模型（订阅和 API 共用） */
+const ANTHROPIC_MODELS: ModelEntity[] = [
+  { model: 'claude-sonnet-4-6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude' },
+  { model: 'claude-opus-4-6', modelName: 'Claude Opus 4.6', modelSeries: 'claude' },
+  { model: 'claude-haiku-4-5', modelName: 'Claude Haiku 4.5', modelSeries: 'claude' },
+];
 
 export const PROVIDERS: Provider[] = [
   {
-    id: 'anthropic',
+    id: 'anthropic-sub',
     name: 'Anthropic (订阅)',
+    vendor: 'Anthropic',
+    cloudProvider: '官方',
     type: 'subscription',
-    official: true,
+    primaryModel: 'claude-sonnet-4-6',
     isBuiltin: true,
-    models: 'Claude Sonnet 4.5, Claude Opus 4...',
+    config: {},
+    models: ANTHROPIC_MODELS,
   },
   {
     id: 'anthropic-api',
     name: 'Anthropic (API)',
+    vendor: 'Anthropic',
+    cloudProvider: '官方',
     type: 'api',
-    official: true,
+    primaryModel: 'claude-sonnet-4-6',
     isBuiltin: true,
-    primaryModel: 'claude-sonnet-4-5-20250929',
-    models: 'Claude Sonnet 4.5, Claude Opus 4...',
+    authType: 'both',
+    config: {
+      baseUrl: 'https://api.anthropic.com',
+    },
+    models: ANTHROPIC_MODELS,
   },
   {
     id: 'deepseek',
     name: 'DeepSeek',
+    vendor: 'DeepSeek',
+    cloudProvider: '模型官方',
     type: 'api',
-    isBuiltin: true,
-    baseUrl: 'https://api.deepseek.com/anthropic',
     primaryModel: 'deepseek-chat',
-    models: 'DeepSeek Chat, DeepSeek Reasoner',
+    isBuiltin: true,
+    authType: 'auth_token',
+    websiteUrl: 'https://platform.deepseek.com',
+    config: {
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      timeout: 600000,
+      disableNonessential: true,
+    },
+    models: [
+      { model: 'deepseek-chat', modelName: 'DeepSeek Chat', modelSeries: 'deepseek' },
+      { model: 'deepseek-reasoner', modelName: 'DeepSeek Reasoner', modelSeries: 'deepseek' },
+    ],
   },
   {
     id: 'moonshot',
     name: 'Moonshot AI',
+    vendor: 'Moonshot',
+    cloudProvider: '模型官方',
     type: 'api',
+    primaryModel: 'kimi-k2.5',
     isBuiltin: true,
-    baseUrl: 'https://api.moonshot.cn/anthropic',
-    primaryModel: 'kimi-k2-5',
-    models: 'Kimi K2.5, Kimi K2 Thinking, Kimi...',
+    authType: 'auth_token',
+    websiteUrl: 'https://platform.moonshot.cn/console',
+    config: {
+      baseUrl: 'https://api.moonshot.cn/anthropic',
+    },
+    models: [
+      { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'moonshot' },
+      { model: 'kimi-k2-thinking-turbo', modelName: 'Kimi K2 Thinking', modelSeries: 'moonshot' },
+      { model: 'kimi-k2-0711', modelName: 'Kimi K2', modelSeries: 'moonshot' },
+    ],
   },
   {
     id: 'zhipu',
     name: '智谱 AI',
+    vendor: 'Zhipu',
+    cloudProvider: '模型官方',
     type: 'api',
+    primaryModel: 'glm-4.7',
     isBuiltin: true,
-    baseUrl: 'https://open.bigmodel.cn/api/anthropic',
-    primaryModel: 'glm-4-plus',
-    models: 'GLM 4.7, GLM 5, GLM 4.5 Air',
+    authType: 'auth_token',
+    websiteUrl: 'https://bigmodel.cn/console/overview',
+    config: {
+      baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+      timeout: 600000,
+      disableNonessential: true,
+    },
+    models: [
+      { model: 'glm-4.7', modelName: 'GLM 4.7', modelSeries: 'zhipu' },
+      { model: 'glm-5', modelName: 'GLM 5', modelSeries: 'zhipu' },
+      { model: 'glm-4.5-air', modelName: 'GLM 4.5 Air', modelSeries: 'zhipu' },
+    ],
   },
   {
     id: 'minimax',
     name: 'MiniMax',
+    vendor: 'MiniMax',
+    cloudProvider: '模型官方',
     type: 'api',
+    primaryModel: 'MiniMax-M2.5',
     isBuiltin: true,
-    baseUrl: 'https://api.minimaxi.com/anthropic',
-    primaryModel: 'MiniMax-Text-01',
-    models: 'MiniMax M2.5, MiniMax M2.5 Light...',
+    authType: 'auth_token',
+    websiteUrl: 'https://platform.minimaxi.com/docs/guides/models-intro',
+    config: {
+      baseUrl: 'https://api.minimaxi.com/anthropic',
+    },
+    models: [
+      { model: 'MiniMax-M2.5', modelName: 'MiniMax M2.5', modelSeries: 'minimax' },
+      { model: 'MiniMax-M2.5-lightning', modelName: 'MiniMax M2.5 Lightning', modelSeries: 'minimax' },
+      { model: 'MiniMax-M2.1', modelName: 'MiniMax M2.1', modelSeries: 'minimax' },
+      { model: 'MiniMax-M2.1-lightning', modelName: 'MiniMax M2.1 Lightning', modelSeries: 'minimax' },
+    ],
   },
   {
     id: 'volcengine',
     name: '火山引擎',
+    vendor: '字节跳动',
+    cloudProvider: '云服务商',
     type: 'api',
+    primaryModel: 'ark-code-latest',
     isBuiltin: true,
-    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/anthropic',
-    primaryModel: 'doubao-seed-code',
-    models: 'Ark Code Latest, Doubao Seed Code',
+    authType: 'auth_token',
+    websiteUrl: 'https://console.volcengine.com/',
+    config: {
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
+      disableNonessential: true,
+    },
+    models: [
+      { model: 'ark-code-latest', modelName: 'Ark Code Latest', modelSeries: 'volcengine' },
+      { model: 'Doubao-Seed-Code', modelName: 'Doubao Seed Code', modelSeries: 'volcengine' },
+    ],
   },
   {
     id: 'siliconflow',
-    name: '硅基流动',
+    name: '硅基流动SiliconFlow',
+    vendor: 'SiliconFlow',
+    cloudProvider: '云服务商',
     type: 'api',
+    primaryModel: 'Pro/deepseek-ai/DeepSeek-V3.2',
     isBuiltin: true,
-    baseUrl: 'https://api.siliconflow.cn/anthropic',
-    primaryModel: 'deepseek-ai/DeepSeek-V3',
-    models: 'Kimi K2.5, GLM 4.7, DeepSeek V3...',
+    authType: 'api_key',
+    websiteUrl: 'https://cloud.siliconflow.cn/me/models',
+    config: {
+      baseUrl: 'https://api.siliconflow.cn/',
+    },
+    models: [
+      { model: 'Pro/moonshotai/Kimi-K2.5', modelName: 'Kimi K2.5', modelSeries: 'siliconflow' },
+      { model: 'Pro/zai-org/GLM-4.7', modelName: 'GLM 4.7', modelSeries: 'siliconflow' },
+      { model: 'Pro/deepseek-ai/DeepSeek-V3.2', modelName: 'DeepSeek V3.2', modelSeries: 'siliconflow' },
+      { model: 'Pro/MiniMaxAI/MiniMax-M2.1', modelName: 'MiniMax M2.1', modelSeries: 'siliconflow' },
+      { model: 'stepfun-ai/Step-3.5-Flash', modelName: 'Step 3.5 Flash', modelSeries: 'siliconflow' },
+    ],
+  },
+  {
+    id: 'zenmux',
+    name: 'ZenMux',
+    vendor: 'ZenMux',
+    cloudProvider: '云服务商',
+    type: 'api',
+    primaryModel: 'zenmux/auto',
+    isBuiltin: true,
+    authType: 'auth_token',
+    websiteUrl: 'https://zenmux.ai',
+    config: {
+      baseUrl: 'https://zenmux.ai/api/anthropic',
+      disableNonessential: true,
+    },
+    models: [
+      { model: 'zenmux/auto', modelName: 'ZenMux Auto', modelSeries: 'zenmux' },
+      { model: 'google/gemini-3.1-pro-preview', modelName: 'Gemini 3.1 Pro', modelSeries: 'google' },
+      { model: 'anthropic/claude-sonnet-4.6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude' },
+      { model: 'anthropic/claude-opus-4.6', modelName: 'Claude Opus 4.6', modelSeries: 'claude' },
+      { model: 'volcengine/doubao-seed-2.0-pro', modelName: 'Doubao Seed 2.0 Pro', modelSeries: 'volcengine' },
+      { model: 'volcengine/doubao-seed-2.0-lite', modelName: 'Doubao Seed 2.0 Lite', modelSeries: 'volcengine' },
+      { model: 'minimax/minimax-m2.5', modelName: 'MiniMax M2.5', modelSeries: 'minimax' },
+      { model: 'moonshotai/kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'moonshot' },
+      { model: 'z-ai/glm-5', modelName: 'GLM 5', modelSeries: 'zhipu' },
+    ],
   },
   {
     id: 'openrouter',
     name: 'OpenRouter',
+    vendor: 'OpenRouter',
+    cloudProvider: '云服务商',
     type: 'api',
+    primaryModel: 'openai/gpt-5.2-codex',
     isBuiltin: true,
-    baseUrl: 'https://openrouter.ai/api/v1/anthropic',
-    primaryModel: 'openai/gpt-4o',
-    models: 'GPT-4o, Claude, Gemini, Llama...',
+    authType: 'auth_token_clear_api_key',
+    websiteUrl: 'https://openrouter.ai/',
+    config: {
+      baseUrl: 'https://openrouter.ai/api',
+    },
+    models: [
+      { model: 'openai/gpt-5.2-codex', modelName: 'GPT-5.2 Codex', modelSeries: 'openai' },
+      { model: 'openai/gpt-5.2-pro', modelName: 'GPT-5.2 Pro', modelSeries: 'openai' },
+      { model: 'google/gemini-3-pro-preview', modelName: 'Gemini 3 Pro', modelSeries: 'google' },
+      { model: 'google/gemini-3-flash-preview', modelName: 'Gemini 3 Flash', modelSeries: 'google' },
+    ],
   },
 ];
 
+/** 获取 Provider 的模型展示文本 */
+export function getModelsDisplay(provider: Provider, maxLength = 35): string {
+  const models = provider.models.map(m => m.modelName);
+  const display = models.join(', ');
+  return display.length > maxLength ? display.slice(0, maxLength - 3) + '...' : display;
+}
+
+/** 获取模型展示名称 */
+export function getModelDisplayName(provider: Provider, modelId: string): string {
+  const model = provider.models.find(m => m.model === modelId);
+  return model?.modelName ?? modelId;
+}
+
 export const DEFAULT_CONFIG: AppConfig = {
-  currentProviderId: 'anthropic',
+  currentProviderId: 'anthropic-sub',
   apiKeys: {},
   customProviders: [],
 };

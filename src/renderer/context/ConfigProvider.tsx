@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
 import { ConfigContext } from './ConfigContext';
-import type { AppConfig, Provider } from '../../shared/types/config';
+import type { AppConfig, Provider, ModelEntity } from '../../shared/types/config';
 import { DEFAULT_CONFIG } from '../../shared/providers';
 import { globalApiGetJson } from '../api/apiFetch';
 
@@ -13,6 +13,7 @@ function loadConfig(): AppConfig {
     const parsed = JSON.parse(raw) as Partial<AppConfig>;
     return {
       currentProviderId: parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
+      currentModelId: parsed.currentModelId,
       apiKeys: parsed.apiKeys ?? {},
       customProviders: parsed.customProviders ?? [],
     };
@@ -43,14 +44,33 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, [loadProviders]);
 
   const currentProvider = useMemo<Provider>(
-    () => allProviders.find((p) => p.id === config.currentProviderId) ?? allProviders[0] ?? { id: 'anthropic', name: 'Anthropic', type: 'subscription' },
+    () => allProviders.find((p) => p.id === config.currentProviderId) ?? allProviders[0] ?? {
+      id: 'anthropic-sub', name: 'Anthropic (订阅)', vendor: 'Anthropic', cloudProvider: '官方',
+      type: 'subscription', primaryModel: 'claude-sonnet-4-6', isBuiltin: true, config: {}, models: [],
+    },
     [config.currentProviderId, allProviders]
   );
+
+  const currentModel = useMemo<ModelEntity | null>(() => {
+    if (!currentProvider.models?.length) return null;
+    if (config.currentModelId) {
+      const found = currentProvider.models.find(m => m.model === config.currentModelId);
+      if (found) return found;
+    }
+    if (currentProvider.primaryModel) {
+      const found = currentProvider.models.find(m => m.model === currentProvider.primaryModel);
+      if (found) return found;
+    }
+    return currentProvider.models[0];
+  }, [currentProvider, config.currentModelId]);
 
   const updateConfig = useCallback(async (partial: Partial<AppConfig>) => {
     setConfig((prev) => {
       const next: AppConfig = {
         currentProviderId: partial.currentProviderId ?? prev.currentProviderId,
+        currentModelId: partial.currentProviderId && partial.currentProviderId !== prev.currentProviderId
+          ? undefined
+          : (partial.currentModelId !== undefined ? partial.currentModelId : prev.currentModelId),
         apiKeys: partial.apiKeys !== undefined ? partial.apiKeys : prev.apiKeys,
         customProviders: partial.customProviders !== undefined ? partial.customProviders : prev.customProviders,
       };
@@ -64,8 +84,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, [loadProviders]);
 
   const value = useMemo(
-    () => ({ config, currentProvider, updateConfig, refreshConfig, isLoading: false }),
-    [config, currentProvider, updateConfig, refreshConfig]
+    () => ({ config, currentProvider, currentModel, updateConfig, refreshConfig, isLoading: false }),
+    [config, currentProvider, currentModel, updateConfig, refreshConfig]
   );
 
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;

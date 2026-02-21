@@ -36,6 +36,14 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   const [sessionsFetched, setSessionsFetched] = useState(false);
   const [sidecarReady, setSidecarReady] = useState(false);
 
+  // Refs for stable access in sendMessage callback (avoid stale closure)
+  const currentProviderRef = useRef(configCtx?.currentProvider);
+  currentProviderRef.current = configCtx?.currentProvider;
+  const currentModelRef = useRef(configCtx?.currentModel);
+  currentModelRef.current = configCtx?.currentModel;
+  const apiKeysRef = useRef(configCtx?.config.apiKeys ?? {});
+  apiKeysRef.current = configCtx?.config.apiKeys ?? {};
+
   const sseRef = useRef<SseConnection | null>(null);
   const serverUrlRef = useRef<string>('');
   const isNewSessionRef = useRef(false);
@@ -231,24 +239,28 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       ? [skill.content, text].filter(Boolean).join('\n')
       : text;
 
-    // 构建 providerEnv：订阅模式不发送（undefined），api 模式发送 apiKey + 可选 baseUrl + model
-    const provider = configCtx?.currentProvider;
-    const providerEnv =
-      provider && provider.type === 'api'
-        ? {
-            baseUrl: provider.baseUrl,   // anthropic-api 无 baseUrl，第三方有
-            apiKey: configCtx.config.apiKeys[provider.id] ?? '',
-            model: provider.primaryModel,
-          }
-        : undefined;
+    // Build providerEnv from refs (stable, avoids stale closure)
+    const provider = currentProviderRef.current;
+    const keys = apiKeysRef.current;
+    const selectedModel = currentModelRef.current?.model ?? provider?.primaryModel;
+    const providerEnv = provider && provider.type === 'api'
+      ? {
+          baseUrl: provider.config?.baseUrl,
+          apiKey: keys[provider.id] ?? '',
+          authType: provider.authType,
+          timeout: provider.config?.timeout,
+          disableNonessential: provider.config?.disableNonessential,
+        }
+      : undefined;
 
     try {
-      await apiPostJson(url, '/chat/send', { message: backendMessage, agentDir, providerEnv, permissionMode });
+      await apiPostJson(url, '/chat/send', { message: backendMessage, agentDir, providerEnv, model: selectedModel, permissionMode });
     } catch {
       setIsLoading(false);
       setSessionState('error');
     }
-  }, [agentDir, configCtx]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- currentProviderRef/currentModelRef/apiKeysRef are refs (stable)
+  }, [agentDir]);
 
   const stopResponse = useCallback(async () => {
     const url = serverUrlRef.current;

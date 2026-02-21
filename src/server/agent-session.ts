@@ -5,8 +5,66 @@ import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import type { SessionMetadata, SessionMessage } from '../shared/types/session';
-import type { ProviderEnv } from '../shared/types/config';
+import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
+
+function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+
+  // 1. ANTHROPIC_BASE_URL
+  if (providerEnv?.baseUrl) {
+    env.ANTHROPIC_BASE_URL = providerEnv.baseUrl;
+    console.log(`[env] ANTHROPIC_BASE_URL set to: ${providerEnv.baseUrl}`);
+  } else {
+    delete env.ANTHROPIC_BASE_URL;
+  }
+
+  // 2. 认证 — 按 authType 四路分支
+  if (providerEnv?.apiKey) {
+    const authType: ProviderAuthType = providerEnv.authType ?? 'both';
+    switch (authType) {
+      case 'auth_token':
+        env.ANTHROPIC_AUTH_TOKEN = providerEnv.apiKey;
+        delete env.ANTHROPIC_API_KEY;
+        break;
+      case 'api_key':
+        delete env.ANTHROPIC_AUTH_TOKEN;
+        env.ANTHROPIC_API_KEY = providerEnv.apiKey;
+        break;
+      case 'auth_token_clear_api_key':
+        env.ANTHROPIC_AUTH_TOKEN = providerEnv.apiKey;
+        env.ANTHROPIC_API_KEY = '';
+        break;
+      case 'both':
+      default:
+        env.ANTHROPIC_AUTH_TOKEN = providerEnv.apiKey;
+        env.ANTHROPIC_API_KEY = providerEnv.apiKey;
+        break;
+    }
+  } else {
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.ANTHROPIC_API_KEY;
+  }
+
+  // 3. 不通过环境变量传 model（改用 options.model）
+  delete env.ANTHROPIC_MODEL;
+
+  // 4. API 超时设置
+  if (providerEnv?.timeout) {
+    env.API_TIMEOUT_MS = String(providerEnv.timeout);
+  } else {
+    delete env.API_TIMEOUT_MS;
+  }
+
+  // 5. 禁用非必要流量（某些第三方 provider 不支持 SDK 的附加请求）
+  if (providerEnv?.disableNonessential) {
+    env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+  } else {
+    delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  }
+
+  return env;
+}
 
 interface StoredMessage {
   id: string;
@@ -26,7 +84,7 @@ class AgentSession {
   private currentSessionId: string | null = null;
   private currentProviderEnv: ProviderEnv | undefined = undefined;
 
-  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, permissionMode?: PermissionMode): Promise<void> {
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode): Promise<void> {
     if (this.isRunning) return;
 
     // 如果没有当前 session，创建一个新的
@@ -53,39 +111,14 @@ class AgentSession {
       createdAt: Date.now(),
     });
 
-    // 检测 provider 切换
+    // 检测 provider 切换（仅比较 baseUrl 和 apiKey，model 切换不算 provider 切换）
     const providerChanged =
       (providerEnv?.baseUrl ?? '') !== (this.currentProviderEnv?.baseUrl ?? '') ||
-      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '') ||
-      (providerEnv?.model ?? '') !== (this.currentProviderEnv?.model ?? '');
+      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '');
     if (providerChanged) {
-      // 三方→官方：不 resume（thinking block 签名不兼容）
-      // 其他切换：保留 sdkSessionId，允许 resume
-      const switchingFromThirdPartyToOfficial =
-        !!this.currentProviderEnv?.baseUrl && !providerEnv?.baseUrl;
-      if (switchingFromThirdPartyToOfficial) {
-        this.sdkSessionId = null;
-      }
+      // 任何 Provider 切换都不 resume（thinking block 签名不兼容）
+      this.sdkSessionId = null;
       this.currentProviderEnv = providerEnv;
-    }
-
-    // 设置环境变量给 SDK 子进程继承
-    if (providerEnv?.baseUrl) {
-      process.env.ANTHROPIC_BASE_URL = providerEnv.baseUrl;
-    } else {
-      delete process.env.ANTHROPIC_BASE_URL;
-    }
-    if (providerEnv?.apiKey) {
-      process.env.ANTHROPIC_AUTH_TOKEN = providerEnv.apiKey;
-      process.env.ANTHROPIC_API_KEY = providerEnv.apiKey;
-    } else {
-      delete process.env.ANTHROPIC_AUTH_TOKEN;
-      delete process.env.ANTHROPIC_API_KEY;
-    }
-    if (providerEnv?.model) {
-      process.env.ANTHROPIC_MODEL = providerEnv.model;
-    } else {
-      delete process.env.ANTHROPIC_MODEL;
     }
 
     this.isRunning = true;
@@ -167,6 +200,10 @@ class AgentSession {
           cwd: agentDir,
           systemPrompt: `当前工作目录为：${agentDir}\n所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。`,
           permissionMode: resolvedPermissionMode,
+          ...(resolvedPermissionMode === 'bypassPermissions'
+            ? { allowDangerouslySkipPermissions: true } : {}),
+          model,
+          env: buildClaudeSessionEnv(providerEnv),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           mcpServers: mcpServers as any,
           includePartialMessages: true,

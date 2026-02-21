@@ -5,6 +5,7 @@ import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
 import type { PermissionMode } from '../shared/types/permission';
+import type { ProviderEnv, Provider } from '../shared/types/config';
 import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { dirname } from 'path';
 
@@ -34,12 +35,12 @@ const server = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; providerEnv?: { baseUrl?: string; apiKey?: string }; permissionMode?: string };
+      const body = await req.json() as { message: string; agentDir: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string };
       const VALID_MODES = ['default', 'acceptEdits', 'bypassPermissions'] as const;
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
         : 'acceptEdits';
-      agentSession.sendMessage(body.message, body.agentDir, body.providerEnv, mode).catch(console.error);
+      agentSession.sendMessage(body.message, body.agentDir, body.providerEnv, body.model, mode).catch(console.error);
       return Response.json({ ok: true });
     }
 
@@ -142,14 +143,15 @@ const server = Bun.serve({
     }
 
     if (req.method === 'POST' && url.pathname === '/api/providers') {
-      const body = await req.json() as { name: string; type: 'subscription' | 'api'; baseUrl?: string; primaryModel?: string; models?: string };
-      const id = ConfigStore.addCustomProvider(body);
+      const body = await req.json() as Omit<Provider, 'id'> & { id?: string };
+      const { id: bodyId, ...rest } = body;
+      const id = ConfigStore.addCustomProvider(rest);
       return Response.json({ ok: true, id });
     }
 
     if (req.method === 'PUT' && url.pathname.startsWith('/api/providers/')) {
       const id = decodeURIComponent(url.pathname.slice('/api/providers/'.length));
-      const body = await req.json() as Partial<{ name: string; type: 'subscription' | 'api'; baseUrl?: string; primaryModel?: string; models?: string }>;
+      const body = await req.json() as Partial<Provider>;
       ConfigStore.updateCustomProvider(id, body);
       return Response.json({ ok: true });
     }
@@ -236,6 +238,48 @@ const server = Bun.serve({
       const id = url.pathname.slice('/api/mcp/'.length);
       MCPConfigStore.remove(id);
       return Response.json({ ok: true });
+    }
+
+    // Provider API Key 验证（服务端代理，避免 CORS）
+    if (req.method === 'POST' && url.pathname === '/api/verify-provider-key') {
+      const body = await req.json() as {
+        baseUrl?: string;
+        apiKey: string;
+        model?: string;
+        authType?: string;
+      };
+      const testUrl = body.baseUrl
+        ? `${body.baseUrl}/v1/messages`
+        : 'https://api.anthropic.com/v1/messages';
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+      };
+      const authType = body.authType ?? 'both';
+      if (authType === 'api_key') {
+        headers['x-api-key'] = body.apiKey;
+      } else if (authType === 'auth_token' || authType === 'auth_token_clear_api_key') {
+        headers['Authorization'] = `Bearer ${body.apiKey}`;
+      } else {
+        // both: 两个都设
+        headers['x-api-key'] = body.apiKey;
+        headers['Authorization'] = `Bearer ${body.apiKey}`;
+      }
+      try {
+        const res = await fetch(testUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: body.model ?? 'claude-haiku-4-5-20251001',
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        });
+        const ok = res.status !== 401 && res.status !== 403;
+        return Response.json({ result: ok ? 'ok' : 'fail', status: res.status });
+      } catch {
+        return Response.json({ result: 'fail', status: 0 });
+      }
     }
 
     // Skills 路由
