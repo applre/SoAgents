@@ -1,6 +1,6 @@
 # Claude Agent SDK: canUseTool 回调实现指南
 
-> 本文档记录了在 MyAgents 中实现人工干预工具权限（Human-in-the-Loop）时的关键发现和最佳实践。
+> 本文档记录了在 SoAgents 中实现人工干预工具权限（Human-in-the-Loop）时的关键发现和最佳实践。
 
 ## 核心概念
 

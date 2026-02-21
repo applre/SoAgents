@@ -2,7 +2,7 @@
 
 ## 概述
 
-MyAgents 将 Bun 运行时打包到应用内，实现零外部依赖分发。用户无需安装 Bun 或 Node.js 即可运行应用，包括 MCP（Model Context Protocol）功能。
+SoAgents 将 Bun 运行时打包到应用内，实现零外部依赖分发。用户无需安装 Bun 或 Node.js 即可运行应用，包括 MCP（Model Context Protocol）功能。
 
 ## 二进制获取方式
 
@@ -25,7 +25,7 @@ Bun 二进制通过 `setup.sh` 从 GitHub Releases 下载：
 ## 应用结构
 
 ```
-MyAgents.app/
+SoAgents.app/
 └── Contents/
     ├── MacOS/
     │   ├── app              # Rust 主程序
@@ -181,7 +181,7 @@ const bundledBunPaths = [
 **开发模式**：设置 `DEBUG=1` 或在设置中启用 `showDevTools`
 
 ```bash
-DEBUG=1 open MyAgents.app
+DEBUG=1 open SoAgents.app
 ```
 
 **生产诊断日志**：Rust 层 `[bun-out]` 和 `[bun-err]` 前缀的日志会捕获 Bun 进程输出。

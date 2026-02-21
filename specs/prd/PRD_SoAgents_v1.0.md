@@ -1,4 +1,4 @@
-# MyAgents 产品需求文档 (PRD)
+# SoAgents 产品需求文档 (PRD)
 
 > **文档版本**: v1.0
 > **更新日期**: 2026-01-31
@@ -28,15 +28,15 @@
 
 **让每个人都能拥有一个真正能干活的 AI Agent**
 
-2026 年是智能丰裕的元年，AI 已经让开发者成为 10x-100x 生产力的人。MyAgents 的使命是将这种力量民主化——无论你是学生、内容创作者、教育工作者、产品经理，还是任何「想要做些什么的人」，都能通过直观的图形界面，让 AI Agent 成为你的思维放大器。
+2026 年是智能丰裕的元年，AI 已经让开发者成为 10x-100x 生产力的人。SoAgents 的使命是将这种力量民主化——无论你是学生、内容创作者、教育工作者、产品经理，还是任何「想要做些什么的人」，都能通过直观的图形界面，让 AI Agent 成为你的思维放大器。
 
 ### 1.2 产品定位
 
-MyAgents 是基于 Claude Agent SDK 的**开源桌面端通用 Agent 产品**。
+SoAgents 是基于 Claude Agent SDK 的**开源桌面端通用 Agent 产品**。
 
 **核心差异化**：
 
-| 维度 | MyAgents | Claude Code CLI | 其他 Agent 产品 |
+| 维度 | SoAgents | Claude Code CLI | 其他 Agent 产品 |
 |------|----------|-----------------|-----------------|
 | 使用门槛 | GUI 零门槛 | 需要命令行 | 多需要编程 |
 | 并行能力 | 多 Tab 真并行 | 单会话 | 单会话 |
@@ -48,9 +48,9 @@ MyAgents 是基于 Claude Agent SDK 的**开源桌面端通用 Agent 产品**。
 
 | 项目 | 内容 |
 |------|------|
-| 产品名称 | MyAgents |
+| 产品名称 | SoAgents |
 | 官网 | https://myagents.io |
-| 开源仓库 | https://github.com/hAcKlyc/MyAgents |
+| 开源仓库 | https://github.com/hAcKlyc/SoAgents |
 | 开源协议 | Apache License 2.0 |
 | 当前版本 | v0.1.4 |
 | 支持平台 | macOS 13.0+ (Windows 即将支持) |
@@ -93,7 +93,7 @@ MyAgents 是基于 Claude Agent SDK 的**开源桌面端通用 Agent 产品**。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      MyAgents 功能架构                        │
+│                      SoAgents 功能架构                        │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
 │  │   智能对话    │  │  多项目管理   │  │   工具扩展    │       │
@@ -157,7 +157,7 @@ MyAgents 是基于 Claude Agent SDK 的**开源桌面端通用 Agent 产品**。
 
 **为什么需要独立进程？**
 
-| 场景 | 单进程（传统方案） | 多进程（MyAgents） |
+| 场景 | 单进程（传统方案） | 多进程（SoAgents） |
 |------|-------------------|-------------------|
 | Tab 1 执行长任务 | Tab 2 必须等待 | Tab 2 正常使用 |
 | Tab 1 崩溃 | 整个应用崩溃 | 仅 Tab 1 受影响 |
@@ -354,7 +354,7 @@ React 渲染更新
 
 ### 6.1 竞品对比矩阵
 
-| 维度 | MyAgents | Claude Code CLI | Cursor | GitHub Copilot | ChatGPT Desktop |
+| 维度 | SoAgents | Claude Code CLI | Cursor | GitHub Copilot | ChatGPT Desktop |
 |------|----------|-----------------|--------|----------------|-----------------|
 | **产品形态** | 桌面 GUI | 命令行 | IDE 插件 | IDE 插件 | 桌面 GUI |
 | **使用门槛** | 零门槛 | 需 CLI 经验 | 低 | 低 | 零门槛 |
@@ -573,8 +573,8 @@ React 渲染更新
 | 渠道 | 链接 |
 |------|------|
 | 官网 | https://myagents.io |
-| GitHub | https://github.com/hAcKlyc/MyAgents |
-| Issues | https://github.com/hAcKlyc/MyAgents/issues |
+| GitHub | https://github.com/hAcKlyc/SoAgents |
+| Issues | https://github.com/hAcKlyc/SoAgents/issues |
 
 ---
 

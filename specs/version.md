@@ -1,7 +1,7 @@
 ---
 title: Version History
 description: |
-  MyAgents 版本发布记录。
+  SoAgents 版本发布记录。
 
   作用：记录每个版本的核心功能变化、Bug 修复和技术改进，便于追溯和用户了解更新内容。
 
@@ -201,7 +201,7 @@ description: |
 
 ### 首个公开版本
 
-MyAgents 桌面端 Claude Agent 客户端首个完整版本发布。
+SoAgents 桌面端 Claude Agent 客户端首个完整版本发布。
 
 ### 1. 核心架构
 - 多 Tab 多 Session 架构（每个 Tab 独立 Sidecar 进程）

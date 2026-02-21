@@ -140,15 +140,15 @@ npm run tauri build -- --target universal-apple-darwin
 ```bash
 # 验证签名
 codesign --verify --deep --strict --verbose=2 \
-  src-tauri/target/universal-apple-darwin/release/bundle/macos/MyAgents.app
+  src-tauri/target/universal-apple-darwin/release/bundle/macos/SoAgents.app
 
 # 验证公证
 spctl --assess --type exec --verbose=2 \
-  src-tauri/target/universal-apple-darwin/release/bundle/macos/MyAgents.app
+  src-tauri/target/universal-apple-darwin/release/bundle/macos/SoAgents.app
 
 # 查看公证状态
 xcrun stapler validate \
-  src-tauri/target/universal-apple-darwin/release/bundle/macos/MyAgents.app
+  src-tauri/target/universal-apple-darwin/release/bundle/macos/SoAgents.app
 ```
 
 ---

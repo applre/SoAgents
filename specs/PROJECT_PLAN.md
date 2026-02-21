@@ -4,7 +4,7 @@
 > **编写日期**: 2026-02-19
 > **项目名称**: SoAgents
 > **项目性质**: 基于 Claude Agent SDK 的开源桌面端 AI Agent 客户端
-> **学习参考**: [MyAgents](https://github.com/hAcKlyc/MyAgents) (Apache 2.0)
+> **学习参考**: [SoAgents](https://github.com/hAcKlyc/SoAgents) (Apache 2.0)
 
 ---
 
@@ -31,7 +31,7 @@
 
 2026 年是 AI Agent 爆发的元年。Claude Agent SDK 的开源为开发者提供了构建强大 AI Agent 的基础能力，但目前大多数 Agent 工具仍以命令行为主（如 Claude Code CLI），对非技术用户存在较高的使用门槛。
 
-SoAgents 项目旨在通过学习和重建开源项目 MyAgents，掌握桌面端 AI Agent 客户端的完整技术栈，并在此基础上探索创新方向。
+SoAgents 项目旨在通过学习和重建开源项目 SoAgents，掌握桌面端 AI Agent 客户端的完整技术栈，并在此基础上探索创新方向。
 
 ### 1.2 项目定位
 
@@ -364,8 +364,8 @@ Phase 6 ──── Phase 7 ──── Phase 8 ──── Phase 9 ───
 | v0.0.1 | — | Phase 1 完成，基础脚手架 |
 | v0.0.5 | — | Phase 2-8 完成，核心对话体验 |
 | **v0.0.6** | **2026-02-18** | **Phase 9-10 完成，当前最新版本** |
-| v0.1.0 | 2026-01-24 (参考) | MyAgents 首个公开版本 |
-| v0.1.4 | 2026-01-29 (参考) | MyAgents 最新稳定版本 |
+| v0.1.0 | 2026-01-24 (参考) | SoAgents 首个公开版本 |
+| v0.1.4 | 2026-01-29 (参考) | SoAgents 最新稳定版本 |
 
 ---
 
@@ -624,7 +624,7 @@ soagents/
 | 项目规范 | `CLAUDE.md` | React 稳定性规则、命名约定 |
 | 构建指南 | `BOOTSTRAP.md` | Phase 1-10 详细步骤 |
 | 过程记录 | `PROCESS.md` | 问题排查与解决方案 |
-| 产品需求 | `specs/prd/PRD_MyAgents_v1.0.md` | 完整产品需求文档 |
+| 产品需求 | `specs/prd/PRD_SoAgents_v1.0.md` | 完整产品需求文档 |
 | 技术架构 | `specs/tech_docs/architecture.md` | 多实例 Sidecar 架构 |
 | 设计指南 | `specs/guides/design_guide.md` | UI/UX 设计规范 |
 | 版本历史 | `specs/version.md` | 版本发布记录 |

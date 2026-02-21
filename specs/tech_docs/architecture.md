@@ -1,8 +1,8 @@
-# MyAgents 技术架构
+# SoAgents 技术架构
 
 ## 概述
 
-MyAgents 是基于 Tauri v2 的桌面应用，提供 Claude Agent SDK 的图形界面。
+SoAgents 是基于 Tauri v2 的桌面应用，提供 Claude Agent SDK 的图形界面。
 
 ## 技术栈
 

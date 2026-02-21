@@ -1,12 +1,12 @@
-# MyAgents 构建与发布指南
+# SoAgents 构建与发布指南
 
-本文档描述 MyAgents 的构建流程、发布流程以及分发渠道的完整信息。
+本文档描述 SoAgents 的构建流程、发布流程以及分发渠道的完整信息。
 
 ---
 
 ## 概览
 
-MyAgents 目前支持 **macOS** 平台，包括 Apple Silicon (ARM64) 和 Intel (x86_64) 两种架构。
+SoAgents 目前支持 **macOS** 平台，包括 Apple Silicon (ARM64) 和 Intel (x86_64) 两种架构。
 
 ### 分发渠道
 
@@ -27,12 +27,12 @@ myagents-releases/
 │   └── latest.json            # 官网下载 API
 └── releases/
     └── v{VERSION}/
-        ├── MyAgents_{VERSION}_aarch64.dmg         # ARM DMG
-        ├── MyAgents_{VERSION}_x64.dmg             # Intel DMG
-        ├── MyAgents_{VERSION}_aarch64.app.tar.gz  # ARM 更新包
-        ├── MyAgents_{VERSION}_aarch64.app.tar.gz.sig  # ARM 签名
-        ├── MyAgents_{VERSION}_x64.app.tar.gz      # Intel 更新包
-        └── MyAgents_{VERSION}_x64.app.tar.gz.sig  # Intel 签名
+        ├── SoAgents_{VERSION}_aarch64.dmg         # ARM DMG
+        ├── SoAgents_{VERSION}_x64.dmg             # Intel DMG
+        ├── SoAgents_{VERSION}_aarch64.app.tar.gz  # ARM 更新包
+        ├── SoAgents_{VERSION}_aarch64.app.tar.gz.sig  # ARM 签名
+        ├── SoAgents_{VERSION}_x64.app.tar.gz      # Intel 更新包
+        └── SoAgents_{VERSION}_x64.app.tar.gz.sig  # Intel 签名
 ```
 
 ---
@@ -137,14 +137,14 @@ myagents-releases/
   │  物料清单 - v0.1.0                                      │
   ├─────────────────────────────────────────────────────────┤
   │  Apple Silicon (ARM64)                                  │
-  │    ✓ DMG:    MyAgents_0.1.0_aarch64.dmg              │
-  │    ✓ tar.gz: MyAgents.app.tar.gz                      │
-  │    ✓ 签名:   MyAgents.app.tar.gz.sig                  │
+  │    ✓ DMG:    SoAgents_0.1.0_aarch64.dmg              │
+  │    ✓ tar.gz: SoAgents.app.tar.gz                      │
+  │    ✓ 签名:   SoAgents.app.tar.gz.sig                  │
   │                                                         │
   │  Intel (x86_64)                                         │
-  │    ✓ DMG:    MyAgents_0.1.0_x64.dmg                   │
-  │    ✓ tar.gz: MyAgents.app.tar.gz                      │
-  │    ✓ 签名:   MyAgents.app.tar.gz.sig                  │
+  │    ✓ DMG:    SoAgents_0.1.0_x64.dmg                   │
+  │    ✓ tar.gz: SoAgents.app.tar.gz                      │
+  │    ✓ 签名:   SoAgents.app.tar.gz.sig                  │
   └─────────────────────────────────────────────────────────┘
 ```
 
@@ -178,15 +178,15 @@ myagents-releases/
 {
   "version": "0.1.0",
   "pub_date": "2026-01-24T10:00:00Z",
-  "release_notes": "MyAgents v0.1.0",
+  "release_notes": "SoAgents v0.1.0",
   "downloads": {
     "mac_arm64": {
       "name": "Apple Silicon",
-      "url": "https://download.myagents.io/releases/v0.1.0/MyAgents_0.1.0_aarch64.dmg"
+      "url": "https://download.myagents.io/releases/v0.1.0/SoAgents_0.1.0_aarch64.dmg"
     },
     "mac_intel": {
       "name": "Intel Mac",
-      "url": "https://download.myagents.io/releases/v0.1.0/MyAgents_0.1.0_x64.dmg"
+      "url": "https://download.myagents.io/releases/v0.1.0/SoAgents_0.1.0_x64.dmg"
     }
   }
 }
@@ -209,12 +209,12 @@ const downloadUrl = isMacARM
 ```json
 {
   "version": "0.1.0",
-  "notes": "MyAgents v0.1.0",
+  "notes": "SoAgents v0.1.0",
   "pub_date": "2026-01-24T10:00:00Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6...",
-      "url": "https://download.myagents.io/releases/v0.1.0/MyAgents.app.tar.gz"
+      "url": "https://download.myagents.io/releases/v0.1.0/SoAgents.app.tar.gz"
     }
   }
 }

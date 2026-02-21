@@ -1,4 +1,4 @@
-# MyAgents Design Guide
+# SoAgents Design Guide
 
 > **Version**: 1.3.0
 > **Last Updated**: 2026-01-22
@@ -9,7 +9,7 @@
 
 ## 设计理念
 
-MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设计风格，营造舒适、专业的使用体验。
+SoAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设计风格，营造舒适、专业的使用体验。
 
 ### 核心原则
 

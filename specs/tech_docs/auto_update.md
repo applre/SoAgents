@@ -1,4 +1,4 @@
-# MyAgents 自动更新系统
+# SoAgents 自动更新系统
 
 ## 设计理念
 
@@ -143,10 +143,10 @@ myagents-releases/
 │   └── latest.json            # 网站下载页 API
 └── releases/
     └── v{VERSION}/
-        ├── MyAgents_{VERSION}_aarch64.app.tar.gz  # Updater 用
-        ├── MyAgents_{VERSION}_x64.app.tar.gz      # Updater 用
-        ├── MyAgents_{VERSION}_aarch64.dmg         # 网站下载用
-        └── MyAgents_{VERSION}_x64.dmg             # 网站下载用
+        ├── SoAgents_{VERSION}_aarch64.app.tar.gz  # Updater 用
+        ├── SoAgents_{VERSION}_x64.app.tar.gz      # Updater 用
+        ├── SoAgents_{VERSION}_aarch64.dmg         # 网站下载用
+        └── SoAgents_{VERSION}_x64.dmg             # 网站下载用
 ```
 
 > 目录由 GitHub Actions 自动创建，无需手动操作。
@@ -211,12 +211,12 @@ curl https://download.myagents.io/update/darwin-aarch64.json
 ```json
 {
   "version": "0.2.0",
-  "notes": "MyAgents v0.2.0",
+  "notes": "SoAgents v0.2.0",
   "pub_date": "2026-01-23T14:00:00Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "...",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_aarch64.app.tar.gz"
+      "url": "https://download.myagents.io/releases/v0.2.0/SoAgents_0.2.0_aarch64.app.tar.gz"
     }
   }
 }
@@ -258,12 +258,12 @@ curl https://download.myagents.io/update/darwin-aarch64.json
 ```json
 {
   "version": "0.2.0",
-  "notes": "MyAgents v0.2.0",
+  "notes": "SoAgents v0.2.0",
   "pub_date": "2026-01-23T14:00:00Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "base64编码的签名",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_aarch64.app.tar.gz"
+      "url": "https://download.myagents.io/releases/v0.2.0/SoAgents_0.2.0_aarch64.app.tar.gz"
     }
   }
 }
@@ -277,15 +277,15 @@ curl https://download.myagents.io/update/darwin-aarch64.json
 {
   "version": "0.2.0",
   "pub_date": "2026-01-23T14:00:00Z",
-  "release_notes": "MyAgents v0.2.0",
+  "release_notes": "SoAgents v0.2.0",
   "downloads": {
     "mac_arm64": {
       "name": "Apple Silicon",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_aarch64.dmg"
+      "url": "https://download.myagents.io/releases/v0.2.0/SoAgents_0.2.0_aarch64.dmg"
     },
     "mac_intel": {
       "name": "Intel Mac",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_x64.dmg"
+      "url": "https://download.myagents.io/releases/v0.2.0/SoAgents_0.2.0_x64.dmg"
     }
   }
 }
