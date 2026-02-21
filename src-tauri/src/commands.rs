@@ -53,6 +53,18 @@ pub fn cmd_stop_all_sidecars(state: tauri::State<'_, SidecarState>) -> Result<()
 }
 
 #[tauri::command]
+pub fn cmd_get_default_workspace() -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "Cannot determine HOME directory".to_string())?;
+    let workspace = PathBuf::from(&home).join(".soagents").join("workspace");
+    std::fs::create_dir_all(&workspace)
+        .map_err(|e| format!("Failed to create default workspace: {}", e))?;
+    workspace
+        .to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Invalid path encoding".to_string())
+}
+
+#[tauri::command]
 pub fn cmd_open_in_finder(path: String) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(&path)

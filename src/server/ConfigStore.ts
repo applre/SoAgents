@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import type { AppConfig, Provider } from './types/config';
-import { DEFAULT_CONFIG, PROVIDERS } from './types/config';
+import type { AppConfig, Provider } from '../shared/types/config';
+import { DEFAULT_CONFIG, PROVIDERS } from '../shared/providers';
 
 const DATA_DIR = join(homedir(), '.soagents');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');

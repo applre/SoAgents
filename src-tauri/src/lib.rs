@@ -28,6 +28,7 @@ pub fn run() {
             commands::cmd_get_tab_server_url,
             commands::cmd_start_global_sidecar,
             commands::cmd_stop_all_sidecars,
+            commands::cmd_get_default_workspace,
             commands::cmd_open_in_finder,
             proxy::cmd_proxy_http,
             sse_proxy::cmd_start_sse_proxy,
@@ -60,6 +61,9 @@ pub fn run() {
             }
 
             log::info!("[App] SoAgents started successfully");
+
+            sidecar::cleanup_stale_sidecars();
+
             Ok(())
         })
         .on_window_event(move |_window, event| {

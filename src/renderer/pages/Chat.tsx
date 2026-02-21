@@ -6,13 +6,15 @@ import ChatInput from '../components/ChatInput';
 import PermissionPrompt from '../components/PermissionPrompt';
 import AskUserQuestionPrompt from '../components/AskUserQuestionPrompt';
 import type { Tab } from '../types/tab';
-import type { SessionMetadata } from '../types/session';
+import type { SessionMetadata } from '../../shared/types/session';
 
 interface Props {
   tab: Tab;
   onSessionsChange?: (tabId: string, sessions: SessionMetadata[]) => void;
   onActiveSessionChange?: (sessionId: string | null) => void;
   onExposeReset?: (resetFn: () => Promise<void>) => void;
+  onExposeDeleteSession?: (fn: (sessionId: string) => Promise<void>) => void;
+  onExposeUpdateTitle?: (fn: (sessionId: string, title: string) => Promise<void>) => void;
   injectText?: string | null;
   onInjectConsumed?: () => void;
 }
@@ -23,12 +25,14 @@ interface ChatContentProps {
   onSessionsChange?: (tabId: string, sessions: SessionMetadata[]) => void;
   onActiveSessionChange?: (sessionId: string | null) => void;
   onExposeReset?: (resetFn: () => Promise<void>) => void;
+  onExposeDeleteSession?: (fn: (sessionId: string) => Promise<void>) => void;
+  onExposeUpdateTitle?: (fn: (sessionId: string, title: string) => Promise<void>) => void;
   injectText?: string | null;
   onInjectConsumed?: () => void;
 }
 
-function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, injectText, onInjectConsumed }: ChatContentProps) {
-  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady } = useTabState();
+function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed }: ChatContentProps) {
+  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady } = useTabState();
 
   // sidecar 就绪后拉取一次，确保左侧栏有数据
   useEffect(() => {
@@ -52,6 +56,15 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
     onExposeReset?.(resetSession);
   }, [resetSession, onExposeReset]);
 
+  // 暴露 deleteSession / updateSessionTitle 给 App
+  useEffect(() => {
+    onExposeDeleteSession?.(deleteSession);
+  }, [deleteSession, onExposeDeleteSession]);
+
+  useEffect(() => {
+    onExposeUpdateTitle?.(updateSessionTitle);
+  }, [updateSessionTitle, onExposeUpdateTitle]);
+
   // 当 App 传入 sessionId 变化时，加载对应 session
   useEffect(() => {
     if (sessionId && sessionId !== currentSessionId) {
@@ -68,6 +81,13 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
             <div className="mb-6 text-center">
               <h1 className="text-[26px] font-semibold text-[var(--ink)]">👋 有什么可以帮你的？</h1>
             </div>
+            {pendingQuestion && (
+              <AskUserQuestionPrompt
+                questions={pendingQuestion.questions}
+                toolUseId={pendingQuestion.toolUseId}
+                onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
+              />
+            )}
             <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} />
           </div>
         </div>
@@ -79,14 +99,6 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
             onRespond={(allow) => respondPermission(pendingPermission.toolUseId, allow)}
           />
         )}
-        {pendingQuestion && (
-          <AskUserQuestionPrompt
-            question={pendingQuestion.question}
-            options={pendingQuestion.options}
-            toolUseId={pendingQuestion.toolUseId}
-            onRespond={(response) => respondQuestion(pendingQuestion.toolUseId, response)}
-          />
-        )}
       </div>
     );
   }
@@ -94,6 +106,13 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
   return (
     <div className="flex h-full flex-col">
       <MessageList messages={messages} />
+      {pendingQuestion && (
+        <AskUserQuestionPrompt
+          questions={pendingQuestion.questions}
+          toolUseId={pendingQuestion.toolUseId}
+          onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
+        />
+      )}
       <ChatInput
         onSend={sendMessage}
         onStop={stopResponse}
@@ -110,19 +129,11 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
           onRespond={(allow) => respondPermission(pendingPermission.toolUseId, allow)}
         />
       )}
-      {pendingQuestion && (
-        <AskUserQuestionPrompt
-          question={pendingQuestion.question}
-          options={pendingQuestion.options}
-          toolUseId={pendingQuestion.toolUseId}
-          onRespond={(response) => respondQuestion(pendingQuestion.toolUseId, response)}
-        />
-      )}
     </div>
   );
 }
 
-export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onExposeReset, injectText, onInjectConsumed }: Props) {
+export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed }: Props) {
   if (!tab.agentDir) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -139,6 +150,8 @@ export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onE
         onSessionsChange={onSessionsChange}
         onActiveSessionChange={onActiveSessionChange}
         onExposeReset={onExposeReset}
+        onExposeDeleteSession={onExposeDeleteSession}
+        onExposeUpdateTitle={onExposeUpdateTitle}
         injectText={injectText}
         onInjectConsumed={onInjectConsumed}
       />

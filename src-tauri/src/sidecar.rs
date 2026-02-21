@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
 
 pub const GLOBAL_SIDECAR_ID: &str = "__global__";
-const BASE_PORT: u16 = 31415;
+const BASE_PORT: u16 = 32415;
+const SIDECAR_MARKER: &str = "--soagents-sidecar";
 
 pub struct SidecarInstance {
     pub process: Child,
@@ -17,6 +19,106 @@ pub struct SidecarManager {
     instances: HashMap<String, SidecarInstance>,
     port_counter: AtomicU16,
 }
+
+#[cfg(unix)]
+pub fn cleanup_stale_sidecars() {
+    log::info!("[sidecar] Cleaning up stale sidecar processes...");
+
+    let output = match Command::new("pgrep").arg("-f").arg("soagents-sidecar").output() {
+        Ok(o) => o,
+        Err(e) => {
+            log::debug!("[sidecar] pgrep failed: {}", e);
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        log::info!("[sidecar] No stale sidecar processes found");
+        return;
+    }
+
+    let pids_str = String::from_utf8_lossy(&output.stdout);
+    let pids: Vec<i32> = pids_str
+        .lines()
+        .filter_map(|line| line.trim().parse::<i32>().ok())
+        .collect();
+
+    if pids.is_empty() {
+        log::info!("[sidecar] No stale sidecar processes found");
+        return;
+    }
+
+    let current_pid = std::process::id() as i32;
+
+    for pid in &pids {
+        if *pid == current_pid {
+            continue;
+        }
+        log::info!("[sidecar] Sending SIGTERM to stale sidecar pid {}", pid);
+        unsafe {
+            libc::kill(*pid, libc::SIGTERM);
+        }
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    for pid in &pids {
+        if *pid == current_pid {
+            continue;
+        }
+        log::info!("[sidecar] Sending SIGKILL to stale sidecar pid {}", pid);
+        unsafe {
+            libc::kill(*pid, libc::SIGKILL);
+        }
+    }
+
+    log::info!("[sidecar] Stale sidecar cleanup complete");
+}
+
+#[cfg(not(unix))]
+pub fn cleanup_stale_sidecars() {
+    log::debug!("[sidecar] Stale sidecar cleanup not supported on this platform");
+}
+
+#[cfg(unix)]
+pub fn ensure_high_file_descriptor_limit() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        unsafe {
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) == 0 {
+                log::info!(
+                    "[sidecar] Current fd limit: soft={}, hard={}",
+                    rlim.rlim_cur,
+                    rlim.rlim_max
+                );
+                let target: u64 = 65536;
+                if (rlim.rlim_cur as u64) < target {
+                    let new_soft = if (rlim.rlim_max as u64) < target {
+                        rlim.rlim_max
+                    } else {
+                        target as libc::rlim_t
+                    };
+                    rlim.rlim_cur = new_soft;
+                    if libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) == 0 {
+                        log::info!("[sidecar] Raised fd limit to {}", new_soft);
+                    } else {
+                        log::warn!("[sidecar] Failed to raise fd limit");
+                    }
+                }
+            } else {
+                log::warn!("[sidecar] Failed to get fd limit");
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+pub fn ensure_high_file_descriptor_limit() {}
 
 impl SidecarManager {
     pub fn new() -> Self {
@@ -31,6 +133,8 @@ impl SidecarManager {
         tab_id: String,
         agent_dir: Option<PathBuf>,
     ) -> Result<u16, String> {
+        ensure_high_file_descriptor_limit();
+
         // 如果已存在且进程仍在运行，直接返回现有端口（幂等）
         if let Some(instance) = self.instances.get_mut(&tab_id) {
             if let Ok(None) = instance.process.try_wait() {
@@ -71,13 +175,36 @@ impl SidecarManager {
         );
 
         // 启动 bun 进程
-        let child = Command::new(&bun_path)
+        let mut child = Command::new(&bun_path)
             .arg("run")
             .arg("src/server/index.ts")
+            .arg(SIDECAR_MARKER)
             .current_dir(&cwd)
             .env("PORT", port.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to spawn bun process: {}", e))?;
+
+        // Capture stdout
+        if let Some(stdout) = child.stdout.take() {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().flatten() {
+                    log::info!("[bun-out] {}", line);
+                }
+            });
+        }
+
+        // Capture stderr
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().flatten() {
+                    log::warn!("[bun-err] {}", line);
+                }
+            });
+        }
 
         // 健康检查（同步 reqwest，禁用系统代理避免被 Clash/V2Ray 拦截）
         let client = reqwest::blocking::Client::builder()
@@ -89,9 +216,16 @@ impl SidecarManager {
 
         for _ in 0..60 {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            if client.get(&health_url).send().is_ok() {
-                healthy = true;
-                break;
+            match client.get(&health_url).send() {
+                Ok(resp) => {
+                    if let Ok(json) = resp.json::<serde_json::Value>() {
+                        if json.get("port").and_then(|p| p.as_u64()) == Some(port as u64) {
+                            healthy = true;
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {}
             }
         }
 

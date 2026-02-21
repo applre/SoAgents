@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { AppConfig, Provider } from '../types/config';
+import type { AppConfig, Provider } from '../../shared/types/config';
 
 export interface ConfigState {
   config: AppConfig;

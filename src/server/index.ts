@@ -4,6 +4,7 @@ import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
+import type { PermissionMode } from '../shared/types/permission';
 import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { dirname } from 'path';
 
@@ -35,7 +36,6 @@ const server = Bun.serve({
     if (req.method === "POST" && url.pathname === "/chat/send") {
       const body = await req.json() as { message: string; agentDir: string; providerEnv?: { baseUrl?: string; apiKey?: string }; permissionMode?: string };
       const VALID_MODES = ['default', 'acceptEdits', 'bypassPermissions'] as const;
-      type PermissionMode = typeof VALID_MODES[number];
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
         : 'acceptEdits';
@@ -51,6 +51,12 @@ const server = Bun.serve({
     if (req.method === 'POST' && url.pathname === '/chat/permission-response') {
       const body = await req.json() as { toolUseId: string; allow: boolean };
       agentSession.respondPermission(body.toolUseId, body.allow);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/question/respond') {
+      const body = await req.json() as { toolUseId: string; answers: Record<string, string> };
+      agentSession.respondQuestion(body.toolUseId, body.answers);
       return Response.json({ ok: true });
     }
 

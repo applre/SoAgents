@@ -2,7 +2,7 @@ import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Puzzle } from 'lucide-react';
 import type { Message } from '../types/chat';
 import ToolUse from './tools/ToolUse';
@@ -42,7 +42,7 @@ export default function MessageItem({ message }: Props) {
             );
           }
           return (
-            <div key={i} className={`prose prose-sm max-w-none ${isUser ? '[&_*]:!text-white [&_code]:bg-white/20 [&_a]:text-white/90' : ''}`}>
+            <div key={i} className={`prose prose-sm max-w-none ${isUser ? '[&_>*]:!text-white [&_>p_code]:bg-white/20 [&_a]:text-white/90' : ''}`}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -52,8 +52,9 @@ export default function MessageItem({ message }: Props) {
                       return (
                         <SyntaxHighlighter
                           language={match[1]}
-                          style={oneLight}
+                          style={isUser ? oneDark : oneLight}
                           PreTag="div"
+                          customStyle={{ borderRadius: 8, fontSize: 13 }}
                         >
                           {String(children).replace(/\n$/, '')}
                         </SyntaxHighlighter>

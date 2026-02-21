@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
 import { ConfigContext } from './ConfigContext';
-import type { AppConfig, Provider } from '../types/config';
-import { DEFAULT_CONFIG } from '../types/config';
+import type { AppConfig, Provider } from '../../shared/types/config';
+import { DEFAULT_CONFIG } from '../../shared/providers';
 import { globalApiGetJson } from '../api/apiFetch';
 
 const STORAGE_KEY = 'soagents:config';

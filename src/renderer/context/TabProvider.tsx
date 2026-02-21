@@ -7,7 +7,7 @@ import { startTabSidecar, stopTabSidecar, getTabServerUrl } from '../api/tauriCl
 import { apiGetJson, apiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import type { Message, ContentBlock } from '../types/chat';
-import type { SessionMetadata } from '../types/session';
+import type { SessionMetadata } from '../../shared/types/session';
 import { useContext } from 'react';
 
 interface Props {
@@ -23,7 +23,15 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   const [sessionState, setSessionState] = useState<'idle' | 'running' | 'error'>('idle');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null>(null);
-  const [pendingQuestion, setPendingQuestion] = useState<{ question: string; options?: string[]; toolUseId: string } | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<{
+    toolUseId: string;
+    questions: Array<{
+      question: string;
+      header: string;
+      options: Array<{ label: string; description: string }>;
+      multiSelect: boolean;
+    }>;
+  } | null>(null);
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
   const [sessionsFetched, setSessionsFetched] = useState(false);
   const [sidecarReady, setSidecarReady] = useState(false);
@@ -157,6 +165,14 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       sse.on('permission:request', (data) => {
         const req = data as { toolName: string; toolUseId: string; toolInput: Record<string, unknown> };
         setPendingPermission(req);
+      });
+
+      sse.on('question:request', (data) => {
+        const req = data as {
+          toolUseId: string;
+          questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>;
+        };
+        setPendingQuestion(req);
       });
 
       sse.on('chat:message-complete', () => {
@@ -325,10 +341,10 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
     setPendingPermission(null);
   }, []);
 
-  const respondQuestion = useCallback(async (toolUseId: string, response: string) => {
+  const respondQuestion = useCallback(async (toolUseId: string, answers: Record<string, string>) => {
     const url = serverUrlRef.current;
     if (!url) return;
-    await apiPostJson(url, '/question/respond', { toolUseId, response });
+    await apiPostJson(url, '/question/respond', { toolUseId, answers });
     setPendingQuestion(null);
   }, []);
 

@@ -4,12 +4,11 @@ import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
 import { useTabState } from '../context/TabContext';
-import { PROVIDERS } from '../types/config';
+import { PROVIDERS } from '../../shared/providers';
+import type { PermissionMode } from '../../shared/types/permission';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { formatSize } from '../utils/formatSize';
-
-type PermissionMode = 'acceptEdits' | 'default' | 'bypassPermissions';
 
 const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string }[] = [
   { value: 'acceptEdits',       label: '协同模式', desc: '自动接受文件编辑，遇到 Shell 命令时弹窗确认' },

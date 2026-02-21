@@ -1,13 +1,4 @@
-export interface Provider {
-  id: string;
-  name: string;
-  type: 'subscription' | 'api';
-  baseUrl?: string;
-  primaryModel?: string;
-  models?: string;
-  official?: boolean;
-  isBuiltin?: boolean;
-}
+import type { Provider, AppConfig } from './types/config';
 
 export const PROVIDERS: Provider[] = [
   {
@@ -91,18 +82,6 @@ export const PROVIDERS: Provider[] = [
     models: 'GPT-4o, Claude, Gemini, Llama...',
   },
 ];
-
-export interface AppConfig {
-  currentProviderId: string;
-  apiKeys: Record<string, string>;
-  customProviders?: Provider[];
-}
-
-export interface ProviderEnv {
-  baseUrl?: string;
-  apiKey?: string;
-  model?: string;
-}
 
 export const DEFAULT_CONFIG: AppConfig = {
   currentProviderId: 'anthropic',

@@ -2,7 +2,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, sta
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import crypto from 'node:crypto';
-import type { SessionMetadata, SessionMessage, SessionStats } from './types/session';
+import type { SessionMetadata, SessionMessage, SessionStats } from '../shared/types/session';
 
 const SOAGENTS_DIR = join(homedir(), '.soagents');
 const SESSIONS_DIR = join(SOAGENTS_DIR, 'sessions');

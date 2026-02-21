@@ -1,3 +1,9 @@
+export interface SessionStats {
+  messageCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+}
+
 export interface SessionMetadata {
   id: string;
   agentDir: string;
@@ -6,12 +12,6 @@ export interface SessionMetadata {
   lastActiveAt: string;
   sdkSessionId?: string;
   stats?: SessionStats;
-}
-
-export interface SessionStats {
-  messageCount: number;
-  totalInputTokens: number;
-  totalOutputTokens: number;
 }
 
 export interface SessionMessage {

@@ -3621,6 +3621,7 @@ name = "soagents"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "libc",
  "log",
  "reqwest 0.12.28",
  "serde",

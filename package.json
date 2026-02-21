@@ -1,9 +1,26 @@
 {
   "name": "soagents",
-  "description": "SoAgents - Desktop Claude Agent Client for Learning",
+  "description": "SoAgents - Desktop AI Agent Client powered by Claude Agent SDK",
   "type": "module",
   "version": "0.1.0",
-  "license": "Apache-2.0",
+  "license": "MIT",
+  "author": "jingyu",
+  "homepage": "https://github.com/jingyu/SoAgents",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jingyu/SoAgents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jingyu/SoAgents/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "claude",
+    "tauri",
+    "desktop",
+    "claude-agent-sdk"
+  ],
   "packageManager": "bun@1.3.6",
   "scripts": {
     "dev": "bun run dev:single",
@@ -15,7 +32,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "email:dev": "email dev"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.44",
@@ -30,6 +48,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@react-email/components": "1.0.8",
     "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/api": "^2.9.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
@@ -44,6 +63,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@react-email/preview-server": "5.2.8",
     "@tailwindcss/vite": "^4.1.17",
     "@tauri-apps/cli": "^2.9.6",
     "@types/node": "^25.2.3",
@@ -52,6 +72,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vitejs/plugin-react": "^5.1.1",
     "bun-types": "^1.3.9",
+    "react-email": "5.2.8",
     "tailwindcss": "^4.1.16",
     "typescript": "^5.9.3",
     "vite": "^7.1.12"

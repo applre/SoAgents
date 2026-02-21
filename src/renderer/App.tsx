@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, SquarePen, Settings2 } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2 } from 'lucide-react';
 import { startWindowDrag } from './utils/env';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
-import { startGlobalSidecar } from './api/tauriClient';
+import { startGlobalSidecar, getDefaultWorkspace } from './api/tauriClient';
 import Launcher from './pages/Launcher';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
@@ -12,7 +12,7 @@ import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
 import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
 import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
-import type { SessionMetadata } from './types/session';
+import type { SessionMetadata } from '../shared/types/session';
 
 function createTab(overrides: Partial<Tab> = {}): Tab {
   return {
@@ -28,11 +28,7 @@ function createTab(overrides: Partial<Tab> = {}): Tab {
   };
 }
 
-const INITIAL_TAB = createTab({
-  title: 'soagents',
-  view: 'chat',
-  agentDir: '/Users/wangjida/repos/soagents',
-});
+const INITIAL_TAB = createTab();
 
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([INITIAL_TAB]);
@@ -43,15 +39,62 @@ export default function App() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
   const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
+  const deleteSessionRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
+  const updateSessionTitleRef = useRef<((sessionId: string, title: string) => Promise<void>) | null>(null);
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('soagents:pinned-sessions');
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch { return new Set(); }
+  });
   // 编辑器 action ref：由 Editor 组件通过 onActionRef 暴露
   const editorActionRef = useRef<{ handleAction: (a: ToolbarAction) => void; save: () => void } | null>(null);
 
   useEffect(() => {
     startGlobalSidecar().catch(console.error);
+    // 获取默认工作区路径，打开初始 tab
+    getDefaultWorkspace().then((dir) => {
+      if (!dir) return;
+      setTabs((prev) => prev.map((t) =>
+        t.id === INITIAL_TAB.id && !t.agentDir
+          ? { ...t, agentDir: dir, view: 'chat' as const, title: dir.split('/').pop() ?? dir }
+          : t
+      ));
+    }).catch(console.error);
   }, []);
 
   const handleExposeReset = useCallback((fn: () => Promise<void>) => {
     resetSessionRef.current = fn;
+  }, []);
+
+  const handleExposeDeleteSession = useCallback((fn: (sessionId: string) => Promise<void>) => {
+    deleteSessionRef.current = fn;
+  }, []);
+
+  const handleExposeUpdateTitle = useCallback((fn: (sessionId: string, title: string) => Promise<void>) => {
+    updateSessionTitleRef.current = fn;
+  }, []);
+
+  const handleDeleteSession = useCallback((sessionId: string) => {
+    if (activeSessionId === sessionId) {
+      setActiveSessionId(null);
+      resetSessionRef.current?.().catch(console.error);
+    }
+    deleteSessionRef.current?.(sessionId).catch(console.error);
+  }, [activeSessionId]);
+
+  const handleRenameSession = useCallback((sessionId: string, title: string) => {
+    updateSessionTitleRef.current?.(sessionId, title).catch(console.error);
+  }, []);
+
+  const handleTogglePin = useCallback((sessionId: string) => {
+    setPinnedSessionIds(prev => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      localStorage.setItem('soagents:pinned-sessions', JSON.stringify([...next]));
+      return next;
+    });
   }, []);
 
   const handleSessionsChange = useCallback((tabId: string, s: SessionMetadata[]) => {
@@ -239,8 +282,12 @@ export default function App() {
           <LeftSidebar
             sessions={tabSessions[activeTabId] ?? []}
             activeSessionId={activeSessionId}
+            pinnedSessionIds={pinnedSessionIds}
             onNewChat={handleNewChat}
             onSelectSession={handleSelectSession}
+            onDeleteSession={handleDeleteSession}
+            onRenameSession={handleRenameSession}
+            onTogglePin={handleTogglePin}
             onOpenSettings={handleOpenSettings}
             onCollapse={() => setShowSidebar(false)}
             isSettingsActive={activeTab?.view === 'settings'}
@@ -253,7 +300,7 @@ export default function App() {
           >
             {/* 展开按钮 */}
             <div style={{ marginTop: 24, height: 48 }} className="flex items-center justify-center">
-              <PanelRightOpen
+              <PanelLeftOpen
                 size={18}
                 className="text-[var(--ink-tertiary)] cursor-pointer hover:text-[var(--ink)] transition-colors"
                 onMouseDown={(e) => e.stopPropagation()}
@@ -412,6 +459,8 @@ export default function App() {
                       onSessionsChange={handleSessionsChange}
                       onActiveSessionChange={t.id === activeTabId ? setActiveSessionId : undefined}
                       onExposeReset={t.id === activeTabId ? handleExposeReset : undefined}
+                      onExposeDeleteSession={t.id === activeTabId ? handleExposeDeleteSession : undefined}
+                      onExposeUpdateTitle={t.id === activeTabId ? handleExposeUpdateTitle : undefined}
                       injectText={pendingInjects[t.id] ?? null}
                       onInjectConsumed={() => setPendingInjects((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
                     />

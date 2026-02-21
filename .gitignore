@@ -24,3 +24,23 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Internal docs (not for public)
+CLAUDE.md
+PROCESS.md
+BOOTSTRAP.md
+
+# Internal docs
+docs/
+
+# Third-party skills
+.baoyu-skills/
+
+# Design files
+*.pen
+
+# Tauri auto-generated schemas
+src-tauri/gen/
+
+# Redundant lock file (project uses bun)
+package-lock.json

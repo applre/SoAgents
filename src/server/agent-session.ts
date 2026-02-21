@@ -4,10 +4,9 @@ import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
 import * as MCPConfigStore from './MCPConfigStore';
-import type { SessionMetadata, SessionMessage } from './types/session';
-import type { ProviderEnv } from './types/config';
-
-type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
+import type { SessionMetadata, SessionMessage } from '../shared/types/session';
+import type { ProviderEnv } from '../shared/types/config';
+import type { PermissionMode } from '../shared/types/permission';
 
 interface StoredMessage {
   id: string;
@@ -22,6 +21,7 @@ class AgentSession {
   private isRunning = false;
   private currentQuery: ReturnType<typeof query> | null = null;
   private pendingPermissions = new Map<string, (allow: boolean) => void>();
+  private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
   private sdkSessionId: string | null = null;
   private currentSessionId: string | null = null;
   private currentProviderEnv: ProviderEnv | undefined = undefined;
@@ -112,6 +112,31 @@ class AgentSession {
 
       const canUseTool = resolvedPermissionMode !== 'bypassPermissions'
         ? async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
+            // AskUserQuestion 拦截 — 广播给前端，等待用户回答
+            if (toolName === 'AskUserQuestion') {
+              broadcast('question:request', {
+                toolUseId: toolUseID,
+                questions: toolInput.questions,
+              });
+              const answers = await new Promise<Record<string, string>>((resolve) => {
+                const timeout = setTimeout(() => {
+                  this.pendingQuestions.delete(toolUseID);
+                  resolve({});
+                }, 120000);
+                signal?.addEventListener('abort', () => {
+                  clearTimeout(timeout);
+                  this.pendingQuestions.delete(toolUseID);
+                  resolve({});
+                });
+                this.pendingQuestions.set(toolUseID, (ans: Record<string, string>) => {
+                  clearTimeout(timeout);
+                  this.pendingQuestions.delete(toolUseID);
+                  resolve(ans);
+                });
+              });
+              return { behavior: 'allow' as const, updatedInput: { ...toolInput, answers } };
+            }
+
             broadcast('permission:request', { toolName, toolUseId: toolUseID, toolInput });
             const allowed = await new Promise<boolean>((resolve) => {
               const timeout = setTimeout(() => {
@@ -242,6 +267,11 @@ class AgentSession {
   respondPermission(toolUseId: string, allow: boolean): void {
     const resolve = this.pendingPermissions.get(toolUseId);
     if (resolve) resolve(allow);
+  }
+
+  respondQuestion(toolUseId: string, answers: Record<string, string>): void {
+    const resolve = this.pendingQuestions.get(toolUseId);
+    if (resolve) resolve(answers);
   }
 
   stop(): void {

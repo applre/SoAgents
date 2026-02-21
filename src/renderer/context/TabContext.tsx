@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { Message } from '../types/chat';
-import type { SessionMetadata } from '../types/session';
+import type { SessionMetadata } from '../../shared/types/session';
 
 export interface TabState {
   tabId: string;
@@ -16,9 +16,17 @@ export interface TabState {
   apiGet: <T>(path: string) => Promise<T>;
   apiPost: <T>(path: string, body: unknown) => Promise<T>;
   pendingPermission: { toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null;
-  pendingQuestion: { question: string; options?: string[]; toolUseId: string } | null;
+  pendingQuestion: {
+    toolUseId: string;
+    questions: Array<{
+      question: string;
+      header: string;
+      options: Array<{ label: string; description: string }>;
+      multiSelect: boolean;
+    }>;
+  } | null;
   respondPermission: (toolUseId: string, allow: boolean) => Promise<void>;
-  respondQuestion: (toolUseId: string, response: string) => Promise<void>;
+  respondQuestion: (toolUseId: string, answers: Record<string, string>) => Promise<void>;
   sessions: SessionMetadata[];
   sessionsFetched: boolean;
   loadSession: (sessionId: string) => Promise<void>;

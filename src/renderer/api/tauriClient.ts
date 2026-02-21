@@ -25,3 +25,8 @@ export async function stopAllSidecars(): Promise<void> {
   if (!isTauri()) return;
   return invoke('cmd_stop_all_sidecars');
 }
+
+export async function getDefaultWorkspace(): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string>('cmd_get_default_workspace');
+}

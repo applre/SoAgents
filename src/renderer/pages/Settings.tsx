@@ -5,7 +5,7 @@ import {
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
-import type { Provider } from '../types/config';
+import type { Provider } from '../../shared/types/config';
 import {
   globalApiGetJson,
   globalApiPostJson,
