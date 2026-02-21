@@ -5,13 +5,13 @@
   "version": "0.1.0",
   "license": "MIT",
   "author": "jingyu",
-  "homepage": "https://github.com/jingyu/SoAgents",
+  "homepage": "https://github.com/applre/SoAgents",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jingyu/SoAgents.git"
+    "url": "https://github.com/applre/SoAgents.git"
   },
   "bugs": {
-    "url": "https://github.com/jingyu/SoAgents/issues"
+    "url": "https://github.com/applre/SoAgents/issues"
   },
   "keywords": [
     "ai",

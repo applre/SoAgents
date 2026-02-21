@@ -40,7 +40,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/jingyu/SoAgents.git
+git clone https://github.com/applre/SoAgents.git
 cd SoAgents
 bun install
 ```
