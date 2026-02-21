@@ -26,6 +26,7 @@
     "dev": "bun run dev:single",
     "dev:web": "vite",
     "dev:single": "bun run build:web --watch & bun run server",
+    "build:server": "mkdir -p src-tauri/resources && bun build ./src/server/index.ts --outfile=./src-tauri/resources/server-dist.js --target=bun",
     "build:web": "vite build",
     "server": "bun src/server/index.ts",
     "start": "bun run build:web && bun run server",
