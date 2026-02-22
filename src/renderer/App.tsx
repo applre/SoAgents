@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2 } from 'lucide-react';
-import { startWindowDrag } from './utils/env';
+import { startWindowDrag, toggleMaximize } from './utils/env';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
 import { startGlobalSidecar, getDefaultWorkspace } from './api/tauriClient';
@@ -550,6 +550,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
       className="relative flex items-center justify-between px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
       style={{ height: 48 }}
       onMouseDown={startWindowDrag}
+      onDoubleClick={toggleMaximize}
     >
       {openDropdownTabId && (
         <div className="fixed inset-0 z-40" onClick={() => setOpenDropdownTabId(null)} />

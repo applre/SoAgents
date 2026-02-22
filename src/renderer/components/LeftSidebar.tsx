@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { MoreHorizontal, PanelLeft, Pencil, Pin, Plus, Trash2 } from 'lucide-react';
-import { startWindowDrag } from '../utils/env';
+import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
 import SearchModal from './SearchModal';
 
@@ -80,26 +80,32 @@ export default function LeftSidebar({
       }}
     >
       {/* 顶部固定区：Logo + 菜单 */}
-      <div className="shrink-0" style={{ paddingTop: 10, paddingLeft: 14, paddingRight: 14 }}>
+      <div
+        className="shrink-0"
+        style={{ paddingTop: 10, paddingLeft: 14, paddingRight: 14 }}
+        onMouseDown={startWindowDrag}
+        onDoubleClick={toggleMaximize}
+      >
         {/* Logo + 折叠按钮（预留macOS traffic lights 空间）*/}
         <div
           className="flex items-center justify-between"
           style={{ height: 48, paddingLeft: 4, paddingRight: 4, marginTop: 24 }}
-          onMouseDown={startWindowDrag}
         >
           <div className="flex items-center gap-2">
             <span className="text-[20px] font-semibold text-[var(--ink)]">SoAgents</span>
           </div>
-          <PanelLeft
-            size={20}
-            className="text-[var(--ink-tertiary)] cursor-pointer hover:text-[var(--ink)] transition-colors"
-            onMouseDown={(e) => e.stopPropagation()}
+          <button
             onClick={onCollapse}
-          />
+            onMouseDown={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+          >
+            <PanelLeft size={16} />
+          </button>
         </div>
 
         {/* 主菜单 */}
-        <div className="flex flex-col gap-1 mt-3">
+        <div className="flex flex-col gap-1 mt-3" onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
           <button
             onClick={onNewChat}
             className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
