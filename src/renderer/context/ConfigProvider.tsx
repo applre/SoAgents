@@ -69,14 +69,14 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, [currentProvider, config.currentModelId]);
 
   const updateConfig = useCallback(async (partial: Partial<AppConfig>) => {
-    const next = await atomicModifyConfig((prev) => ({
-      currentProviderId: partial.currentProviderId ?? prev.currentProviderId,
-      currentModelId: partial.currentProviderId && partial.currentProviderId !== prev.currentProviderId
-        ? undefined
-        : (partial.currentModelId !== undefined ? partial.currentModelId : prev.currentModelId),
-      apiKeys: partial.apiKeys !== undefined ? partial.apiKeys : prev.apiKeys,
-      customProviders: partial.customProviders !== undefined ? partial.customProviders : prev.customProviders,
-    }));
+    const next = await atomicModifyConfig((prev) => {
+      const merged = { ...prev, ...partial };
+      // Provider 切换时清除 modelId
+      if (partial.currentProviderId && partial.currentProviderId !== prev.currentProviderId) {
+        merged.currentModelId = undefined;
+      }
+      return merged;
+    });
     setConfig(next);
   }, []);
 

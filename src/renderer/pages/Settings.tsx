@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Brain, Settings2, SlidersHorizontal, User, Blocks, GitBranch, LayoutGrid,
   KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Zap, X,
+  Info, FolderOpen, ExternalLink,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
-import type { Provider } from '../../shared/types/config';
+import type { Provider, ProxyProtocol, ProxySettings } from '../../shared/types/config';
+import { PROXY_DEFAULTS, isValidProxyHost } from '../../shared/types/config';
 import { getModelsDisplay } from '../../shared/providers';
 import {
   globalApiGetJson,
@@ -13,6 +15,9 @@ import {
   globalApiDeleteJson,
   globalApiPutJson,
 } from '../api/apiFetch';
+import { useAutostart } from '../hooks/useAutostart';
+import { isTauri } from '../utils/env';
+import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
 
 // ── 类型定义 ──────────────────────────────────────────────────
 
@@ -33,17 +38,18 @@ interface SkillInfo {
   path: string;
 }
 
-type NavId = 'provider' | 'general' | 'config' | 'personalization' | 'mcp' | 'git' | 'env' | 'skills';
+type NavId = 'provider' | 'general' | 'config' | 'personalization' | 'mcp' | 'git' | 'env' | 'skills' | 'about';
 
 const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucideProps> }[] = [
   { id: 'provider',        label: '模型供应商',     Icon: Brain },
-  { id: 'general',         label: 'General',        Icon: Settings2 },
   { id: 'config',          label: 'Configuration',  Icon: SlidersHorizontal },
   { id: 'personalization', label: 'Personalization', Icon: User },
   { id: 'mcp',             label: 'MCP Servers',    Icon: Blocks },
   { id: 'git',             label: 'Git',            Icon: GitBranch },
   { id: 'env',             label: 'Environments',   Icon: LayoutGrid },
   { id: 'skills',          label: 'Skills',         Icon: Zap },
+  { id: 'general',         label: '通用',           Icon: Settings2 },
+  { id: 'about',           label: '关于',           Icon: Info },
 ];
 
 // ── 输入框公共样式 ────────────────────────────────────────────
@@ -990,6 +996,368 @@ function SkillsTab() {
   );
 }
 
+// ── ToggleSwitch ─────────────────────────────────────────────
+
+function ToggleSwitch({
+  checked,
+  onChange,
+  disabled = false,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
+      className={`relative inline-flex h-[22px] w-[40px] shrink-0 rounded-full transition-colors ${
+        disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+      } ${checked ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
+    >
+      <span
+        className={`pointer-events-none inline-block h-[18px] w-[18px] rounded-full bg-white shadow transition-transform mt-[2px] ${
+          checked ? 'translate-x-[20px]' : 'translate-x-[2px]'
+        }`}
+      />
+    </button>
+  );
+}
+
+// ── General Tab ──────────────────────────────────────────────
+
+function GeneralTab() {
+  const { config, updateConfig, workspaces } = useConfig();
+  const { isEnabled: autostartEnabled, isLoading: autostartLoading, setAutostart } = useAutostart();
+
+  // proxy form state (derived from config)
+  const proxy = config.proxySettings ?? { enabled: false, ...PROXY_DEFAULTS };
+  const [proxyForm, setProxyForm] = useState({
+    protocol: proxy.protocol,
+    host: proxy.host,
+    port: proxy.port,
+  });
+
+  // Sync proxyForm when config changes externally
+  useEffect(() => {
+    const p = config.proxySettings;
+    if (p) {
+      setProxyForm({ protocol: p.protocol, host: p.host, port: p.port });
+    }
+  }, [config.proxySettings]);
+
+  const handleProxyToggle = useCallback(async (enabled: boolean) => {
+    await updateConfig({
+      proxySettings: {
+        enabled,
+        protocol: proxyForm.protocol,
+        host: proxyForm.host,
+        port: proxyForm.port,
+      },
+    });
+  }, [updateConfig, proxyForm]);
+
+  const handleProxySave = useCallback(async () => {
+    if (!isValidProxyHost(proxyForm.host)) return;
+    if (proxyForm.port < 1 || proxyForm.port > 65535) return;
+    await updateConfig({
+      proxySettings: {
+        enabled: proxy.enabled,
+        protocol: proxyForm.protocol,
+        host: proxyForm.host,
+        port: proxyForm.port,
+      },
+    });
+  }, [updateConfig, proxy.enabled, proxyForm]);
+
+  const handleSelectFolder = useCallback(async () => {
+    if (!isTauri()) return;
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ directory: true, multiple: false });
+      if (selected) {
+        await updateConfig({ defaultWorkspacePath: selected as string });
+      }
+    } catch (err) {
+      console.error('[GeneralTab] Failed to open folder dialog:', err);
+    }
+  }, [updateConfig]);
+
+  // 最近工作区列表（按时间倒序，最多 10 个）
+  const recentWorkspaces = [...workspaces]
+    .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
+    .slice(0, 10);
+
+  const proxyAddress = proxy.enabled
+    ? `${proxyForm.protocol}://${proxyForm.host}:${proxyForm.port}`
+    : null;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h2 className="text-[22px] font-bold text-[var(--ink)]">General</h2>
+        <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">应用基本设置</p>
+      </div>
+
+      {/* 启动设置 */}
+      <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
+        <p className="text-[15px] font-semibold text-[var(--ink)]">启动设置</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[13px] font-medium text-[var(--ink)]">开机自动启动</p>
+            <p className="text-[12px] text-[var(--ink-tertiary)]">登录系统时自动运行 SoAgents</p>
+          </div>
+          <ToggleSwitch
+            checked={autostartEnabled}
+            onChange={setAutostart}
+            disabled={autostartLoading}
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[13px] font-medium text-[var(--ink)]">最小化到托盘</p>
+            <p className="text-[12px] text-[var(--ink-tertiary)]">关闭窗口时最小化到系统托盘（即将支持）</p>
+          </div>
+          <ToggleSwitch
+            checked={config.minimizeToTray ?? false}
+            onChange={() => {}}
+            disabled
+          />
+        </div>
+      </div>
+
+      {/* 默认工作区 */}
+      <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
+        <p className="text-[15px] font-semibold text-[var(--ink)]">默认工作区</p>
+        <div className="flex items-center gap-3">
+          {recentWorkspaces.length > 0 ? (
+            <select
+              value={config.defaultWorkspacePath ?? ''}
+              onChange={(e) => updateConfig({ defaultWorkspacePath: e.target.value || undefined })}
+              className={`${inputCls} flex-1`}
+            >
+              <option value="">选择默认工作区...</option>
+              {recentWorkspaces.map((ws) => (
+                <option key={ws.path} value={ws.path}>
+                  {ws.path}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className={`${inputCls} flex-1 text-[var(--ink-tertiary)]`}>
+              暂无最近使用的工作区
+            </div>
+          )}
+          <button
+            onClick={handleSelectFolder}
+            className="shrink-0 rounded-lg border border-[var(--border)] p-2 text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+            title="选择文件夹"
+          >
+            <FolderOpen size={16} />
+          </button>
+        </div>
+        {config.defaultWorkspacePath && (
+          <p className="text-[12px] text-[var(--ink-tertiary)]">
+            当前默认: <span className="font-mono">{config.defaultWorkspacePath}</span>
+          </p>
+        )}
+      </div>
+
+      {/* 网络代理 */}
+      <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="text-[15px] font-semibold text-[var(--ink)]">网络代理</p>
+          <ToggleSwitch checked={proxy.enabled} onChange={handleProxyToggle} />
+        </div>
+
+        {proxy.enabled && (
+          <>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">协议</label>
+                <select
+                  value={proxyForm.protocol}
+                  onChange={(e) => setProxyForm((f) => ({ ...f, protocol: e.target.value as ProxyProtocol }))}
+                  className={inputCls}
+                >
+                  <option value="http">HTTP</option>
+                  <option value="socks5">SOCKS5</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Host</label>
+                <input
+                  type="text"
+                  value={proxyForm.host}
+                  onChange={(e) => setProxyForm((f) => ({ ...f, host: e.target.value }))}
+                  onBlur={handleProxySave}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Port</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={proxyForm.port}
+                  onChange={(e) => setProxyForm((f) => ({ ...f, port: Number(e.target.value) || 0 }))}
+                  onBlur={handleProxySave}
+                  className={inputCls}
+                />
+              </div>
+            </div>
+
+            {proxyAddress && (
+              <p className="text-[12px] text-[var(--ink-tertiary)]">
+                代理地址: <span className="font-mono text-[var(--ink-secondary)]">{proxyAddress}</span>
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── About Tab ────────────────────────────────────────────────
+
+function AboutTab() {
+  const { config, updateConfig } = useConfig();
+  const [devMode, setDevMode] = useState(isDeveloperMode);
+  const [appVersion, setAppVersion] = useState('0.1.0');
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    (async () => {
+      try {
+        const { getVersion } = await import('@tauri-apps/api/app');
+        setAppVersion(await getVersion());
+      } catch {
+        // fallback to package.json version
+      }
+    })();
+  }, []);
+
+  const handleTitleClick = useCallback(() => {
+    if (recordDeveloperClick()) {
+      setDevMode(true);
+    }
+  }, []);
+
+  const handleDevToolsToggle = useCallback(async (enabled: boolean) => {
+    await updateConfig({ showDevTools: enabled });
+    // 立即切换 devtools
+    if (isTauri()) {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        // 使用 Tauri 内部 API 打开/关闭 devtools
+        if (enabled) {
+          (win as unknown as { emit: (e: string) => void }).emit('open-devtools');
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [updateConfig]);
+
+  const handleOpenLink = useCallback(async (url: string) => {
+    if (isTauri()) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-shell');
+        await open(url);
+      } catch {
+        window.open(url, '_blank');
+      }
+    } else {
+      window.open(url, '_blank');
+    }
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* 品牌头部 */}
+      <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-6 text-center">
+        <h2
+          className="text-[28px] font-bold text-[var(--ink)] cursor-default select-none"
+          onClick={handleTitleClick}
+        >
+          SoAgents
+        </h2>
+        <p className="mt-1 text-[14px] text-[var(--ink-tertiary)]">
+          版本 {appVersion}
+        </p>
+      </div>
+
+      {/* 产品描述 */}
+      <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5">
+        <p className="text-[15px] font-semibold text-[var(--ink)]">关于 SoAgents</p>
+        <p className="mt-2 text-[13px] text-[var(--ink-secondary)] leading-relaxed">
+          SoAgents 是基于 Claude Agent SDK 的桌面端 Agent 客户端，通过 Tauri + React + Bun 全栈架构构建，
+          提供多工作区隔离、MCP 服务器管理、自定义 Skills 等功能。
+        </p>
+      </div>
+
+      {/* 联系/链接 */}
+      <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-3">
+        <p className="text-[15px] font-semibold text-[var(--ink)]">链接</p>
+        <div className="space-y-2">
+          <button
+            onClick={() => handleOpenLink('https://github.com/applre/SoAgents')}
+            className="w-full flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-[var(--hover)] transition-colors"
+          >
+            <span className="text-[13px] text-[var(--ink)]">GitHub 仓库</span>
+            <ExternalLink size={14} className="text-[var(--ink-tertiary)]" />
+          </button>
+          <button
+            onClick={() => handleOpenLink('https://github.com/applre/SoAgents/issues')}
+            className="w-full flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-[var(--hover)] transition-colors"
+          >
+            <span className="text-[13px] text-[var(--ink)]">反馈问题</span>
+            <ExternalLink size={14} className="text-[var(--ink-tertiary)]" />
+          </button>
+          <button
+            onClick={() => handleOpenLink('https://github.com/applre')}
+            className="w-full flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-[var(--hover)] transition-colors"
+          >
+            <span className="text-[13px] text-[var(--ink)]">Developer</span>
+            <ExternalLink size={14} className="text-[var(--ink-tertiary)]" />
+          </button>
+        </div>
+      </div>
+
+      {/* 开发者模式（隐藏，需 5 次点击 SoAgents 标题解锁） */}
+      {devMode && (
+        <div className="rounded-[14px] border border-dashed border-[var(--accent)]/40 bg-[var(--accent)]/5 p-5 space-y-4">
+          <p className="text-[15px] font-semibold text-[var(--accent)]">开发者选项</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[13px] font-medium text-[var(--ink)]">显示 DevTools</p>
+              <p className="text-[12px] text-[var(--ink-tertiary)]">打开 Chromium 开发者工具</p>
+            </div>
+            <ToggleSwitch
+              checked={config.showDevTools ?? false}
+              onChange={handleDevToolsToggle}
+            />
+          </div>
+          <div className="space-y-1">
+            <p className="text-[12px] text-[var(--ink-tertiary)]">
+              构建信息
+            </p>
+            <p className="text-[12px] font-mono text-[var(--ink-tertiary)]">
+              Version: {appVersion} &bull; Framework: Tauri v2 &bull; Runtime: Bun
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 占位内容 ──────────────────────────────────────────────────
 
 function ComingSoon({ title }: { title: string }) {
@@ -1035,13 +1403,14 @@ export default function Settings() {
       {/* 右侧内容 */}
       <div className="flex-1 overflow-y-auto" style={{ padding: '40px 48px' }}>
         {activeNav === 'provider'        && <ProviderTab />}
+        {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'mcp'             && <MCPTab />}
-        {activeNav === 'general'         && <ComingSoon title="General" />}
         {activeNav === 'config'          && <ComingSoon title="Configuration" />}
         {activeNav === 'personalization' && <ComingSoon title="Personalization" />}
         {activeNav === 'git'             && <ComingSoon title="Git" />}
         {activeNav === 'env'             && <ComingSoon title="Environments" />}
         {activeNav === 'skills'          && <SkillsTab />}
+        {activeNav === 'about'           && <AboutTab />}
       </div>
     </div>
   );

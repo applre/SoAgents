@@ -171,13 +171,7 @@ function localStorageLoad(): AppConfig {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_CONFIG };
     const parsed = JSON.parse(raw) as Partial<AppConfig>;
-    return {
-      currentProviderId:
-        parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
-      currentModelId: parsed.currentModelId,
-      apiKeys: parsed.apiKeys ?? {},
-      customProviders: parsed.customProviders ?? [],
-    };
+    return { ...DEFAULT_CONFIG, ...parsed, apiKeys: parsed.apiKeys ?? {} };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -206,13 +200,7 @@ export async function loadAppConfig(): Promise<AppConfig> {
     const loaded = await safeLoadJson<AppConfig>(configPath, isValidAppConfig);
     if (loaded) {
       // Merge with defaults to ensure all fields exist
-      return {
-        currentProviderId:
-          loaded.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
-        currentModelId: loaded.currentModelId,
-        apiKeys: loaded.apiKeys ?? {},
-        customProviders: loaded.customProviders ?? [],
-      };
+      return { ...DEFAULT_CONFIG, ...loaded, apiKeys: loaded.apiKeys ?? {} };
     }
     return { ...DEFAULT_CONFIG };
   } catch (error) {

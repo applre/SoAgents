@@ -39,11 +39,47 @@ export interface Provider {
   models: ModelEntity[];
 }
 
+// ── Proxy Settings ──
+
+export type ProxyProtocol = 'http' | 'socks5';
+
+export interface ProxySettings {
+  enabled: boolean;
+  protocol: ProxyProtocol;
+  host: string;
+  port: number;
+}
+
+export const PROXY_DEFAULTS: Omit<ProxySettings, 'enabled'> = {
+  protocol: 'http' as ProxyProtocol,
+  host: '127.0.0.1',
+  port: 7897,
+};
+
+export function isValidProxyHost(host: string): boolean {
+  if (!host) return false;
+  // IPv4
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return host.split('.').every((n) => {
+      const num = Number(n);
+      return num >= 0 && num <= 255;
+    });
+  }
+  // hostname
+  return /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(host);
+}
+
+// ── App Config ──
+
 export interface AppConfig {
   currentProviderId: string;
   currentModelId?: string;
   apiKeys: Record<string, string>;
   customProviders?: Provider[];
+  minimizeToTray?: boolean;
+  defaultWorkspacePath?: string;
+  proxySettings?: ProxySettings;
+  showDevTools?: boolean;
 }
 
 export interface ProviderEnv {
