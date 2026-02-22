@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { AppConfig, Provider, ModelEntity } from '../../shared/types/config';
+import type { WorkspaceEntry } from '../../shared/types/workspace';
 
 export interface ConfigState {
   config: AppConfig;
@@ -9,6 +10,12 @@ export interface ConfigState {
   updateConfig: (partial: Partial<AppConfig>) => Promise<void>;
   refreshConfig: () => Promise<void>;
   isLoading: boolean;
+
+  // ── workspace ──
+  workspaces: WorkspaceEntry[];
+  updateWorkspaceConfig: (agentDir: string, partial: Partial<Omit<WorkspaceEntry, 'path' | 'lastOpenedAt'>>) => Promise<void>;
+  touchWorkspace: (agentDir: string) => Promise<void>;
+  removeWorkspace: (agentDir: string) => Promise<void>;
 }
 
 export const ConfigContext = createContext<ConfigState | null>(null);

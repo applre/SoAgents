@@ -43,6 +43,10 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   currentModelRef.current = configCtx?.currentModel;
   const apiKeysRef = useRef(configCtx?.config.apiKeys ?? {});
   apiKeysRef.current = configCtx?.config.apiKeys ?? {};
+  const allProvidersRef = useRef(configCtx?.allProviders ?? []);
+  allProvidersRef.current = configCtx?.allProviders ?? [];
+  const workspacesRef = useRef(configCtx?.workspaces ?? []);
+  workspacesRef.current = configCtx?.workspaces ?? [];
 
   const sseRef = useRef<SseConnection | null>(null);
   const serverUrlRef = useRef<string>('');
@@ -240,9 +244,15 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       : text;
 
     // Build providerEnv from refs (stable, avoids stale closure)
-    const provider = currentProviderRef.current;
+    // Per-workspace overrides
+    const ws = workspacesRef.current.find((w) => w.path === agentDir);
+    const wsProviderId = ws?.providerId;
+    const provider = wsProviderId
+      ? (allProvidersRef.current.find((p) => p.id === wsProviderId) ?? currentProviderRef.current)
+      : currentProviderRef.current;
     const keys = apiKeysRef.current;
-    const selectedModel = currentModelRef.current?.model ?? provider?.primaryModel;
+    const wsModelId = ws?.modelId;
+    const selectedModel = wsModelId ?? currentModelRef.current?.model ?? provider?.primaryModel;
     const providerEnv = provider && provider.type === 'api'
       ? {
           baseUrl: provider.config?.baseUrl,
@@ -254,7 +264,14 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       : undefined;
 
     try {
-      await apiPostJson(url, '/chat/send', { message: backendMessage, agentDir, providerEnv, model: selectedModel, permissionMode });
+      await apiPostJson(url, '/chat/send', {
+        message: backendMessage,
+        agentDir,
+        providerEnv,
+        model: selectedModel,
+        permissionMode,
+        mcpEnabledServerIds: ws?.mcpEnabledServers,
+      });
     } catch {
       setIsLoading(false);
       setSessionState('error');

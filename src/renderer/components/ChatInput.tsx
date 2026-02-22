@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, FileText, X, Image as ImageIcon, Lock } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import { globalApiGetJson } from '../api/apiFetch';
@@ -6,6 +6,7 @@ import { useConfig } from '../context/ConfigContext';
 import { useTabState } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
+import type { ModelEntity } from '../../shared/types/config';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { formatSize } from '../utils/formatSize';
@@ -45,10 +46,21 @@ interface AttachedFile {
 }
 
 export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed }: Props) {
+  const { allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
+  const { apiGet, messages } = useTabState();
+  const isProviderLocked = messages.length > 0;
+
+  // Per-workspace entry (must be before permissionMode state init)
+  const wsEntry = agentDir ? workspaces.find((w) => w.path === agentDir) : undefined;
+
   const [text, setText] = useState('');
   const [showSlash, setShowSlash] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<{ name: string; content: string } | null>(null);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('acceptEdits');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(wsEntry?.permissionMode ?? 'acceptEdits');
+  // Sync permissionMode when workspace entry changes (e.g. workspace switch)
+  useEffect(() => {
+    setPermissionMode(wsEntry?.permissionMode ?? 'acceptEdits');
+  }, [wsEntry?.permissionMode]);
   const [skillCommands, setSkillCommands] = useState<CommandItem[]>([]);
   const [showSkillPopover, setShowSkillPopover] = useState(false);
   const [showMCPPopover, setShowMCPPopover] = useState(false);
@@ -67,10 +79,22 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modeBtnRef = useRef<HTMLButtonElement>(null);
   const modeContainerRef = useRef<HTMLDivElement>(null);
-
-  const { allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading } = useConfig();
-  const { apiGet, messages } = useTabState();
-  const isProviderLocked = messages.length > 0;
+  const effectiveProvider = useMemo(() => {
+    if (!wsEntry?.providerId || allProviders.length === 0) return currentProvider;
+    return allProviders.find((p) => p.id === wsEntry.providerId) ?? currentProvider;
+  }, [wsEntry?.providerId, allProviders, currentProvider]);
+  const effectiveModel = useMemo<ModelEntity | null>(() => {
+    if (!effectiveProvider.models?.length) return null;
+    if (wsEntry?.modelId) {
+      const found = effectiveProvider.models.find(m => m.model === wsEntry.modelId);
+      if (found) return found;
+    }
+    if (effectiveProvider.primaryModel) {
+      const found = effectiveProvider.models.find(m => m.model === effectiveProvider.primaryModel);
+      if (found) return found;
+    }
+    return effectiveProvider.models[0];
+  }, [effectiveProvider, wsEntry?.modelId]);
   const slashQuery = showSlash && text.startsWith('/') ? text.slice(1) : '';
 
   // 文件注入：从编辑器「去对话」时以附件卡片形式带入文件，同步获取真实文件大小
@@ -444,11 +468,15 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateConfig({ currentProviderId: p.id });
+                      if (agentDir) {
+                        updateWorkspaceConfig(agentDir, { providerId: p.id });
+                      } else {
+                        updateConfig({ currentProviderId: p.id });
+                      }
                       setShowProviderSubmenu(false);
                     }}
                     className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
-                      currentProvider.id === p.id
+                      effectiveProvider.id === p.id
                         ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
                         : 'text-[var(--ink)] hover:bg-[var(--hover)]'
                     }`}
@@ -480,7 +508,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                       }`}
                     >
                       {isProviderLocked && <Lock size={9} className="shrink-0" />}
-                      <span>{currentProvider.name}</span>
+                      <span>{effectiveProvider.name}</span>
                       {!isProviderLocked && <ChevronDown size={10} />}
                     </button>
                   </div>
@@ -490,26 +518,30 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                     供应商已锁定，新建对话可切换
                   </div>
                 )}
-                {currentProvider.models?.length ? (
-                  currentProvider.models.map((m) => (
+                {effectiveProvider.models?.length ? (
+                  effectiveProvider.models.map((m) => (
                     <button
                       key={m.model}
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        updateConfig({ currentModelId: m.model });
+                        if (agentDir) {
+                          updateWorkspaceConfig(agentDir, { modelId: m.model });
+                        } else {
+                          updateConfig({ currentModelId: m.model });
+                        }
                         setShowModelPopover(false);
                       }}
                       className={`flex w-full items-center px-3 py-2 text-left text-sm transition-colors ${
-                        currentModel?.model === m.model
+                        effectiveModel?.model === m.model
                           ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
                           : 'text-[var(--ink)] hover:bg-[var(--hover)]'
                       }`}
                     >
-                      <span className={`font-medium ${currentModel?.model === m.model ? 'text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
+                      <span className={`font-medium ${effectiveModel?.model === m.model ? 'text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
                         {m.modelName}
                       </span>
-                      {currentModel?.model === m.model && <span className="ml-auto text-xs">✓</span>}
+                      {effectiveModel?.model === m.model && <span className="ml-auto text-xs">✓</span>}
                     </button>
                   ))
                 ) : (
@@ -633,7 +665,13 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                   {PERMISSION_MODES.map((m) => (
                     <button
                       key={m.value}
-                      onClick={() => { setPermissionMode(m.value); setShowModePopover(false); }}
+                      onClick={() => {
+                      setPermissionMode(m.value);
+                      setShowModePopover(false);
+                      if (agentDir) {
+                        updateWorkspaceConfig(agentDir, { permissionMode: m.value });
+                      }
+                    }}
                       className={`flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[var(--hover)] ${
                         permissionMode === m.value ? 'bg-[var(--accent)]/8' : ''
                       }`}
@@ -694,7 +732,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                 ? <Lock size={11} className="text-[var(--ink-tertiary)]" />
                 : <span className="text-[var(--ink-tertiary)]">✦</span>
               }
-              <span className="max-w-[120px] truncate">{configLoading ? '加载中...' : (currentModel?.modelName ?? currentProvider.name)}</span>
+              <span className="max-w-[120px] truncate">{configLoading ? '加载中...' : (effectiveModel?.modelName ?? effectiveProvider.name)}</span>
               <ChevronDown size={12} className="shrink-0" />
             </button>
 

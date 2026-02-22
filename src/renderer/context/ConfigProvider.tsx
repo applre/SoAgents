@@ -1,14 +1,17 @@
 import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
 import { ConfigContext } from './ConfigContext';
 import type { AppConfig, Provider, ModelEntity } from '../../shared/types/config';
+import type { WorkspaceEntry } from '../../shared/types/workspace';
 import { DEFAULT_CONFIG, PROVIDERS } from '../../shared/providers';
 import { globalApiGetJson } from '../api/apiFetch';
 import { loadAppConfig, atomicModifyConfig } from '../config/configService';
+import { loadWorkspaces, atomicModifyWorkspaces } from '../config/workspaceService';
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig>({ ...DEFAULT_CONFIG });
   const [allProviders, setAllProviders] = useState<Provider[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
+  const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([]);
 
   const loadProviders = useCallback(async () => {
     // Global sidecar 可能还没启动完毕（App.tsx useEffect 在 ConfigProvider 之后执行），
@@ -38,6 +41,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     loadAppConfig()
       .then((loaded) => setConfig(loaded))
       .catch((err) => console.error('[ConfigProvider] Failed to load config:', err));
+    loadWorkspaces()
+      .then((ws) => setWorkspaces(ws))
+      .catch((err) => console.error('[ConfigProvider] Failed to load workspaces:', err));
     void loadProviders();
   }, [loadProviders]);
 
@@ -78,9 +84,58 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     await loadProviders();
   }, [loadProviders]);
 
+  // ── Workspace methods ──
+
+  const updateWorkspaceConfig = useCallback(async (
+    agentDir: string,
+    partial: Partial<Omit<WorkspaceEntry, 'path' | 'lastOpenedAt'>>,
+  ) => {
+    const next = await atomicModifyWorkspaces((prev) => {
+      const idx = prev.findIndex((w) => w.path === agentDir);
+      if (idx >= 0) {
+        const ws = { ...prev[idx] };
+        // Provider 切换时清除 modelId
+        if (partial.providerId !== undefined && partial.providerId !== ws.providerId) {
+          ws.modelId = undefined;
+        }
+        Object.assign(ws, partial);
+        const updated = [...prev];
+        updated[idx] = ws;
+        return updated;
+      }
+      // 不存在则新建
+      return [...prev, { path: agentDir, lastOpenedAt: Date.now(), ...partial }];
+    });
+    setWorkspaces(next);
+  }, []);
+
+  const touchWorkspace = useCallback(async (agentDir: string) => {
+    const next = await atomicModifyWorkspaces((prev) => {
+      const idx = prev.findIndex((w) => w.path === agentDir);
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], lastOpenedAt: Date.now() };
+        return updated;
+      }
+      return [...prev, { path: agentDir, lastOpenedAt: Date.now() }];
+    });
+    setWorkspaces(next);
+  }, []);
+
+  const removeWorkspace = useCallback(async (agentDir: string) => {
+    const next = await atomicModifyWorkspaces((prev) =>
+      prev.filter((w) => w.path !== agentDir),
+    );
+    setWorkspaces(next);
+  }, []);
+
   const value = useMemo(
-    () => ({ config, allProviders, currentProvider, currentModel, updateConfig, refreshConfig, isLoading: providersLoading }),
-    [config, allProviders, currentProvider, currentModel, updateConfig, refreshConfig, providersLoading]
+    () => ({
+      config, allProviders, currentProvider, currentModel, updateConfig, refreshConfig, isLoading: providersLoading,
+      workspaces, updateWorkspaceConfig, touchWorkspace, removeWorkspace,
+    }),
+    [config, allProviders, currentProvider, currentModel, updateConfig, refreshConfig, providersLoading,
+     workspaces, updateWorkspaceConfig, touchWorkspace, removeWorkspace]
   );
 
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;

@@ -84,7 +84,7 @@ class AgentSession {
   private currentSessionId: string | null = null;
   private currentProviderEnv: ProviderEnv | undefined = undefined;
 
-  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode): Promise<void> {
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[]): Promise<void> {
     if (this.isRunning) return;
 
     // 如果没有当前 session，创建一个新的
@@ -126,10 +126,18 @@ class AgentSession {
 
     try {
       const mcpAll = MCPConfigStore.getAll();
+      // Filter MCP servers by workspace-level enablement list
+      let mcpFiltered = mcpAll;
+      if (mcpEnabledServerIds !== undefined) {
+        const enabledSet = new Set(mcpEnabledServerIds);
+        mcpFiltered = Object.fromEntries(
+          Object.entries(mcpAll).filter(([id]) => enabledSet.has(id))
+        ) as typeof mcpAll;
+      }
       let mcpServers: Record<string, unknown> | undefined;
-      if (Object.keys(mcpAll).length > 0) {
+      if (Object.keys(mcpFiltered).length > 0) {
         mcpServers = {};
-        for (const [id, cfg] of Object.entries(mcpAll)) {
+        for (const [id, cfg] of Object.entries(mcpFiltered)) {
           if (cfg.type === 'stdio') {
             mcpServers[id] = { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env };
           } else if (cfg.type === 'sse') {

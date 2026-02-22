@@ -1,24 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { FolderOpen } from 'lucide-react';
-
-const RECENT_DIRS_KEY = 'soagents:recent-dirs';
-const MAX_RECENT = 8;
-
-function loadRecentDirs(): string[] {
-  try {
-    const raw = localStorage.getItem(RECENT_DIRS_KEY);
-    return raw ? (JSON.parse(raw) as string[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecentDir(dir: string): void {
-  const recent = loadRecentDirs().filter((d) => d !== dir);
-  localStorage.setItem(RECENT_DIRS_KEY, JSON.stringify([dir, ...recent].slice(0, MAX_RECENT)));
-}
+import { useConfig } from '../context/ConfigContext';
 
 function getGreeting(): string {
   const hour = new Date().getHours();
@@ -36,15 +20,17 @@ interface Props {
 }
 
 export default function Launcher({ tabId, onSelectWorkspace }: Props) {
-  const [recentDirs, setRecentDirs] = useState<string[]>(loadRecentDirs);
+  const { workspaces, touchWorkspace, removeWorkspace } = useConfig();
+
+  // Sort by lastOpenedAt descending
+  const recentWorkspaces = [...workspaces].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
 
   const handleSelect = useCallback(
     (dir: string) => {
-      saveRecentDir(dir);
-      setRecentDirs(loadRecentDirs());
+      touchWorkspace(dir);
       onSelectWorkspace(tabId, dir);
     },
-    [tabId, onSelectWorkspace]
+    [tabId, onSelectWorkspace, touchWorkspace]
   );
 
   const handleOpenDialog = useCallback(async () => {
@@ -61,10 +47,8 @@ export default function Launcher({ tabId, onSelectWorkspace }: Props) {
 
   const handleRemoveRecent = useCallback((dir: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = loadRecentDirs().filter((d) => d !== dir);
-    localStorage.setItem(RECENT_DIRS_KEY, JSON.stringify(updated));
-    setRecentDirs(updated);
-  }, []);
+    removeWorkspace(dir);
+  }, [removeWorkspace]);
 
   const dirBasename = (path: string) => path.split('/').filter(Boolean).pop() ?? path;
   const dirParent = (path: string) => {
@@ -97,28 +81,28 @@ export default function Launcher({ tabId, onSelectWorkspace }: Props) {
         </button>
 
         {/* 最近工作区 */}
-        {recentDirs.length > 0 && (
+        {recentWorkspaces.length > 0 && (
           <div className="mt-6">
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--ink-tertiary)]">最近工作区</p>
             <div className="space-y-1">
-              {recentDirs.map((dir) => (
+              {recentWorkspaces.map((ws) => (
                 <div
-                  key={dir}
+                  key={ws.path}
                   role="button"
                   tabIndex={0}
-                  onClick={() => handleSelect(dir)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSelect(dir)}
+                  onClick={() => handleSelect(ws.path)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSelect(ws.path)}
                   className="group flex w-full items-center justify-between rounded-xl px-3 py-2.5 hover:bg-[var(--hover)] transition-colors cursor-pointer"
                 >
                   <div className="flex min-w-0 items-center gap-2.5">
                     <FolderOpen size={15} className="shrink-0 text-[var(--ink-tertiary)]" />
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-[var(--ink)]">{dirBasename(dir)}</p>
-                      <p className="truncate text-xs text-[var(--ink-tertiary)]">{dirParent(dir)}</p>
+                      <p className="truncate text-sm font-medium text-[var(--ink)]">{dirBasename(ws.path)}</p>
+                      <p className="truncate text-xs text-[var(--ink-tertiary)]">{dirParent(ws.path)}</p>
                     </div>
                   </div>
                   <button
-                    onClick={(e) => handleRemoveRecent(dir, e)}
+                    onClick={(e) => handleRemoveRecent(ws.path, e)}
                     className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-tertiary)] opacity-0 group-hover:opacity-100 hover:bg-[var(--border)] transition-opacity"
                   >
                     <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">

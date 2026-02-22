@@ -12,6 +12,7 @@ import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
 import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
 import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
+import { useConfig } from './context/ConfigContext';
 import type { SessionMetadata } from '../shared/types/session';
 
 function createTab(overrides: Partial<Tab> = {}): Tab {
@@ -514,16 +515,6 @@ export default function App() {
 }
 
 // ── WorkspaceTabBar ───────────────────────────────────────────────────
-const RECENT_DIRS_KEY = 'soagents:recent-dirs';
-
-function loadRecentDirs(): string[] {
-  try {
-    const raw = localStorage.getItem(RECENT_DIRS_KEY);
-    return raw ? (JSON.parse(raw) as string[]) : [];
-  } catch {
-    return [];
-  }
-}
 
 interface WorkspaceTabBarProps {
   tabs: Tab[];
@@ -539,11 +530,12 @@ interface WorkspaceTabBarProps {
 
 function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onCloseTab, onSelectWorkspace, onOpenWorkspace, showFilesPanel, onToggleFilesPanel }: WorkspaceTabBarProps) {
   const [openDropdownTabId, setOpenDropdownTabId] = useState<string | null>(null);
-  const [recentDirs, setRecentDirs] = useState<string[]>([]);
-
-  useEffect(() => {
-    if (openDropdownTabId) setRecentDirs(loadRecentDirs());
-  }, [openDropdownTabId]);
+  const { workspaces, touchWorkspace } = useConfig();
+  // Sort by lastOpenedAt descending for recent dirs display
+  const recentDirs = useMemo(
+    () => [...workspaces].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt).map((w) => w.path),
+    [workspaces]
+  );
 
   return (
     <div
@@ -616,7 +608,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                       return (
                         <button
                           key={dir}
-                          onClick={() => { onOpenWorkspace(dir); setOpenDropdownTabId(null); }}
+                          onClick={() => { touchWorkspace(dir); onOpenWorkspace(dir); setOpenDropdownTabId(null); }}
                           className="flex w-full items-center gap-2.5 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
                         >
                           <svg className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" viewBox="0 0 20 20" fill="currentColor">
