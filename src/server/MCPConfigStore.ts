@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 
-const CLAUDE_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
+const MCP_CONFIG_PATH = join(homedir(), '.soagents', 'mcp.json');
 
 export interface MCPServerConfig {
   type: 'stdio' | 'http' | 'sse';
@@ -12,45 +12,38 @@ export interface MCPServerConfig {
   url?: string;
 }
 
-function readSettings(): Record<string, unknown> {
-  if (!existsSync(CLAUDE_SETTINGS_PATH)) {
+function readMcpConfig(): Record<string, MCPServerConfig> {
+  if (!existsSync(MCP_CONFIG_PATH)) {
     return {};
   }
   try {
-    const raw = readFileSync(CLAUDE_SETTINGS_PATH, 'utf-8');
-    return JSON.parse(raw) as Record<string, unknown>;
+    const raw = readFileSync(MCP_CONFIG_PATH, 'utf-8');
+    return JSON.parse(raw) as Record<string, MCPServerConfig>;
   } catch {
     return {};
   }
 }
 
-function writeSettings(settings: Record<string, unknown>): void {
-  writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
+function writeMcpConfig(config: Record<string, MCPServerConfig>): void {
+  const dir = dirname(MCP_CONFIG_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(MCP_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
 }
 
 export function getAll(): Record<string, MCPServerConfig> {
-  const settings = readSettings();
-  const mcp = settings.mcp;
-  if (!mcp || typeof mcp !== 'object') {
-    return {};
-  }
-  return mcp as Record<string, MCPServerConfig>;
+  return readMcpConfig();
 }
 
 export function set(id: string, config: MCPServerConfig): void {
-  const settings = readSettings();
-  if (!settings.mcp || typeof settings.mcp !== 'object') {
-    settings.mcp = {};
-  }
-  (settings.mcp as Record<string, MCPServerConfig>)[id] = config;
-  writeSettings(settings);
+  const all = readMcpConfig();
+  all[id] = config;
+  writeMcpConfig(all);
 }
 
 export function remove(id: string): void {
-  const settings = readSettings();
-  if (!settings.mcp || typeof settings.mcp !== 'object') {
-    return;
-  }
-  delete (settings.mcp as Record<string, MCPServerConfig>)[id];
-  writeSettings(settings);
+  const all = readMcpConfig();
+  delete all[id];
+  writeMcpConfig(all);
 }

@@ -7,8 +7,9 @@ import * as SkillsStore from './SkillsStore';
 import { verifyProviderViaSdk } from './provider-verify';
 import type { PermissionMode } from '../shared/types/permission';
 import type { AppConfig, ProviderEnv, Provider } from '../shared/types/config';
-import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
-import { dirname } from 'path';
+import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, copyFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
@@ -299,6 +300,115 @@ const server = Bun.serve({
       const agentDir = url.searchParams.get('agentDir') ?? undefined;
       SkillsStore.deleteSkill(name, scope, agentDir);
       return Response.json({ ok: true });
+    }
+
+    // Skill sync from Claude Code
+    if (req.method === 'GET' && url.pathname === '/api/skill/sync-check') {
+      try {
+        const claudeSkillsDir = join(homedir(), '.claude', 'skills');
+        if (!existsSync(claudeSkillsDir)) {
+          return Response.json({ canSync: false, count: 0, folders: [] });
+        }
+
+        const claudeFolders = readdirSync(claudeSkillsDir, { withFileTypes: true })
+          .filter(entry => entry.isDirectory())
+          .map(entry => entry.name);
+
+        if (claudeFolders.length === 0) {
+          return Response.json({ canSync: false, count: 0, folders: [] });
+        }
+
+        const soagentsSkillsDir = join(homedir(), '.soagents', 'skills');
+        const existingFolders = new Set<string>();
+        if (existsSync(soagentsSkillsDir)) {
+          for (const entry of readdirSync(soagentsSkillsDir, { withFileTypes: true })) {
+            if (entry.isDirectory()) existingFolders.add(entry.name);
+          }
+        }
+
+        const syncableFolders = claudeFolders.filter(f => !existingFolders.has(f));
+        return Response.json({
+          canSync: syncableFolders.length > 0,
+          count: syncableFolders.length,
+          folders: syncableFolders,
+        });
+      } catch (error) {
+        console.error('[api/skill/sync-check] Error:', error);
+        return Response.json(
+          { canSync: false, count: 0, folders: [], error: error instanceof Error ? error.message : 'Check failed' },
+          { status: 500 }
+        );
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/skill/sync-from-claude') {
+      try {
+        const claudeSkillsDir = join(homedir(), '.claude', 'skills');
+        if (!existsSync(claudeSkillsDir)) {
+          return Response.json({ success: false, synced: 0, failed: 0, error: 'Claude Code skills directory not found' }, { status: 404 });
+        }
+
+        const claudeFolders = readdirSync(claudeSkillsDir, { withFileTypes: true })
+          .filter(entry => entry.isDirectory())
+          .map(entry => entry.name);
+
+        if (claudeFolders.length === 0) {
+          return Response.json({ success: true, synced: 0, failed: 0 });
+        }
+
+        const soagentsSkillsDir = join(homedir(), '.soagents', 'skills');
+        if (!existsSync(soagentsSkillsDir)) {
+          mkdirSync(soagentsSkillsDir, { recursive: true });
+        }
+
+        const existingFolders = new Set<string>();
+        for (const entry of readdirSync(soagentsSkillsDir, { withFileTypes: true })) {
+          if (entry.isDirectory()) existingFolders.add(entry.name);
+        }
+
+        const isValidName = (name: string) => /^[a-zA-Z0-9_-]+$/.test(name);
+        const syncableFolders = claudeFolders.filter(f => !existingFolders.has(f) && isValidName(f));
+
+        if (syncableFolders.length === 0) {
+          return Response.json({ success: true, synced: 0, failed: 0 });
+        }
+
+        let synced = 0;
+        let failed = 0;
+        const errors: string[] = [];
+
+        const copyDirRecursive = (src: string, dest: string) => {
+          mkdirSync(dest, { recursive: true });
+          for (const entry of readdirSync(src, { withFileTypes: true })) {
+            if (entry.isSymbolicLink()) continue; // skip symlinks for security
+            const srcPath = join(src, entry.name);
+            const destPath = join(dest, entry.name);
+            if (entry.isDirectory()) {
+              copyDirRecursive(srcPath, destPath);
+            } else {
+              copyFileSync(srcPath, destPath);
+            }
+          }
+        };
+
+        for (const folder of syncableFolders) {
+          try {
+            copyDirRecursive(join(claudeSkillsDir, folder), join(soagentsSkillsDir, folder));
+            synced++;
+          } catch (e) {
+            failed++;
+            errors.push(`${folder}: ${e instanceof Error ? e.message : 'Unknown error'}`);
+          }
+        }
+
+        return Response.json({ success: true, synced, failed, errors: errors.length > 0 ? errors : undefined });
+      } catch (error) {
+        console.error('[api/skill/sync-from-claude] Error:', error);
+        return Response.json(
+          { success: false, synced: 0, failed: 0, error: error instanceof Error ? error.message : 'Sync failed' },
+          { status: 500 }
+        );
+      }
     }
 
     return new Response("Not Found", { status: 404 });

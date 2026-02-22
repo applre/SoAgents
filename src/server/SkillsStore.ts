@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlink
 import { homedir } from 'os';
 import { join } from 'path';
 
-const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills');
+const GLOBAL_SKILLS_DIR = join(homedir(), '.soagents', 'skills');
 
 export interface SkillInfo {
   name: string;
