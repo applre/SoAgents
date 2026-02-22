@@ -2,32 +2,11 @@ import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react
 import { ConfigContext } from './ConfigContext';
 import type { AppConfig, Provider, ModelEntity } from '../../shared/types/config';
 import { DEFAULT_CONFIG, PROVIDERS } from '../../shared/providers';
-import { globalApiGetJson, globalApiPutJson } from '../api/apiFetch';
-
-const STORAGE_KEY = 'soagents:config';
-
-function loadConfig(): AppConfig {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_CONFIG };
-    const parsed = JSON.parse(raw) as Partial<AppConfig>;
-    return {
-      currentProviderId: parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
-      currentModelId: parsed.currentModelId,
-      apiKeys: parsed.apiKeys ?? {},
-      customProviders: parsed.customProviders ?? [],
-    };
-  } catch {
-    return { ...DEFAULT_CONFIG };
-  }
-}
-
-function saveConfig(config: AppConfig): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-}
+import { globalApiGetJson } from '../api/apiFetch';
+import { loadAppConfig, atomicModifyConfig } from '../config/configService';
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
-  const [config, setConfig] = useState<AppConfig>(loadConfig);
+  const [config, setConfig] = useState<AppConfig>({ ...DEFAULT_CONFIG });
   const [allProviders, setAllProviders] = useState<Provider[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
 
@@ -54,33 +33,12 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setProvidersLoading(false);
   }, []);
 
+  // 启动时从 Tauri FS（或 localStorage）加载配置
   useEffect(() => {
-    void loadProviders().then(() => {
-      // 启动时双向同步：后端 ↔ localStorage
-      globalApiGetJson<AppConfig>('/config')
-        .then((backendConfig) => {
-          const localConfig = loadConfig();
-          const hasLocalApiKeys = Object.keys(localConfig.apiKeys).length > 0;
-          const hasLocalProvider = localConfig.currentProviderId !== DEFAULT_CONFIG.currentProviderId;
-          // 后端有数据而本地没有 → 用后端的（本地缓存被清过）
-          // 本地有数据而后端没有 → 合并后回写后端
-          const merged: AppConfig = {
-            currentProviderId: hasLocalProvider
-              ? localConfig.currentProviderId
-              : (backendConfig.currentProviderId ?? localConfig.currentProviderId),
-            currentModelId: localConfig.currentModelId ?? backendConfig.currentModelId,
-            apiKeys: hasLocalApiKeys
-              ? { ...backendConfig.apiKeys, ...localConfig.apiKeys }
-              : (backendConfig.apiKeys ?? localConfig.apiKeys),
-            customProviders: localConfig.customProviders,
-          };
-          saveConfig(merged);
-          setConfig(merged);
-          // 合并结果回写后端，确保 localStorage 已有的配置被持久化到 config.json
-          globalApiPutJson('/config', merged).catch(() => {});
-        })
-        .catch(() => { /* 静默失败，使用 localStorage */ });
-    });
+    loadAppConfig()
+      .then((loaded) => setConfig(loaded))
+      .catch((err) => console.error('[ConfigProvider] Failed to load config:', err));
+    void loadProviders();
   }, [loadProviders]);
 
   const currentProvider = useMemo<Provider>(() => {
@@ -105,21 +63,15 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, [currentProvider, config.currentModelId]);
 
   const updateConfig = useCallback(async (partial: Partial<AppConfig>) => {
-    const prev = loadConfig();
-    const next: AppConfig = {
+    const next = await atomicModifyConfig((prev) => ({
       currentProviderId: partial.currentProviderId ?? prev.currentProviderId,
       currentModelId: partial.currentProviderId && partial.currentProviderId !== prev.currentProviderId
         ? undefined
         : (partial.currentModelId !== undefined ? partial.currentModelId : prev.currentModelId),
       apiKeys: partial.apiKeys !== undefined ? partial.apiKeys : prev.apiKeys,
       customProviders: partial.customProviders !== undefined ? partial.customProviders : prev.customProviders,
-    };
-    saveConfig(next);
+    }));
     setConfig(next);
-    // 异步同步到后端文件，不阻塞 UI
-    globalApiPutJson('/config', next).catch((err) =>
-      console.warn('[ConfigProvider] Failed to sync config to backend:', err),
-    );
   }, []);
 
   const refreshConfig = useCallback(async () => {

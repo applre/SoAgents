@@ -15,6 +15,16 @@
     "shell:allow-open",
     "process:allow-restart",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-app-read-recursive",
+    "fs:allow-app-write-recursive",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$HOME/.soagents" },
+        { "path": "$HOME/.soagents/**" }
+      ]
+    }
   ]
 }

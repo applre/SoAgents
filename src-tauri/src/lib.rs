@@ -20,6 +20,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(sidecar_state)
         .manage(sse_proxy::SseProxyState::new())
         .invoke_handler(tauri::generate_handler![
