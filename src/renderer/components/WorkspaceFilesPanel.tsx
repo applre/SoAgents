@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { globalApiGetJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 
@@ -86,9 +86,13 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
   const [loading, setLoading] = useState(false);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [dirChildren, setDirChildren] = useState<Record<string, FileEntry[]>>({});
+  const [showHidden, setShowHidden] = useState(false);
+  const showHiddenRef = useRef(showHidden);
+  showHiddenRef.current = showHidden;
 
   const fetchDir = useCallback(async (path: string): Promise<FileEntry[]> => {
-    return globalApiGetJson<FileEntry[]>(`/api/dir-files?path=${encodeURIComponent(path)}`);
+    const hidden = showHiddenRef.current ? '&hidden=1' : '';
+    return globalApiGetJson<FileEntry[]>(`/api/dir-files?path=${encodeURIComponent(path)}${hidden}`);
   }, []);
 
   const refresh = useCallback(async (retryMs?: number) => {
@@ -113,6 +117,12 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
   useEffect(() => {
     refresh(2000);
   }, [refresh]);
+
+  // showHidden 切换时自动刷新
+  useEffect(() => {
+    refresh();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showHidden]);
 
   const handleToggleDir = useCallback(async (path: string) => {
     setExpandedDirs((prev) => {
@@ -158,6 +168,15 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
           <p className="text-[12px] text-[var(--ink-tertiary)] truncate">{dirName}</p>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={() => { setShowHidden((v) => !v); }}
+            title={showHidden ? '隐藏隐藏文件' : '显示隐藏文件'}
+            className={`p-1.5 rounded hover:bg-[var(--hover)] transition-colors ${
+              showHidden ? 'text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+            }`}
+          >
+            {showHidden ? <Eye size={16} /> : <EyeOff size={16} />}
+          </button>
           <button
             onClick={() => refresh()}
             title="刷新"

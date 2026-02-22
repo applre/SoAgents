@@ -4,8 +4,9 @@ import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
+import { verifyProviderViaSdk } from './provider-verify';
 import type { PermissionMode } from '../shared/types/permission';
-import type { ProviderEnv, Provider } from '../shared/types/config';
+import type { AppConfig, ProviderEnv, Provider } from '../shared/types/config';
 import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { dirname } from 'path';
 
@@ -126,10 +127,11 @@ const server = Bun.serve({
     }
 
     if (req.method === 'PUT' && url.pathname === '/config') {
-      const body = await req.json() as { currentProviderId?: string; apiKeys?: Record<string, string> };
+      const body = await req.json() as Partial<AppConfig>;
       const current = ConfigStore.readConfig();
-      const updated = {
+      const updated: AppConfig = {
         currentProviderId: body.currentProviderId ?? current.currentProviderId,
+        currentModelId: body.currentModelId !== undefined ? body.currentModelId : current.currentModelId,
         apiKeys: body.apiKeys ?? current.apiKeys,
         customProviders: current.customProviders,
       };
@@ -178,10 +180,11 @@ const server = Bun.serve({
     if (req.method === 'GET' && url.pathname === '/api/dir-files') {
       const dirPath = url.searchParams.get('path');
       if (!dirPath) return Response.json({ error: 'missing path' }, { status: 400 });
+      const showHidden = url.searchParams.get('hidden') === '1';
       try {
         const entries = readdirSync(dirPath, { withFileTypes: true });
         const files = entries
-          .filter((e) => !e.name.startsWith('.'))
+          .filter((e) => showHidden || !e.name.startsWith('.'))
           .map((e) => ({
             name: e.name,
             type: e.isDirectory() ? 'dir' : 'file',
@@ -240,7 +243,7 @@ const server = Bun.serve({
       return Response.json({ ok: true });
     }
 
-    // Provider API Key 验证（服务端代理，避免 CORS）
+    // Provider API Key 验证（通过 SDK 子进程发真实对话验证）
     if (req.method === 'POST' && url.pathname === '/api/verify-provider-key') {
       const body = await req.json() as {
         baseUrl?: string;
@@ -248,38 +251,19 @@ const server = Bun.serve({
         model?: string;
         authType?: string;
       };
-      const testUrl = body.baseUrl
-        ? `${body.baseUrl}/v1/messages`
-        : 'https://api.anthropic.com/v1/messages';
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
-      };
-      const authType = body.authType ?? 'both';
-      if (authType === 'api_key') {
-        headers['x-api-key'] = body.apiKey;
-      } else if (authType === 'auth_token' || authType === 'auth_token_clear_api_key') {
-        headers['Authorization'] = `Bearer ${body.apiKey}`;
-      } else {
-        // both: 两个都设
-        headers['x-api-key'] = body.apiKey;
-        headers['Authorization'] = `Bearer ${body.apiKey}`;
+      if (!body.apiKey) {
+        return Response.json({ result: 'fail', error: '请输入 API Key' });
       }
-      try {
-        const res = await fetch(testUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model: body.model ?? 'claude-haiku-4-5-20251001',
-            max_tokens: 1,
-            messages: [{ role: 'user', content: 'hi' }],
-          }),
-        });
-        const ok = res.status !== 401 && res.status !== 403;
-        return Response.json({ result: ok ? 'ok' : 'fail', status: res.status });
-      } catch {
-        return Response.json({ result: 'fail', status: 0 });
-      }
+      const result = await verifyProviderViaSdk(
+        body.baseUrl ?? '',
+        body.apiKey,
+        body.authType ?? 'both',
+        body.model || undefined,
+      );
+      return Response.json({
+        result: result.success ? 'ok' : 'fail',
+        error: result.error,
+      });
     }
 
     // Skills 路由

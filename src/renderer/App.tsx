@@ -502,7 +502,7 @@ export default function App() {
         </div>
 
         {/* 文件面板：与 LeftSidebar 同级，全高列，内部自行管理对齐 */}
-        {showFilesPanel && (
+        {showFilesPanel && activeTab?.view !== 'settings' && (
           <WorkspaceFilesPanel
             agentDir={activeTab?.agentDir ?? null}
             onOpenFile={openEditorFile}

@@ -448,6 +448,7 @@ function ProviderConfigModal({
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
   const [validResult, setValidResult] = useState<'ok' | 'fail' | null>(null);
+  const [validError, setValidError] = useState<string | null>(null);
 
   const save = async () => {
     if (input === apiKey) return;
@@ -465,14 +466,16 @@ function ProviderConfigModal({
   const validate = async () => {
     setValidating(true);
     setValidResult(null);
+    setValidError(null);
     try {
-      const resp = await globalApiPostJson<{ result: 'ok' | 'fail' }>('/api/verify-provider-key', {
+      const resp = await globalApiPostJson<{ result: 'ok' | 'fail'; error?: string }>('/api/verify-provider-key', {
         baseUrl: provider.config?.baseUrl,
         apiKey: input,
         model: provider.primaryModel,
         authType: provider.authType,
       });
       setValidResult(resp.result);
+      if (resp.error) setValidError(resp.error);
     } catch {
       setValidResult('fail');
     } finally {
@@ -572,7 +575,7 @@ function ProviderConfigModal({
                 ) : validResult === 'ok' ? (
                   <><CircleCheck size={13} className="text-[var(--success)]" />验证通过</>
                 ) : validResult === 'fail' ? (
-                  <>验证失败，请检查 Key 是否正确</>
+                  <>{validError || '验证失败，请检查 Key 是否正确'}</>
                 ) : (
                   <>验证 API Key</>
                 )}
@@ -671,9 +674,9 @@ function ProviderTab() {
     if (!editProvider || editProvider === 'new') return;
     const providerId = editProvider.id;
 
-    // 如果是当前使用的供应商，切换到 anthropic
+    // 如果是当前使用的供应商，切换到默认 Anthropic 订阅
     if (currentProvider.id === providerId) {
-      await updateConfig({ currentProviderId: 'anthropic' });
+      await updateConfig({ currentProviderId: 'anthropic-sub' });
     }
 
     // 删除对应的 API Key

@@ -4,7 +4,7 @@ import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
 import { useTabState } from '../context/TabContext';
-import { PROVIDERS } from '../../shared/providers';
+// allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
@@ -68,7 +68,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const modeBtnRef = useRef<HTMLButtonElement>(null);
   const modeContainerRef = useRef<HTMLDivElement>(null);
 
-  const { currentProvider, currentModel, updateConfig } = useConfig();
+  const { allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading } = useConfig();
   const { apiGet, messages } = useTabState();
   const isProviderLocked = messages.length > 0;
   const slashQuery = showSlash && text.startsWith('/') ? text.slice(1) : '';
@@ -422,55 +422,69 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
           </div>
         )}
 
-        {/* Model Popover — 两级菜单 */}
+        {/* Model Popover — 同窗切换视图 */}
         {showModelPopover && (
-          <div ref={modelPopoverRef} className="absolute bottom-full mb-2 right-0 z-50 w-56 rounded-xl border border-[var(--border)] bg-white shadow-lg overflow-hidden">
+          <div ref={modelPopoverRef} className="absolute bottom-full mb-2 right-0 z-50 w-64 max-h-[400px] overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--paper)] shadow-lg py-1">
             {showProviderSubmenu ? (
-              /* Provider 子菜单 */
               <>
-                <button
-                  onClick={() => setShowProviderSubmenu(false)}
-                  className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)] hover:bg-[var(--hover)] transition-colors"
-                >
-                  <ChevronLeft size={12} />
-                  返回模型列表
-                </button>
-                {PROVIDERS.map((p) => (
+                {/* Provider 列表视图 */}
+                <div className="px-3 py-2 border-b border-[var(--border)]">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setShowProviderSubmenu(false); }}
+                    className="flex items-center gap-1 text-xs font-medium text-[var(--ink-secondary)] hover:text-[var(--ink)] transition-colors"
+                  >
+                    <ChevronLeft size={12} />
+                    <span>选择供应商</span>
+                  </button>
+                </div>
+                {allProviders.map((p) => (
                   <button
                     key={p.id}
-                    onClick={() => {
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
                       updateConfig({ currentProviderId: p.id });
                       setShowProviderSubmenu(false);
                     }}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
                       currentProvider.id === p.id
                         ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
                         : 'text-[var(--ink)] hover:bg-[var(--hover)]'
                     }`}
                   >
-                    <span className="truncate">{p.name}</span>
-                    {currentProvider.id === p.id && <span className="ml-auto text-xs">✓</span>}
+                    <span className="font-medium">{p.name}</span>
+                    <span className="text-[9px] text-[var(--ink-tertiary)] bg-[var(--hover)] px-1 py-0.5 rounded">
+                      {p.cloudProvider}
+                    </span>
                   </button>
                 ))}
               </>
             ) : (
-              /* 主视图：Provider 头部 + 当前 Provider 的 models */
               <>
-                <button
-                  onClick={() => {
-                    if (!isProviderLocked) setShowProviderSubmenu(true);
-                  }}
-                  disabled={isProviderLocked}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-xs font-medium border-b border-[var(--border)] transition-colors ${
-                    isProviderLocked
-                      ? 'text-[var(--ink-tertiary)] cursor-not-allowed'
-                      : 'text-[var(--ink-secondary)] hover:bg-[var(--hover)]'
-                  }`}
-                >
-                  {isProviderLocked && <Lock size={10} className="shrink-0" />}
-                  <span className="truncate">{currentProvider.name}</span>
-                  {!isProviderLocked && <ChevronDown size={10} className="ml-auto shrink-0" />}
-                </button>
+                {/* Model 列表视图 */}
+                <div className="px-3 py-2 border-b border-[var(--border)]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-[var(--ink-secondary)]">选择模型</span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!isProviderLocked) setShowProviderSubmenu(true);
+                      }}
+                      disabled={isProviderLocked}
+                      className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors ${
+                        isProviderLocked
+                          ? 'text-[var(--ink-tertiary)] cursor-not-allowed'
+                          : 'text-[var(--ink-secondary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+                      }`}
+                    >
+                      {isProviderLocked && <Lock size={9} className="shrink-0" />}
+                      <span>{currentProvider.name}</span>
+                      {!isProviderLocked && <ChevronDown size={10} />}
+                    </button>
+                  </div>
+                </div>
                 {isProviderLocked && (
                   <div className="px-3 py-1.5 text-[11px] text-[var(--ink-tertiary)] bg-amber-50 border-b border-[var(--border)]">
                     供应商已锁定，新建对话可切换
@@ -480,22 +494,26 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                   currentProvider.models.map((m) => (
                     <button
                       key={m.model}
-                      onClick={() => {
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
                         updateConfig({ currentModelId: m.model });
                         setShowModelPopover(false);
                       }}
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                      className={`flex w-full items-center px-3 py-2 text-left text-sm transition-colors ${
                         currentModel?.model === m.model
                           ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
                           : 'text-[var(--ink)] hover:bg-[var(--hover)]'
                       }`}
                     >
-                      <span className="truncate">{m.modelName}</span>
+                      <span className={`font-medium ${currentModel?.model === m.model ? 'text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
+                        {m.modelName}
+                      </span>
                       {currentModel?.model === m.model && <span className="ml-auto text-xs">✓</span>}
                     </button>
                   ))
                 ) : (
-                  <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">暂无可选模型</div>
+                  <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">{configLoading ? '加载模型中...' : '暂无可选模型'}</div>
                 )}
               </>
             )}
@@ -676,7 +694,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                 ? <Lock size={11} className="text-[var(--ink-tertiary)]" />
                 : <span className="text-[var(--ink-tertiary)]">✦</span>
               }
-              <span className="max-w-[120px] truncate">{currentModel?.modelName ?? currentProvider.name}</span>
+              <span className="max-w-[120px] truncate">{configLoading ? '加载中...' : (currentModel?.modelName ?? currentProvider.name)}</span>
               <ChevronDown size={12} className="shrink-0" />
             </button>
 

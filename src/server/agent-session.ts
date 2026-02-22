@@ -4,11 +4,12 @@ import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
 import * as MCPConfigStore from './MCPConfigStore';
+import { resolveClaudeCodeCli } from './provider-verify';
 import type { SessionMetadata, SessionMessage } from '../shared/types/session';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
 
-function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string, string | undefined> {
+export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
 
   // 1. ANTHROPIC_BASE_URL
@@ -46,8 +47,7 @@ function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string, string
     delete env.ANTHROPIC_API_KEY;
   }
 
-  // 3. 不通过环境变量传 model（改用 options.model）
-  delete env.ANTHROPIC_MODEL;
+  // 3. model 由调用方按需设置 ANTHROPIC_MODEL（不在此处 delete）
 
   // 4. API 超时设置
   if (providerEnv?.timeout) {
@@ -141,7 +141,7 @@ class AgentSession {
       }
       const resolvedPermissionMode = permissionMode ?? 'acceptEdits';
 
-      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}, mode: ${resolvedPermissionMode}`);
+      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}, mode: ${resolvedPermissionMode}, model: ${model ?? 'default'}, provider: ${providerEnv?.baseUrl ?? 'default(subscription)'}, authType: ${providerEnv?.authType ?? 'N/A'}, apiKey: ${providerEnv?.apiKey ? '***' + providerEnv.apiKey.slice(-4) : 'none'}`);
 
       const canUseTool = resolvedPermissionMode !== 'bypassPermissions'
         ? async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
@@ -204,6 +204,13 @@ class AgentSession {
             ? { allowDangerouslySkipPermissions: true } : {}),
           model,
           env: buildClaudeSessionEnv(providerEnv),
+          // 指定 CLI 路径和运行时，防止 SDK 使用全局安装的 CLI（可能携带 OAuth 凭证）
+          pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
+          executable: 'bun',
+          stderr: (message: string) => { console.error(`[AgentSession] SDK stderr: ${message}`); },
+          // 仅用 project 级 settings，不读 ~/.claude/ 用户配置
+          // 避免 OAuth 凭证覆盖 env 传入的第三方 provider 配置
+          settingSources: ['project'],
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           mcpServers: mcpServers as any,
           includePartialMessages: true,
@@ -221,7 +228,12 @@ class AgentSession {
 
         if (msg.type === 'stream_event') {
           // streaming chunks — broadcast only, don't accumulate (assistant msg handles storage)
-          const streamEvent = msg.event as { type: string; delta?: { type: string; text?: string; thinking?: string; partial_json?: string }; content_block?: { type: string; name?: string; id?: string } };
+          const streamEvent = msg.event as { type: string; delta?: { type: string; text?: string; thinking?: string; partial_json?: string }; content_block?: { type: string; name?: string; id?: string }; message?: { model?: string; id?: string } };
+
+          // 捕获 message_start 中的实际模型名
+          if (streamEvent.type === 'message_start' && streamEvent.message) {
+            console.log(`[AgentSession] API responded with model: ${streamEvent.message.model}, msg_id: ${streamEvent.message.id}`);
+          }
 
           if (streamEvent.type === 'content_block_delta') {
             const delta = streamEvent.delta;

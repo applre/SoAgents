@@ -40,6 +40,9 @@ specs/research/
 # Third-party skills
 .baoyu-skills/
 
+# Generated images
+images/
+
 # Design files
 *.pen
 

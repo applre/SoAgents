@@ -23,6 +23,7 @@ export function readConfig(): AppConfig {
     const parsed = JSON.parse(raw) as Partial<AppConfig>;
     return {
       currentProviderId: parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
+      currentModelId: parsed.currentModelId,
       apiKeys: parsed.apiKeys ?? {},
       customProviders: parsed.customProviders ?? [],
     };

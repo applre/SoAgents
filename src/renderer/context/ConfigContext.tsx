@@ -3,6 +3,7 @@ import type { AppConfig, Provider, ModelEntity } from '../../shared/types/config
 
 export interface ConfigState {
   config: AppConfig;
+  allProviders: Provider[];
   currentProvider: Provider;
   currentModel: ModelEntity | null;
   updateConfig: (partial: Partial<AppConfig>) => Promise<void>;
