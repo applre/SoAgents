@@ -1,9 +1,10 @@
 export type TabView = 'launcher' | 'chat' | 'settings';
 
 export interface OpenFile {
-  filePath: string;
+  filePath: string;       // 文件路径 或 URL
   title: string;
   mode: 'edit' | 'preview';
+  isUrl?: boolean;        // true = URL，用 Tauri WebView 渲染
 }
 
 export interface Tab {

@@ -9,9 +9,10 @@ import ToolUse from './tools/ToolUse';
 
 interface Props {
   message: Message;
+  onOpenUrl?: (url: string) => void;
 }
 
-export default function MessageItem({ message }: Props) {
+export default function MessageItem({ message, onOpenUrl }: Props) {
   const isUser = message.role === 'user';
 
   return (
@@ -41,6 +42,17 @@ export default function MessageItem({ message }: Props) {
               </div>
             );
           }
+          if (block.type === 'image') {
+            return (
+              <div key={i} className="mb-2">
+                <img
+                  src={block.base64}
+                  alt={block.name}
+                  className="max-w-full max-h-64 rounded-lg"
+                />
+              </div>
+            );
+          }
           return (
             <div key={i} className={`prose prose-sm max-w-none ${isUser ? '[&_>*]:!text-white [&_>p_code]:bg-white/20 [&_a]:text-white/90' : ''}`}>
               <ReactMarkdown
@@ -65,6 +77,20 @@ export default function MessageItem({ message }: Props) {
                         {children}
                       </code>
                     );
+                  },
+                  a({ href, children }) {
+                    if (href?.startsWith('http') && onOpenUrl) {
+                      return (
+                        <a
+                          href={href}
+                          onClick={(e) => { e.preventDefault(); onOpenUrl(href); }}
+                          title={href}
+                        >
+                          {children}
+                        </a>
+                      );
+                    }
+                    return <a href={href}>{children}</a>;
                   },
                 }}
               >

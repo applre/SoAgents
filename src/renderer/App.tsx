@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2 } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2, Folder, Check, Plus } from 'lucide-react';
 import { startWindowDrag, toggleMaximize } from './utils/env';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
@@ -8,6 +8,7 @@ import Launcher from './pages/Launcher';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
 import Editor from './pages/Editor';
+import WebViewPanel from './pages/WebViewPanel';
 import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
 import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
 import type { ToolbarAction } from './components/EditorToolbar';
@@ -221,6 +222,22 @@ export default function App() {
     );
   }, [activeTabId]);
 
+  // 打开 URL：在 SecondTabBar 中新建 WebView tab
+  const openUrl = useCallback((url: string) => {
+    let title: string;
+    try { title = new URL(url).hostname; } catch { title = url; }
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabId) return t;
+        const existing = t.openFiles.find((f) => f.filePath === url);
+        const openFiles = existing
+          ? t.openFiles
+          : [...t.openFiles, { filePath: url, title, mode: 'preview' as const, isUrl: true }];
+        return { ...t, openFiles, activeSubTab: url };
+      })
+    );
+  }, [activeTabId]);
+
   // 关闭文件 tab
   const handleCloseFileTab = useCallback((filePath: string) => {
     setTabs((prev) =>
@@ -274,7 +291,9 @@ export default function App() {
 
   const workspaceTabs = tabs;
 
-  const isEditorActive = activeTab?.activeSubTab !== 'chat' && activeTab?.activeSubTab !== undefined;
+  const isEditorActive = activeTab?.activeSubTab !== 'chat'
+    && activeTab?.activeSubTab !== undefined
+    && !activeOpenFile?.isUrl;
 
   return (
     <ConfigProvider>
@@ -464,6 +483,7 @@ export default function App() {
                       onExposeUpdateTitle={t.id === activeTabId ? handleExposeUpdateTitle : undefined}
                       injectText={pendingInjects[t.id] ?? null}
                       onInjectConsumed={() => setPendingInjects((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
+                      onOpenUrl={openUrl}
                     />
                   </div>
                 );
@@ -485,11 +505,16 @@ export default function App() {
                         flex: 1,
                       }}
                     >
-                      <Editor
-                        filePath={f.filePath}
-                        mode={f.mode}
-                        onActionRef={(ref) => { if (fileVisible) editorActionRef.current = ref; }}
-                      />
+                      {f.isUrl ? (
+                        <WebViewPanel url={f.filePath} visible={fileVisible} />
+                      ) : (
+                        <Editor
+                          filePath={f.filePath}
+                          mode={f.mode}
+                          onActionRef={(ref) => { if (fileVisible) editorActionRef.current = ref; }}
+                          onOpenUrl={openUrl}
+                        />
+                      )}
                     </div>
                   );
                 })
@@ -611,17 +636,13 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                           onClick={() => { touchWorkspace(dir); onOpenWorkspace(dir); setOpenDropdownTabId(null); }}
                           className="flex w-full items-center gap-2.5 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
                         >
-                          <svg className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
-                          </svg>
+                          <Folder className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" />
                           <div className="flex-1 min-w-0 text-left">
                             <p className="text-[13px] font-medium text-[var(--ink)] truncate">{name}</p>
                             <p className="text-[11px] text-[var(--ink-tertiary)] truncate">{dir}</p>
                           </div>
                           {isCurrentDir && (
-                            <svg className="h-4 w-4 shrink-0 text-[var(--accent)]" viewBox="0 0 20 20" fill="currentColor">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
+                            <Check className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                           )}
                         </button>
                       );
@@ -632,10 +653,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                     onClick={() => { onAddWorkspace(); setOpenDropdownTabId(null); }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
                   >
-                    <svg className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <line x1="12" y1="5" x2="12" y2="19" />
-                      <line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
+                    <Plus className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" />
                     <span className="text-[13px] text-[var(--ink)]">添加工作区</span>
                   </button>
                 </div>

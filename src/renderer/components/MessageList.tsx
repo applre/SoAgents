@@ -4,9 +4,10 @@ import { useAutoScroll } from '../hooks/useAutoScroll';
 
 interface Props {
   messages: Message[];
+  onOpenUrl?: (url: string) => void;
 }
 
-export default function MessageList({ messages }: Props) {
+export default function MessageList({ messages, onOpenUrl }: Props) {
   const { scrollRef, checkAtBottom } = useAutoScroll(messages);
 
   return (
@@ -21,7 +22,7 @@ export default function MessageList({ messages }: Props) {
         </div>
       )}
       {messages.map((msg) => (
-        <MessageItem key={msg.id} message={msg} />
+        <MessageItem key={msg.id} message={msg} onOpenUrl={onOpenUrl} />
       ))}
     </div>
   );

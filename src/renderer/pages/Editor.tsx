@@ -23,6 +23,7 @@ interface Props {
   mode: 'edit' | 'preview';
   onSave?: (filePath: string) => void;
   onActionRef?: (ref: { handleAction: (action: ToolbarAction) => void; save: () => void }) => void;
+  onOpenUrl?: (url: string) => void;
 }
 
 const cmTheme = EditorView.theme({
@@ -70,7 +71,7 @@ function isHtmlFile(filePath: string) {
   return /\.(html|htm)$/i.test(filePath);
 }
 
-export default function Editor({ filePath, mode, onSave, onActionRef }: Props) {
+export default function Editor({ filePath, mode, onSave, onActionRef, onOpenUrl }: Props) {
   const [content, setContent] = useState('');
   const editorViewRef = useRef<EditorView | null>(null);
   const langExtension = useMemo(() => getLangExtension(filePath), [filePath]);
@@ -253,6 +254,20 @@ export default function Editor({ filePath, mode, onSave, onActionRef }: Props) {
                     ) : (
                       <code className={className} {...props}>{children}</code>
                     );
+                  },
+                  a({ href, children }) {
+                    if (href?.startsWith('http') && onOpenUrl) {
+                      return (
+                        <a
+                          href={href}
+                          onClick={(e) => { e.preventDefault(); onOpenUrl(href); }}
+                          title={href}
+                        >
+                          {children}
+                        </a>
+                      );
+                    }
+                    return <a href={href}>{children}</a>;
                   },
                 }}
               >

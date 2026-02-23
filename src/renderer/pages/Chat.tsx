@@ -17,6 +17,7 @@ interface Props {
   onExposeUpdateTitle?: (fn: (sessionId: string, title: string) => Promise<void>) => void;
   injectText?: string | null;
   onInjectConsumed?: () => void;
+  onOpenUrl?: (url: string) => void;
 }
 
 interface ChatContentProps {
@@ -29,9 +30,10 @@ interface ChatContentProps {
   onExposeUpdateTitle?: (fn: (sessionId: string, title: string) => Promise<void>) => void;
   injectText?: string | null;
   onInjectConsumed?: () => void;
+  onOpenUrl?: (url: string) => void;
 }
 
-function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed }: ChatContentProps) {
+function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: ChatContentProps) {
   const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady } = useTabState();
 
   // sidecar 就绪后拉取一次，确保左侧栏有数据
@@ -105,7 +107,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
 
   return (
     <div className="flex h-full flex-col">
-      <MessageList messages={messages} />
+      <MessageList messages={messages} onOpenUrl={onOpenUrl} />
       {pendingQuestion && (
         <AskUserQuestionPrompt
           questions={pendingQuestion.questions}
@@ -133,7 +135,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
   );
 }
 
-export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed }: Props) {
+export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: Props) {
   if (!tab.agentDir) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -154,6 +156,7 @@ export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onE
         onExposeUpdateTitle={onExposeUpdateTitle}
         injectText={injectText}
         onInjectConsumed={onInjectConsumed}
+        onOpenUrl={onOpenUrl}
       />
     </TabProvider>
   );
