@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
-import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, FileText, X, Image as ImageIcon, Lock } from 'lucide-react';
+import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
@@ -7,14 +8,15 @@ import { useTabState } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
 import type { ModelEntity } from '../../shared/types/config';
+import type { ChatImage } from '../types/chat';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { formatSize } from '../utils/formatSize';
 
-const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string }[] = [
-  { value: 'acceptEdits',       label: '协同模式', desc: '自动接受文件编辑，遇到 Shell 命令时弹窗确认' },
-  { value: 'default',           label: '确认模式', desc: '每次工具调用都需要手动确认，适合谨慎操作' },
-  { value: 'bypassPermissions', label: '自主模式', desc: '全自动执行，跳过所有确认，适合批量任务' },
+const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string; Icon: LucideIcon; color: string; recommended?: boolean }[] = [
+  { value: 'plan',              label: '规划模式', desc: 'Agent 仅研究信息并与你确认规划',       Icon: Shield,      color: '#3b82f6' },
+  { value: 'acceptEdits',       label: '协同模式', desc: '文件读写自动执行，Shell 命令需确认', Icon: ShieldCheck, color: 'var(--accent)', recommended: true },
+  { value: 'bypassPermissions', label: '自主模式', desc: 'Agent 拥有自主权限，无需人工确认',   Icon: Zap,         color: '#f59e0b' },
 ];
 
 interface SkillPayload {
@@ -23,7 +25,7 @@ interface SkillPayload {
 }
 
 interface Props {
-  onSend: (text: string, permissionMode?: string, skill?: SkillPayload) => void;
+  onSend: (text: string, permissionMode?: string, skill?: SkillPayload, images?: ChatImage[]) => void;
   onStop: () => void;
   isLoading: boolean;
   agentDir?: string;
@@ -182,14 +184,27 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
-    const filePaths = attachedFiles.map((f) => f.path).join(' ');
-    // 用户可见文本（不含 skill 内容）
-    const userText = [filePaths, trimmed].filter(Boolean).join('\n');
+    // 分离图片和普通文件
+    const imageFiles = attachedFiles.filter((f) => f.isImage && f.base64);
+    const regularFiles = attachedFiles.filter((f) => !f.isImage || !f.base64);
+    const filePaths = regularFiles.map((f) => f.path).join(' ');
+    // 用户可见文本（用户 Prompt 在前，文件路径在后）
+    const userText = [trimmed, filePaths].filter(Boolean).join('\n');
     // skill 信息单独传递
     const skill = selectedSkill ? { name: selectedSkill.name, content: selectedSkill.content } : undefined;
-    if (!userText && !skill) return;
+    if (!userText && !skill && imageFiles.length === 0) return;
     if (isLoading) return;
-    onSend(userText, permissionMode, skill);
+    // 提取图片的 mimeType 和纯 base64 数据
+    const images: ChatImage[] = imageFiles.map((f) => {
+      const parts = f.base64!.split(',');
+      const mimeMatch = parts[0].match(/data:(.*?);/);
+      return {
+        name: f.name,
+        mimeType: mimeMatch?.[1] ?? 'image/png',
+        data: parts[1] ?? '',
+      };
+    });
+    onSend(userText, permissionMode, skill, images.length > 0 ? images : undefined);
     setText('');
     setAttachedFiles([]);
     setSelectedSkill(null);
@@ -541,7 +556,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                       <span className={`font-medium ${effectiveModel?.model === m.model ? 'text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
                         {m.modelName}
                       </span>
-                      {effectiveModel?.model === m.model && <span className="ml-auto text-xs">✓</span>}
+                      {effectiveModel?.model === m.model && <Check size={14} className="ml-auto shrink-0" />}
                     </button>
                   ))
                 ) : (
@@ -660,56 +675,77 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             {/* 权限模式下拉 */}
             <div className="relative" ref={modeContainerRef}>
               {showModePopover && (
-                <div className="absolute bottom-full mb-2 right-0 z-50 w-64 rounded-xl border border-[var(--border)] bg-white shadow-lg overflow-hidden">
-                  <div className="px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">执行权限模式</div>
-                  {PERMISSION_MODES.map((m) => (
-                    <button
-                      key={m.value}
-                      onClick={() => {
-                      setPermissionMode(m.value);
-                      setShowModePopover(false);
-                      if (agentDir) {
-                        updateWorkspaceConfig(agentDir, { permissionMode: m.value });
-                      }
-                    }}
-                      className={`flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[var(--hover)] ${
-                        permissionMode === m.value ? 'bg-[var(--accent)]/8' : ''
-                      }`}
-                    >
-                      <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-                        {permissionMode === m.value && (
-                          <div className={`h-2 w-2 rounded-full ${
-                            m.value === 'bypassPermissions' ? 'bg-amber-500' :
-                            m.value === 'default' ? 'bg-blue-500' : 'bg-[var(--accent)]'
-                          }`} />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className={`text-[13px] font-medium leading-tight ${
-                          permissionMode === m.value ? 'text-[var(--ink)]' : 'text-[var(--ink-secondary)]'
-                        }`}>{m.label}</p>
-                        <p className="mt-0.5 text-[11px] text-[var(--ink-tertiary)] leading-snug">{m.desc}</p>
-                      </div>
-                    </button>
-                  ))}
+                <div className="absolute bottom-full mb-2 right-0 z-50 w-72 rounded-xl border border-[var(--border)] bg-white shadow-lg overflow-hidden">
+                  <div className="px-3 py-2.5 text-[12px] font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">
+                    执行权限
+                  </div>
+                  <div className="p-1.5">
+                    {PERMISSION_MODES.map((m) => {
+                      const isActive = permissionMode === m.value;
+                      const MIcon = m.Icon;
+                      return (
+                        <button
+                          key={m.value}
+                          onClick={() => {
+                            setPermissionMode(m.value);
+                            setShowModePopover(false);
+                            if (agentDir) {
+                              updateWorkspaceConfig(agentDir, { permissionMode: m.value });
+                            }
+                          }}
+                          className={`flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors ${
+                            isActive ? 'bg-[var(--surface)]' : 'hover:bg-[var(--hover)]'
+                          }`}
+                        >
+                          <div
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+                            style={{ background: isActive ? `color-mix(in srgb, ${m.color} 12%, transparent)` : 'var(--surface)' }}
+                          >
+                            <MIcon size={16} style={{ color: isActive ? m.color : 'var(--ink-tertiary)' }} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`text-[13px] font-medium ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-secondary)]'}`}>
+                                {m.label}
+                              </span>
+                              {m.recommended && (
+                                <span className="text-[10px] px-1.5 py-px rounded-full bg-[var(--accent)]/10 text-[var(--accent)] font-medium leading-tight">
+                                  推荐
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-[var(--ink-tertiary)] leading-snug">{m.desc}</p>
+                          </div>
+                          {isActive && <Check size={14} className="shrink-0" style={{ color: m.color }} />}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
-              <button
-                ref={modeBtnRef}
-                onClick={() => { setShowModePopover((v) => !v); setShowSkillPopover(false); setShowMCPPopover(false); setShowModelPopover(false); }}
-                className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                  showModePopover
-                    ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-                    : permissionMode === 'bypassPermissions'
-                    ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
-                    : permissionMode === 'default'
-                    ? 'bg-blue-50 text-blue-600 hover:bg-blue-100'
-                    : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
-                }`}
-              >
-                {PERMISSION_MODES.find(m => m.value === permissionMode)?.label}
-                <ChevronDown size={10} className="shrink-0" />
-              </button>
+              {(() => {
+                const currentMode = PERMISSION_MODES.find(m => m.value === permissionMode);
+                const MIcon = currentMode?.Icon ?? ShieldCheck;
+                return (
+                  <button
+                    ref={modeBtnRef}
+                    onClick={() => { setShowModePopover((v) => !v); setShowSkillPopover(false); setShowMCPPopover(false); setShowModelPopover(false); }}
+                    className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                      showModePopover
+                        ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                        : permissionMode === 'bypassPermissions'
+                        ? 'bg-amber-50 text-amber-600 hover:bg-amber-100'
+                        : permissionMode === 'plan'
+                        ? 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+                        : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+                    }`}
+                  >
+                    <MIcon size={12} className="shrink-0" />
+                    {currentMode?.label}
+                    <ChevronDown size={10} className="shrink-0" />
+                  </button>
+                );
+              })()}
             </div>
 
             <button
@@ -730,7 +766,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             >
               {isProviderLocked
                 ? <Lock size={11} className="text-[var(--ink-tertiary)]" />
-                : <span className="text-[var(--ink-tertiary)]">✦</span>
+                : <Sparkles size={11} className="text-[var(--ink-tertiary)]" />
               }
               <span className="max-w-[120px] truncate">{configLoading ? '加载中...' : (effectiveModel?.modelName ?? effectiveProvider.name)}</span>
               <ChevronDown size={12} className="shrink-0" />

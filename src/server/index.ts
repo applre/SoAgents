@@ -14,6 +14,9 @@ import { homedir } from 'os';
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
 
+// 启动时种子化内置 Skills
+SkillsStore.seedBundledSkills();
+
 const port = parseInt(process.env.PORT || "3000", 10);
 
 const sseHandler = createSseHandler();
@@ -37,12 +40,12 @@ const server = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[] };
-      const VALID_MODES = ['default', 'acceptEdits', 'bypassPermissions'] as const;
+      const body = await req.json() as { message: string; agentDir: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }> };
+      const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
         : 'acceptEdits';
-      agentSession.sendMessage(body.message, body.agentDir, body.providerEnv, body.model, mode, body.mcpEnabledServerIds).catch(console.error);
+      agentSession.sendMessage(body.message, body.agentDir, body.providerEnv, body.model, mode, body.mcpEnabledServerIds, body.images).catch(console.error);
       return Response.json({ ok: true });
     }
 
@@ -228,7 +231,10 @@ const server = Bun.serve({
 
     // MCP 路由
     if (req.method === 'GET' && url.pathname === '/api/mcp') {
-      return Response.json(MCPConfigStore.getAll());
+      return Response.json({
+        servers: MCPConfigStore.getAll(),
+        enabledIds: MCPConfigStore.getEnabledIds(),
+      });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/mcp') {
@@ -238,8 +244,17 @@ const server = Bun.serve({
       return Response.json({ ok: true });
     }
 
+    if (req.method === 'POST' && url.pathname === '/api/mcp/toggle') {
+      const body = await req.json() as { id: string; enabled: boolean };
+      MCPConfigStore.setEnabled(body.id, body.enabled);
+      return Response.json({ ok: true });
+    }
+
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/mcp/')) {
-      const id = url.pathname.slice('/api/mcp/'.length);
+      const id = decodeURIComponent(url.pathname.slice('/api/mcp/'.length));
+      if (MCPConfigStore.isBuiltin(id)) {
+        return Response.json({ error: '不允许删除内置 MCP' }, { status: 403 });
+      }
       MCPConfigStore.remove(id);
       return Response.json({ ok: true });
     }
@@ -298,7 +313,16 @@ const server = Bun.serve({
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length));
       const scope = (url.searchParams.get('scope') ?? 'global') as 'global' | 'project';
       const agentDir = url.searchParams.get('agentDir') ?? undefined;
-      SkillsStore.deleteSkill(name, scope, agentDir);
+      const deleted = SkillsStore.deleteSkill(name, scope, agentDir);
+      if (!deleted) {
+        return Response.json({ error: '不允许删除内置 Skill' }, { status: 403 });
+      }
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/skills/toggle') {
+      const body = await req.json() as { name: string; enabled: boolean };
+      SkillsStore.toggleSkill(body.name, body.enabled);
       return Response.json({ ok: true });
     }
 

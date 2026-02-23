@@ -1,1 +1,1 @@
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
+export type PermissionMode = 'plan' | 'acceptEdits' | 'bypassPermissions';
