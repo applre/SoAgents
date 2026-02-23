@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { MoreHorizontal, PanelLeft, Pencil, Pin, Plus, Trash2 } from 'lucide-react';
+import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
 import SearchModal from './SearchModal';
@@ -92,6 +93,7 @@ export default function LeftSidebar({
           style={{ height: 48, paddingLeft: 4, paddingRight: 4, marginTop: 24 }}
         >
           <div className="flex items-center gap-2">
+            <img src={appIcon} alt="SoAgents" className="h-6 w-6 rounded-[6px]" />
             <span className="text-[20px] font-semibold text-[var(--ink)]">SoAgents</span>
           </div>
           <button

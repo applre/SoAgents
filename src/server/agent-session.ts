@@ -1,5 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
@@ -8,6 +8,12 @@ import { resolveClaudeCodeCli } from './provider-verify';
 import type { SessionMetadata, SessionMessage } from '../shared/types/session';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
+
+interface ChatImage {
+  name: string;
+  mimeType: string;
+  data: string; // 纯 base64
+}
 
 export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
@@ -84,7 +90,7 @@ class AgentSession {
   private currentSessionId: string | null = null;
   private currentProviderEnv: ProviderEnv | undefined = undefined;
 
-  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[]): Promise<void> {
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<void> {
     if (this.isRunning) return;
 
     // 如果没有当前 session，创建一个新的
@@ -126,30 +132,31 @@ class AgentSession {
 
     try {
       const mcpAll = MCPConfigStore.getAll();
-      // Filter MCP servers by workspace-level enablement list
-      let mcpFiltered = mcpAll;
+      const globalEnabledIds = new Set(MCPConfigStore.getEnabledIds());
+
+      // 双层过滤：全局启用 ∩ 工作区启用
+      let mcpFiltered = mcpAll.filter((s) => globalEnabledIds.has(s.id));
       if (mcpEnabledServerIds !== undefined) {
-        const enabledSet = new Set(mcpEnabledServerIds);
-        mcpFiltered = Object.fromEntries(
-          Object.entries(mcpAll).filter(([id]) => enabledSet.has(id))
-        ) as typeof mcpAll;
+        const workspaceSet = new Set(mcpEnabledServerIds);
+        mcpFiltered = mcpFiltered.filter((s) => workspaceSet.has(s.id));
       }
+
       let mcpServers: Record<string, unknown> | undefined;
-      if (Object.keys(mcpFiltered).length > 0) {
+      if (mcpFiltered.length > 0) {
         mcpServers = {};
-        for (const [id, cfg] of Object.entries(mcpFiltered)) {
+        for (const cfg of mcpFiltered) {
           if (cfg.type === 'stdio') {
-            mcpServers[id] = { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env };
+            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env };
           } else if (cfg.type === 'sse') {
-            mcpServers[id] = { type: 'sse', url: cfg.url };
+            mcpServers[cfg.id] = { type: 'sse', url: cfg.url };
           } else {
-            mcpServers[id] = { type: 'http', url: cfg.url };
+            mcpServers[cfg.id] = { type: 'http', url: cfg.url };
           }
         }
       }
       const resolvedPermissionMode = permissionMode ?? 'acceptEdits';
 
-      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}, mode: ${resolvedPermissionMode}, model: ${model ?? 'default'}, provider: ${providerEnv?.baseUrl ?? 'default(subscription)'}, authType: ${providerEnv?.authType ?? 'N/A'}, apiKey: ${providerEnv?.apiKey ? '***' + providerEnv.apiKey.slice(-4) : 'none'}`);
+      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}, mode: ${resolvedPermissionMode}, model: ${model ?? 'default'}, provider: ${providerEnv?.baseUrl ?? 'default(subscription)'}, authType: ${providerEnv?.authType ?? 'N/A'}, apiKey: ${providerEnv?.apiKey ? '***' + providerEnv.apiKey.slice(-4) : 'none'}, images: ${images?.length ?? 0}`);
 
       const canUseTool = resolvedPermissionMode !== 'bypassPermissions'
         ? async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
@@ -201,8 +208,36 @@ class AgentSession {
           }
         : undefined;
 
+      // 构建 prompt：有图片时使用多模态 AsyncIterable<SDKUserMessage>，否则纯文本
+      let prompt: string | AsyncIterable<SDKUserMessage>;
+      if (images && images.length > 0) {
+        const sessionId = this.sdkSessionId ?? crypto.randomUUID();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const contentBlocks: any[] = [];
+        // 用户文本优先（session 标题取前 50 字符）
+        if (text) {
+          contentBlocks.push({ type: 'text', text });
+        }
+        for (const img of images) {
+          contentBlocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: img.mimeType, data: img.data },
+          });
+        }
+        prompt = (async function* () {
+          yield {
+            type: 'user' as const,
+            message: { role: 'user' as const, content: contentBlocks },
+            parent_tool_use_id: null,
+            session_id: sessionId,
+          } as SDKUserMessage;
+        })();
+      } else {
+        prompt = text;
+      }
+
       const q = query({
-        prompt: text,
+        prompt,
         options: {
           allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
           cwd: agentDir,

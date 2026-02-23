@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
-import { FolderOpen } from 'lucide-react';
+import { FolderOpen, X } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
 
 function getGreeting(): string {
@@ -98,16 +98,14 @@ export default function Launcher({ tabId, onSelectWorkspace }: Props) {
                     <FolderOpen size={15} className="shrink-0 text-[var(--ink-tertiary)]" />
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium text-[var(--ink)]">{dirBasename(ws.path)}</p>
-                      <p className="truncate text-xs text-[var(--ink-tertiary)]">{dirParent(ws.path)}</p>
+                      <p className="truncate text-xs text-[var(--ink-tertiary)]">{ws.path}</p>
                     </div>
                   </div>
                   <button
                     onClick={(e) => handleRemoveRecent(ws.path, e)}
                     className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-tertiary)] opacity-0 group-hover:opacity-100 hover:bg-[var(--border)] transition-opacity"
                   >
-                    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                    </svg>
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}

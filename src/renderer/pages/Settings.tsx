@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Brain, Settings2, SlidersHorizontal, User, Blocks, GitBranch, LayoutGrid,
-  KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Zap, X,
-  Info, FolderOpen, ExternalLink,
+  Brain, Settings2,
+  KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Puzzle, Wrench, X,
+  Info, FolderOpen, ExternalLink, Eye, Loader2,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
-import type { Provider, ProxyProtocol, ProxySettings } from '../../shared/types/config';
+import type { Provider, ProviderAuthType, ProxyProtocol, ProxySettings } from '../../shared/types/config';
 import { PROXY_DEFAULTS, isValidProxyHost } from '../../shared/types/config';
 import { getModelsDisplay } from '../../shared/providers';
 import {
@@ -15,18 +15,34 @@ import {
   globalApiDeleteJson,
   globalApiPutJson,
 } from '../api/apiFetch';
+import CustomSelect from '../components/CustomSelect';
 import { useAutostart } from '../hooks/useAutostart';
 import { isTauri } from '../utils/env';
 import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
 
 // ── 类型定义 ──────────────────────────────────────────────────
 
-interface MCPServerConfig {
+interface McpServerDefinition {
+  id: string;
+  name: string;
+  description?: string;
   type: 'stdio' | 'http' | 'sse';
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
+  headers?: Record<string, string>;
+  isBuiltin: boolean;
+}
+
+interface MCPServerConfig {
+  name?: string;
+  type: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 interface SkillInfo {
@@ -36,18 +52,16 @@ interface SkillInfo {
   rawContent: string;
   source: 'global' | 'project';
   path: string;
+  isBuiltin: boolean;
+  enabled: boolean;
 }
 
-type NavId = 'provider' | 'general' | 'config' | 'personalization' | 'mcp' | 'git' | 'env' | 'skills' | 'about';
+type NavId = 'provider' | 'mcp' | 'skills' | 'general' | 'about';
 
 const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucideProps> }[] = [
   { id: 'provider',        label: '模型供应商',     Icon: Brain },
-  { id: 'config',          label: 'Configuration',  Icon: SlidersHorizontal },
-  { id: 'personalization', label: 'Personalization', Icon: User },
-  { id: 'mcp',             label: 'MCP Servers',    Icon: Blocks },
-  { id: 'git',             label: 'Git',            Icon: GitBranch },
-  { id: 'env',             label: 'Environments',   Icon: LayoutGrid },
-  { id: 'skills',          label: 'Skills',         Icon: Zap },
+  { id: 'skills',          label: 'Skills',         Icon: Puzzle },
+  { id: 'mcp',             label: 'MCP',            Icon: Wrench },
   { id: 'general',         label: '通用',           Icon: Settings2 },
   { id: 'about',           label: '关于',           Icon: Info },
 ];
@@ -127,11 +141,13 @@ function ProviderEditModal({
   provider,
   onSave,
   onDelete,
+  onSaveKey,
   onClose,
 }: {
   provider: Provider | null;
   onSave: (data: Partial<Provider>) => Promise<void>;
   onDelete?: () => Promise<void>;
+  onSaveKey?: (id: string, key: string) => Promise<void>;
   onClose: () => void;
 }) {
   const isNew = !provider;
@@ -143,11 +159,25 @@ function ProviderEditModal({
     vendor: provider?.vendor ?? '',
     type: (provider?.type ?? 'api') as 'subscription' | 'api',
     baseUrl: provider?.config?.baseUrl ?? '',
-    primaryModel: provider?.primaryModel ?? '',
+    authType: (provider?.authType ?? 'auth_token') as Extract<ProviderAuthType, 'auth_token' | 'api_key'>,
+    models: provider?.models?.map((m) => m.model) ?? [],
+    newModelInput: '',
+    apiKey: '',
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  const addModel = () => {
+    const model = form.newModelInput.trim();
+    if (model && !form.models.includes(model)) {
+      setForm((f) => ({ ...f, models: [...f.models, model], newModelInput: '' }));
+    }
+  };
+
+  const removeModel = (model: string) => {
+    setForm((f) => ({ ...f, models: f.models.filter((m) => m !== model) }));
+  };
 
   const validate = () => {
     if (!form.name.trim()) {
@@ -170,6 +200,10 @@ function ProviderEditModal({
         return false;
       }
     }
+    if (form.type === 'api' && form.models.length === 0) {
+      setError('至少添加一个模型');
+      return false;
+    }
     return true;
   };
 
@@ -178,19 +212,24 @@ function ProviderEditModal({
     setSaving(true);
     setError('');
     try {
+      const providerId = form.id.trim();
       await onSave({
-        id: form.id.trim(),
+        id: providerId,
         name: form.name.trim(),
         vendor: form.vendor.trim() || form.name.trim(),
         cloudProvider: '自定义',
         type: form.type,
-        primaryModel: form.primaryModel.trim() || '',
+        primaryModel: form.models[0] ?? '',
         isBuiltin: false,
+        authType: form.authType,
         config: {
           baseUrl: form.baseUrl.trim() || undefined,
         },
-        models: [],
+        models: form.models.map((m) => ({ model: m, modelName: m, modelSeries: 'custom' })),
       });
+      if (isNew && form.apiKey.trim() && onSaveKey) {
+        await onSaveKey(providerId, form.apiKey.trim());
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败');
@@ -280,59 +319,122 @@ function ProviderEditModal({
 
           <div>
             <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">类型</label>
-            <select
+            <CustomSelect
               value={form.type}
-              onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as 'subscription' | 'api' }))}
+              options={[
+                { value: 'api', label: 'API' },
+                { value: 'subscription', label: '订阅' },
+              ]}
+              onChange={(v) => setForm((f) => ({ ...f, type: v as 'subscription' | 'api' }))}
+              className="w-full"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">服务商标签</label>
+            <input
+              type="text"
+              placeholder="云服务商"
+              value={form.vendor}
+              onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
               disabled={isBuiltin}
               className={inputCls}
-            >
-              <option value="api">API</option>
-              <option value="subscription">订阅</option>
-            </select>
+            />
           </div>
 
           {form.type === 'api' && (
             <>
               <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Base URL</label>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API Base URL（Anthropic 兼容协议）</label>
                 <input
-                  type="text"
+                  type="url"
                   placeholder="https://api.example.com/anthropic"
                   value={form.baseUrl}
                   onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))}
                   disabled={isBuiltin}
                   className={inputCls}
                 />
-                <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">API 端点的基础 URL</p>
               </div>
 
               <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">主模型</label>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">认证方式</label>
+                <div className="flex gap-4 mt-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="authType"
+                      value="auth_token"
+                      checked={form.authType === 'auth_token'}
+                      onChange={() => setForm((f) => ({ ...f, authType: 'auth_token' }))}
+                      className="accent-[var(--accent)]"
+                    />
+                    <span className="text-[13px] text-[var(--ink)]">AUTH_TOKEN</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="authType"
+                      value="api_key"
+                      checked={form.authType === 'api_key'}
+                      onChange={() => setForm((f) => ({ ...f, authType: 'api_key' }))}
+                      className="accent-[var(--accent)]"
+                    />
+                    <span className="text-[13px] text-[var(--ink)]">API_KEY</span>
+                  </label>
+                </div>
+                <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">请根据供应商认证参数进行选择</p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">模型 ID</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="输入模型 ID，按 Enter 添加"
+                    value={form.newModelInput}
+                    onChange={(e) => setForm((f) => ({ ...f, newModelInput: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel(); } }}
+                    disabled={isBuiltin}
+                    className={inputCls}
+                  />
+                  <button
+                    type="button"
+                    onClick={addModel}
+                    disabled={!form.newModelInput.trim() || isBuiltin}
+                    className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-2 text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
+                {form.models.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {form.models.map((model, index) => (
+                      <div key={model} className="flex items-center gap-1 rounded-md bg-[var(--hover)] px-2 py-1 text-[12px] font-medium text-[var(--ink)]">
+                        <span className="text-[10px] text-[var(--ink-tertiary)]">{index + 1}.</span>
+                        <span>{model}</span>
+                        {!isBuiltin && (
+                          <button type="button" onClick={() => removeModel(model)} className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] hover:text-red-400">
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API Key</label>
                 <input
-                  type="text"
-                  placeholder="claude-sonnet-4-6"
-                  value={form.primaryModel}
-                  onChange={(e) => setForm((f) => ({ ...f, primaryModel: e.target.value }))}
-                  disabled={isBuiltin}
+                  type="password"
+                  placeholder="可选，稍后设置"
+                  value={form.apiKey}
+                  onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
                   className={inputCls}
                 />
-                <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">默认使用的模型 ID（可选）</p>
               </div>
             </>
           )}
-
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">供应商名称</label>
-            <input
-              type="text"
-              placeholder="Anthropic"
-              value={form.vendor}
-              onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
-              disabled={isBuiltin}
-              className={inputCls}
-            />
-            <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">供应商品牌名（可选，默认取名称）</p>
-          </div>
         </div>
 
         {/* 底部操作 */}
@@ -656,6 +758,7 @@ function ProviderTab() {
       type: data.type,
       primaryModel: data.primaryModel ?? '',
       isBuiltin: false,
+      authType: data.authType,
       config: data.config ?? {},
       models: data.models ?? [],
     });
@@ -670,7 +773,9 @@ function ProviderTab() {
       vendor: data.vendor,
       type: data.type,
       primaryModel: data.primaryModel,
+      authType: data.authType,
       config: data.config,
+      models: data.models,
     });
     await loadProviders();
     await refreshConfig();
@@ -760,6 +865,7 @@ function ProviderTab() {
           provider={editProvider === 'new' ? null : editProvider}
           onSave={editProvider === 'new' ? handleAddProvider : handleUpdateProvider}
           onDelete={editProvider !== 'new' ? handleDeleteProvider : undefined}
+          onSaveKey={handleSaveKey}
           onClose={() => setEditProvider(null)}
         />
       )}
@@ -767,36 +873,42 @@ function ProviderTab() {
   );
 }
 
-// ── MCP Tab ───────────────────────────────────────────────────
+// ── MCP Edit Modal ────────────────────────────────────────────
 
-const defaultMCPForm = {
-  id: '',
-  type: 'stdio' as MCPServerConfig['type'],
-  command: '',
-  args: '',
-  url: '',
-  env: '',
-};
+function MCPEditModal({
+  mcp,
+  isReadonly,
+  onSave,
+  onDelete,
+  onClose,
+}: {
+  mcp: (MCPServerConfig & { id: string }) | null; // null = new
+  isReadonly?: boolean;
+  onSave: (id: string, cfg: Omit<MCPServerConfig, 'id'>) => Promise<void>;
+  onDelete?: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const isNew = !mcp;
 
-function MCPTab() {
-  const [servers, setServers] = useState<Record<string, MCPServerConfig>>({});
-  const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(defaultMCPForm);
-  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    id: mcp?.id ?? '',
+    name: mcp?.name ?? '',
+    type: (mcp?.type ?? 'stdio') as MCPServerConfig['type'],
+    command: mcp?.command ?? '',
+    args: mcp?.args?.join(', ') ?? '',
+    url: mcp?.url ?? '',
+    env: mcp?.env ? Object.entries(mcp.env).map(([k, v]) => `${k}=${v}`).join('\n') : '',
+    headers: mcp?.headers ? Object.entries(mcp.headers).map(([k, v]) => `${k}=${v}`).join('\n') : '',
+  });
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const loadServers = async () => {
-    try {
-      const data = await globalApiGetJson<Record<string, MCPServerConfig>>('/api/mcp');
-      setServers(data);
-    } catch { /* ignore */ }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { void loadServers(); }, []);
-
-  const handleAdd = async () => {
+  const handleSave = async () => {
+    if (isReadonly) return;
     if (!form.id.trim()) { setError('ID 不能为空'); return; }
+    if (!form.name.trim()) { setError('名称不能为空'); return; }
+    if (form.type === 'stdio' && !form.command.trim()) { setError('Command 不能为空'); return; }
+    if (form.type !== 'stdio' && !form.url.trim()) { setError('URL 不能为空'); return; }
     setSaving(true); setError('');
     try {
       const envObj: Record<string, string> = {};
@@ -804,94 +916,488 @@ function MCPTab() {
         const idx = line.indexOf('=');
         if (idx > 0) envObj[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
       });
+      const headersObj: Record<string, string> = {};
+      form.headers.split('\n').forEach((line) => {
+        const idx = line.indexOf('=');
+        if (idx > 0) headersObj[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+      });
       const argsArr = form.args.split(',').map((a) => a.trim()).filter(Boolean);
-      await globalApiPostJson('/api/mcp', {
-        id: form.id.trim(), type: form.type,
-        command: form.type === 'stdio' ? form.command : undefined,
+      await onSave(form.id.trim(), {
+        name: form.name.trim(),
+        type: form.type,
+        command: form.type === 'stdio' ? form.command.trim() : undefined,
         args: form.type === 'stdio' && argsArr.length > 0 ? argsArr : undefined,
         env: Object.keys(envObj).length > 0 ? envObj : undefined,
-        url: form.type !== 'stdio' ? form.url : undefined,
+        url: form.type !== 'stdio' ? form.url.trim() : undefined,
+        headers: form.type !== 'stdio' && Object.keys(headersObj).length > 0 ? headersObj : undefined,
       });
-      setForm(defaultMCPForm);
-      await loadServers();
-    } catch { setError('添加失败，请检查参数'); }
-    finally { setSaving(false); }
+      onClose();
+    } catch {
+      setError('保存失败，请检查参数');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDelete = async (id: string) => {
-    try { await globalApiDeleteJson(`/api/mcp/${id}`); await loadServers(); } catch { /* ignore */ }
+  const handleDelete = async () => {
+    if (!onDelete) return;
+    setSaving(true); setError('');
+    try {
+      await onDelete();
+      onClose();
+    } catch {
+      setError('删除失败');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="flex flex-col gap-8">
-      <h2 className="text-[22px] font-bold text-[var(--ink)]">MCP Servers</h2>
-      <div className="flex gap-6">
-        {/* 列表 */}
-        <div className="flex-1 min-w-0">
-          {loading ? (
-            <p className="text-sm text-[var(--ink-tertiary)]">加载中...</p>
-          ) : Object.keys(servers).length === 0 ? (
-            <p className="text-sm text-[var(--ink-tertiary)]">暂无 MCP Server</p>
-          ) : (
-            <div className="space-y-2">
-              {Object.entries(servers).map(([id, cfg]) => (
-                <div key={id} className="flex items-center justify-between rounded-[14px] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm text-[var(--ink)]">{id}</span>
-                      <span className="text-xs rounded px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)]">{cfg.type}</span>
-                    </div>
-                    <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">{cfg.command ?? cfg.url ?? ''}</p>
-                  </div>
-                  <button onClick={() => handleDelete(id)} className="ml-4 shrink-0 text-[var(--ink-tertiary)] hover:text-red-500 transition-colors">
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: 'rgba(0,0,0,0.35)' }}
+      onClick={onClose}
+    >
+      <div
+        className="relative w-[480px] rounded-2xl bg-[var(--paper)] shadow-2xl"
+        style={{ border: '1px solid var(--border)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 头部 */}
+        <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div>
+            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+              {isReadonly ? '查看 MCP Server' : isNew ? '添加 MCP Server' : '编辑 MCP Server'}
+            </h3>
+            <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">
+              {isReadonly ? '内置 MCP Server，仅可查看' : '配置 MCP Server 基本信息'}
+            </p>
+          </div>
+          <button onClick={onClose} className="mt-0.5 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors">
+            <X size={20} />
+          </button>
         </div>
 
-        {/* 新增表单 */}
-        <div className="w-72 shrink-0">
-          <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-3">
-            <p className="text-sm font-semibold text-[var(--ink)]">新增 Server</p>
-            {error && <p className="text-xs text-red-400">{error}</p>}
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--ink)]">ID</label>
-              <input type="text" placeholder="my-server" value={form.id} onChange={(e) => setForm((f) => ({ ...f, id: e.target.value }))} className={inputCls} />
+        {/* 内容 */}
+        <div className="px-6 py-5 space-y-4">
+          {error && (
+            <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-2.5">
+              <p className="text-[13px] text-red-600">{error}</p>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--ink)]">类型</label>
-              <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as MCPServerConfig['type'] }))} className={inputCls}>
-                <option value="stdio">stdio</option>
-                <option value="http">http</option>
-                <option value="sse">sse</option>
-              </select>
-            </div>
-            {form.type === 'stdio' ? (
-              <>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-[var(--ink)]">Command</label>
-                  <input type="text" placeholder="node" value={form.command} onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))} className={inputCls} />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-[var(--ink)]">Args（逗号分隔）</label>
-                  <input type="text" placeholder="server.js, --port, 3000" value={form.args} onChange={(e) => setForm((f) => ({ ...f, args: e.target.value }))} className={inputCls} />
-                </div>
-              </>
-            ) : (
+          )}
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">ID</label>
+            <input
+              type="text"
+              placeholder="my-server"
+              value={form.id}
+              onChange={(e) => setForm((f) => ({ ...f, id: e.target.value }))}
+              disabled={!isNew || isReadonly}
+              className={inputCls}
+            />
+            {isNew && <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">唯一标识符，创建后不可修改</p>}
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">名称</label>
+            <input
+              type="text"
+              placeholder="我的 MCP 服务器"
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              disabled={isReadonly}
+              className={inputCls}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">类型</label>
+            <CustomSelect
+              value={form.type}
+              options={[
+                { value: 'stdio', label: 'stdio' },
+                { value: 'http', label: 'http' },
+                { value: 'sse', label: 'sse' },
+              ]}
+              onChange={(v) => !isReadonly && setForm((f) => ({ ...f, type: v as MCPServerConfig['type'] }))}
+              className="w-full"
+            />
+          </div>
+
+          {form.type === 'stdio' ? (
+            <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-[var(--ink)]">URL</label>
-                <input type="text" placeholder="http://localhost:3000/mcp" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} className={inputCls} />
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Command</label>
+                <input type="text" placeholder="npx" value={form.command} onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))} disabled={isReadonly} className={inputCls} />
               </div>
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Args（逗号分隔）</label>
+                <input type="text" placeholder="server.js, --port, 3000" value={form.args} onChange={(e) => setForm((f) => ({ ...f, args: e.target.value }))} disabled={isReadonly} className={inputCls} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">URL</label>
+                <input type="text" placeholder={form.type === 'sse' ? 'https://example.com/sse' : 'https://example.com/mcp'} value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} disabled={isReadonly} className={inputCls} />
+                <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">{form.type === 'sse' ? 'SSE 事件流端点地址' : 'MCP 服务器的 HTTP 端点地址'}</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Headers（KEY=VALUE，每行一个）</label>
+                <textarea rows={2} placeholder={"Authorization=Bearer xxx"} value={form.headers} onChange={(e) => setForm((f) => ({ ...f, headers: e.target.value }))} disabled={isReadonly} className={`${inputCls} resize-none`} />
+              </div>
+            </>
+          )}
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Env（KEY=VALUE，每行一个）</label>
+            <textarea rows={3} placeholder={"API_KEY=xxx\nDEBUG=true"} value={form.env} onChange={(e) => setForm((f) => ({ ...f, env: e.target.value }))} disabled={isReadonly} className={`${inputCls} resize-none`} />
+          </div>
+        </div>
+
+        {/* 底部操作 */}
+        {isReadonly ? (
+          <div className="px-6 pb-6">
+            <button
+              onClick={onClose}
+              className="w-full rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+            >
+              关闭
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 px-6 pb-6">
+            {!isNew && onDelete && (
+              <button
+                onClick={handleDelete}
+                disabled={saving}
+                className="rounded-lg border border-red-400 px-4 py-2 text-[13px] font-medium text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50"
+              >
+                删除
+              </button>
             )}
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--ink)]">Env（KEY=VALUE）</label>
-              <textarea rows={3} placeholder={"API_KEY=xxx\nDEBUG=true"} value={form.env} onChange={(e) => setForm((f) => ({ ...f, env: e.target.value }))} className={`${inputCls} resize-none`} />
+            <div className="flex-1 flex justify-end gap-3">
+              <button
+                onClick={onClose}
+                className="rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {saving ? '保存中...' : '保存'}
+              </button>
             </div>
-            <button onClick={handleAdd} disabled={saving} className="w-full rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-50">
-              {saving ? '添加中...' : '添加'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── MCP Tab ───────────────────────────────────────────────────
+
+function MCPTab() {
+  const [servers, setServers] = useState<McpServerDefinition[]>([]);
+  const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
+  const [editMCP, setEditMCP] = useState<(MCPServerConfig & { id: string }) | 'new' | null>(null);
+
+  const loadServers = async () => {
+    try {
+      const data = await globalApiGetJson<{ servers: McpServerDefinition[]; enabledIds: string[] }>('/api/mcp');
+      setServers(data.servers);
+      setEnabledIds(new Set(data.enabledIds));
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { void loadServers(); }, []);
+
+  const handleToggle = async (id: string, enabled: boolean) => {
+    setTogglingIds((prev) => new Set([...prev, id]));
+    try {
+      await globalApiPostJson('/api/mcp/toggle', { id, enabled });
+      setEnabledIds((prev) => {
+        const next = new Set(prev);
+        if (enabled) next.add(id); else next.delete(id);
+        return next;
+      });
+    } catch { /* ignore */ }
+    finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const handleSave = async (id: string, cfg: Omit<MCPServerConfig, 'id'>) => {
+    if (editMCP === 'new') {
+      await globalApiPostJson('/api/mcp', { id, ...cfg });
+    } else {
+      await globalApiDeleteJson(`/api/mcp/${id}`);
+      await globalApiPostJson('/api/mcp', { id, ...cfg });
+    }
+    await loadServers();
+  };
+
+  const handleDelete = async (id: string) => {
+    await globalApiDeleteJson(`/api/mcp/${id}`);
+    await loadServers();
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-[22px] font-bold text-[var(--ink)]">MCP Servers</h2>
+          <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理 MCP Server 配置，开关控制全局启用</p>
+        </div>
+        <button
+          onClick={() => setEditMCP('new')}
+          className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity"
+        >
+          <Plus size={16} />
+          添加 MCP Server
+        </button>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-[var(--ink-tertiary)]">加载中...</p>
+      ) : servers.length === 0 ? (
+        <p className="text-sm text-[var(--ink-tertiary)]">暂无 MCP Server</p>
+      ) : (
+        <div className="space-y-2">
+          {servers.map((srv) => {
+            const isEnabled = enabledIds.has(srv.id);
+            const isToggling = togglingIds.has(srv.id);
+            return (
+              <div key={srv.id} className="flex items-center justify-between rounded-[14px] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm text-[var(--ink)]">{srv.name}</span>
+                    <span className="text-xs rounded px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)]">{srv.type}</span>
+                    {srv.isBuiltin && (
+                      <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
+                        内置
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">
+                    {srv.description ?? ''}{srv.description && (srv.command || srv.url) ? ' · ' : ''}{srv.command ?? srv.url ?? ''}
+                  </p>
+                </div>
+                <div className="ml-4 flex items-center gap-3 shrink-0">
+                  {isToggling ? (
+                    <Loader2 size={16} className="animate-spin text-[var(--accent)]" />
+                  ) : (
+                    <ToggleSwitch
+                      checked={isEnabled}
+                      onChange={(v) => handleToggle(srv.id, v)}
+                    />
+                  )}
+                  {srv.isBuiltin ? (
+                    <button
+                      onClick={() => setEditMCP({ id: srv.id, name: srv.name, type: srv.type, command: srv.command, args: srv.args, env: srv.env, url: srv.url, headers: srv.headers })}
+                      className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+                      title="查看"
+                    >
+                      <Eye size={14} />
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setEditMCP({ id: srv.id, name: srv.name, type: srv.type, command: srv.command, args: srv.args, env: srv.env, url: srv.url, headers: srv.headers })}
+                        className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+                        title="编辑"
+                      >
+                        <SettingsIcon size={14} />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(srv.id)}
+                        className="text-[var(--ink-tertiary)] hover:text-red-500 transition-colors"
+                        title="删除"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* MCP 发现链接 */}
+      <div className="flex items-center gap-4 text-[12px] text-[var(--ink-tertiary)]">
+        <span>发现更多 MCP:</span>
+        <a href="https://mcp.so" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline flex items-center gap-1">
+          mcp.so <ExternalLink size={10} />
+        </a>
+        <a href="https://smithery.ai" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline flex items-center gap-1">
+          smithery.ai <ExternalLink size={10} />
+        </a>
+      </div>
+
+      {editMCP && (() => {
+        const isBuiltinMcp = editMCP !== 'new' && servers.find((s) => s.id === editMCP.id)?.isBuiltin;
+        return (
+          <MCPEditModal
+            mcp={editMCP === 'new' ? null : editMCP}
+            isReadonly={!!isBuiltinMcp}
+            onSave={handleSave}
+            onDelete={editMCP !== 'new' && !isBuiltinMcp ? () => handleDelete(editMCP.id) : undefined}
+            onClose={() => setEditMCP(null)}
+          />
+        );
+      })()}
+    </div>
+  );
+}
+
+// ── Skill Edit Modal ──────────────────────────────────────────
+
+function SkillEditModal({
+  skill,
+  onSave,
+  onDelete,
+  onClose,
+}: {
+  skill: SkillInfo | null; // null = new
+  onSave: (data: { name: string; description: string; content: string; scope: 'global' | 'project' }) => Promise<void>;
+  onDelete?: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const isNew = !skill;
+
+  const [form, setForm] = useState({
+    name: skill?.name ?? '',
+    description: skill?.description ?? '',
+    content: skill?.rawContent ?? '',
+    scope: (skill?.source ?? 'global') as 'global' | 'project',
+  });
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { setError('名称不能为空'); return; }
+    setSaving(true); setError('');
+    try {
+      await onSave({ name: form.name.trim(), description: form.description, content: form.content, scope: form.scope });
+      onClose();
+    } catch {
+      setError('保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!onDelete) return;
+    setSaving(true); setError('');
+    try {
+      await onDelete();
+      onClose();
+    } catch {
+      setError('删除失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: 'rgba(0,0,0,0.35)' }}
+      onClick={onClose}
+    >
+      <div
+        className="relative w-[520px] rounded-2xl bg-[var(--paper)] shadow-2xl"
+        style={{ border: '1px solid var(--border)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 头部 */}
+        <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div>
+            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+              {isNew ? '新建 Skill' : '编辑 Skill'}
+            </h3>
+            <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">配置 Skill 基本信息</p>
+          </div>
+          <button onClick={onClose} className="mt-0.5 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* 内容 */}
+        <div className="px-6 py-5 space-y-4">
+          {error && (
+            <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-2.5">
+              <p className="text-[13px] text-red-600">{error}</p>
+            </div>
+          )}
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">名称</label>
+            <input type="text" placeholder="my-skill" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className={inputCls} />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">描述</label>
+            <input type="text" placeholder="Skill 描述" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={inputCls} />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">范围</label>
+            <CustomSelect
+              value={form.scope}
+              options={[
+                { value: 'global', label: '全局' },
+                { value: 'project', label: '项目' },
+              ]}
+              onChange={(v) => setForm((f) => ({ ...f, scope: v as 'global' | 'project' }))}
+              className="w-full"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">内容（Markdown）</label>
+            <textarea rows={10} placeholder="在此编写 Skill 内容..." value={form.content} onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))} className={`${inputCls} resize-none font-mono`} />
+          </div>
+        </div>
+
+        {/* 底部操作 */}
+        <div className="flex items-center gap-3 px-6 pb-6">
+          {!isNew && onDelete && (
+            <button
+              onClick={handleDelete}
+              disabled={saving}
+              className="rounded-lg border border-red-400 px-4 py-2 text-[13px] font-medium text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50"
+            >
+              删除
+            </button>
+          )}
+          <div className="flex-1 flex justify-end gap-3">
+            <button
+              onClick={onClose}
+              className="rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-50"
+            >
+              {saving ? '保存中...' : '保存'}
             </button>
           </div>
         </div>
@@ -902,16 +1408,10 @@ function MCPTab() {
 
 // ── Skills Tab ────────────────────────────────────────────────
 
-const defaultSkillForm = { name: '', description: '', content: '', scope: 'global' as 'global' | 'project' };
-
 function SkillsTab() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<SkillInfo | null>(null);
-  const [form, setForm] = useState(defaultSkillForm);
-  const [isNew, setIsNew] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [editSkill, setEditSkill] = useState<SkillInfo | 'new' | null>(null);
 
   const loadSkills = async () => {
     try { const data = await globalApiGetJson<SkillInfo[]>('/api/skills'); setSkills(data); }
@@ -921,77 +1421,99 @@ function SkillsTab() {
 
   useEffect(() => { void loadSkills(); }, []);
 
-  const handleSelect = (skill: SkillInfo) => {
-    setSelected(skill); setIsNew(false);
-    setForm({ name: skill.name, description: skill.description, content: skill.rawContent, scope: skill.source });
-    setError('');
+  const handleSave = async (data: { name: string; description: string; content: string; scope: 'global' | 'project' }) => {
+    if (editSkill === 'new') {
+      await globalApiPostJson('/api/skills', data);
+    } else if (editSkill) {
+      await globalApiPutJson(`/api/skills/${editSkill.name}`, data);
+    }
+    await loadSkills();
   };
 
-  const handleNew = () => { setSelected(null); setIsNew(true); setForm(defaultSkillForm); setError(''); };
+  const handleDelete = async (skill: SkillInfo) => {
+    await globalApiDeleteJson(`/api/skills/${skill.name}?scope=${skill.source}`);
+    await loadSkills();
+  };
 
-  const handleSave = async () => {
-    if (!form.name.trim()) { setError('名称不能为空'); return; }
-    setSaving(true); setError('');
+  const handleToggle = async (skill: SkillInfo, enabled: boolean) => {
     try {
-      if (isNew) {
-        await globalApiPostJson('/api/skills', { name: form.name.trim(), description: form.description, content: form.content, scope: form.scope });
-      } else if (selected) {
-        await globalApiPutJson(`/api/skills/${selected.name}`, { name: form.name.trim(), description: form.description, content: form.content, scope: form.scope });
-      }
-      await loadSkills(); setIsNew(false); setSelected(null); setForm(defaultSkillForm);
-    } catch { setError('保存失败'); }
-    finally { setSaving(false); }
-  };
-
-  const handleDelete = async () => {
-    if (!selected) return;
-    try { await globalApiDeleteJson(`/api/skills/${selected.name}?scope=${selected.source}`); await loadSkills(); setSelected(null); setForm(defaultSkillForm); }
-    catch { setError('删除失败'); }
+      await globalApiPostJson('/api/skills/toggle', { name: skill.name, enabled });
+      setSkills((prev) => prev.map((s) => s.name === skill.name ? { ...s, enabled } : s));
+    } catch { /* ignore */ }
   };
 
   return (
-    <div className="flex flex-col gap-8">
-      <h2 className="text-[22px] font-bold text-[var(--ink)]">Skills</h2>
-      <div className="flex gap-6">
-        {/* 列表 */}
-        <div className="flex-1 min-w-0">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-sm font-medium text-[var(--ink-secondary)]">{skills.length} 个 Skill</span>
-            <button onClick={handleNew} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 transition-opacity">新建</button>
-          </div>
-          {loading ? <p className="text-sm text-[var(--ink-tertiary)]">加载中...</p> : skills.length === 0 ? <p className="text-sm text-[var(--ink-tertiary)]">暂无 Skill</p> : (
-            <div className="space-y-2">
-              {skills.map((skill) => (
-                <button key={`${skill.source}:${skill.name}`} onClick={() => handleSelect(skill)} className={`w-full text-left rounded-[14px] border px-4 py-3 transition-colors ${selected?.name === skill.name && selected?.source === skill.source ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--hover)]'}`}>
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm text-[var(--ink)]">{skill.name}</span>
-                    <span className={`text-xs rounded px-1.5 py-0.5 ${skill.source === 'global' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-500'}`}>{skill.source === 'global' ? '全局' : '项目'}</span>
-                  </div>
-                  {skill.description && <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">{skill.description}</p>}
-                </button>
-              ))}
-            </div>
-          )}
+    <div className="flex flex-col gap-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-[22px] font-bold text-[var(--ink)]">Skills</h2>
+          <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理自定义 Skill，共 {skills.length} 个</p>
         </div>
+        <button
+          onClick={() => setEditSkill('new')}
+          className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity"
+        >
+          <Plus size={16} />
+          新建 Skill
+        </button>
+      </div>
 
-        {/* 编辑区 */}
-        {(isNew || selected) && (
-          <div className="w-80 shrink-0">
-            <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-3">
-              <p className="text-sm font-semibold text-[var(--ink)]">{isNew ? '新建 Skill' : '编辑 Skill'}</p>
-              {error && <p className="text-xs text-red-400">{error}</p>}
-              <div><label className="mb-1 block text-xs font-medium text-[var(--ink)]">名称</label><input type="text" placeholder="my-skill" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className={inputCls} /></div>
-              <div><label className="mb-1 block text-xs font-medium text-[var(--ink)]">描述</label><input type="text" placeholder="Skill 描述" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} className={inputCls} /></div>
-              <div><label className="mb-1 block text-xs font-medium text-[var(--ink)]">内容（Markdown）</label><textarea rows={10} placeholder="在此编写 Skill 内容..." value={form.content} onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))} className={`${inputCls} resize-none font-mono`} /></div>
-              <div><label className="mb-1 block text-xs font-medium text-[var(--ink)]">范围</label><select value={form.scope} onChange={(e) => setForm((f) => ({ ...f, scope: e.target.value as 'global' | 'project' }))} className={inputCls}><option value="global">全局</option><option value="project">项目</option></select></div>
-              <div className="flex gap-2">
-                <button onClick={handleSave} disabled={saving} className="flex-1 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
-                {!isNew && <button onClick={handleDelete} className="rounded-lg border border-red-400 px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 transition-colors"><Trash2 size={14} /></button>}
+      {loading ? (
+        <p className="text-sm text-[var(--ink-tertiary)]">加载中...</p>
+      ) : skills.length === 0 ? (
+        <p className="text-sm text-[var(--ink-tertiary)]">暂无 Skill</p>
+      ) : (
+        <div className="space-y-2">
+          {skills.map((skill) => (
+            <div
+              key={`${skill.source}:${skill.name}`}
+              className="flex items-center justify-between rounded-[14px] border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
+            >
+              <button
+                onClick={() => setEditSkill(skill)}
+                className="min-w-0 flex-1 text-left hover:opacity-80 transition-opacity"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm text-[var(--ink)]">{skill.name}</span>
+                  <span className={`text-xs rounded px-1.5 py-0.5 ${skill.source === 'global' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-500'}`}>
+                    {skill.source === 'global' ? '全局' : '项目'}
+                  </span>
+                  {skill.isBuiltin && (
+                    <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
+                      内置
+                    </span>
+                  )}
+                </div>
+                {skill.description && <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">{skill.description}</p>}
+              </button>
+              <div className="ml-4 flex items-center gap-3 shrink-0">
+                <ToggleSwitch
+                  checked={skill.enabled}
+                  onChange={(v) => handleToggle(skill, v)}
+                />
+                {!skill.isBuiltin && (
+                  <button
+                    onClick={() => handleDelete(skill)}
+                    className="text-[var(--ink-tertiary)] hover:text-red-500 transition-colors"
+                    title="删除"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             </div>
-          </div>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {editSkill && (
+        <SkillEditModal
+          skill={editSkill === 'new' ? null : editSkill}
+          onSave={handleSave}
+          onDelete={editSkill !== 'new' && !editSkill.isBuiltin ? () => handleDelete(editSkill) : undefined}
+          onClose={() => setEditSkill(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1132,38 +1654,34 @@ function GeneralTab() {
       {/* 默认工作区 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
         <p className="text-[15px] font-semibold text-[var(--ink)]">默认工作区</p>
-        <div className="flex items-center gap-3">
-          {recentWorkspaces.length > 0 ? (
-            <select
-              value={config.defaultWorkspacePath ?? ''}
-              onChange={(e) => updateConfig({ defaultWorkspacePath: e.target.value || undefined })}
-              className={`${inputCls} flex-1`}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[13px] font-medium text-[var(--ink)]">默认工作区路径</p>
+            <p className="text-[12px] text-[var(--ink-tertiary)]">启动时自动打开的工作区</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {recentWorkspaces.length > 0 ? (
+              <CustomSelect
+                value={config.defaultWorkspacePath ?? ''}
+                options={recentWorkspaces.map((ws) => ({
+                  value: ws.path,
+                  label: ws.path,
+                }))}
+                onChange={(v) => updateConfig({ defaultWorkspacePath: v || undefined })}
+                placeholder="选择工作区"
+              />
+            ) : (
+              <span className="text-[13px] text-[var(--ink-tertiary)]">暂无最近工作区</span>
+            )}
+            <button
+              onClick={handleSelectFolder}
+              className="shrink-0 rounded-lg border border-[var(--border)] p-2 text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+              title="选择文件夹"
             >
-              <option value="">选择默认工作区...</option>
-              {recentWorkspaces.map((ws) => (
-                <option key={ws.path} value={ws.path}>
-                  {ws.path}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className={`${inputCls} flex-1 text-[var(--ink-tertiary)]`}>
-              暂无最近使用的工作区
-            </div>
-          )}
-          <button
-            onClick={handleSelectFolder}
-            className="shrink-0 rounded-lg border border-[var(--border)] p-2 text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
-            title="选择文件夹"
-          >
-            <FolderOpen size={16} />
-          </button>
+              <FolderOpen size={16} />
+            </button>
+          </div>
         </div>
-        {config.defaultWorkspacePath && (
-          <p className="text-[12px] text-[var(--ink-tertiary)]">
-            当前默认: <span className="font-mono">{config.defaultWorkspacePath}</span>
-          </p>
-        )}
       </div>
 
       {/* 网络代理 */}
@@ -1178,14 +1696,15 @@ function GeneralTab() {
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">协议</label>
-                <select
+                <CustomSelect
                   value={proxyForm.protocol}
-                  onChange={(e) => setProxyForm((f) => ({ ...f, protocol: e.target.value as ProxyProtocol }))}
-                  className={inputCls}
-                >
-                  <option value="http">HTTP</option>
-                  <option value="socks5">SOCKS5</option>
-                </select>
+                  options={[
+                    { value: 'http', label: 'HTTP' },
+                    { value: 'socks5', label: 'SOCKS5' },
+                  ]}
+                  onChange={(v) => setProxyForm((f) => ({ ...f, protocol: v as ProxyProtocol }))}
+                  className="w-full"
+                />
               </div>
               <div>
                 <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Host</label>
@@ -1358,17 +1877,6 @@ function AboutTab() {
   );
 }
 
-// ── 占位内容 ──────────────────────────────────────────────────
-
-function ComingSoon({ title }: { title: string }) {
-  return (
-    <div className="flex flex-col gap-3">
-      <h2 className="text-[22px] font-bold text-[var(--ink)]">{title}</h2>
-      <p className="text-sm text-[var(--ink-tertiary)]">即将推出</p>
-    </div>
-  );
-}
-
 // ── 主组件 ────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -1403,13 +1911,9 @@ export default function Settings() {
       {/* 右侧内容 */}
       <div className="flex-1 overflow-y-auto" style={{ padding: '40px 48px' }}>
         {activeNav === 'provider'        && <ProviderTab />}
-        {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'mcp'             && <MCPTab />}
-        {activeNav === 'config'          && <ComingSoon title="Configuration" />}
-        {activeNav === 'personalization' && <ComingSoon title="Personalization" />}
-        {activeNav === 'git'             && <ComingSoon title="Git" />}
-        {activeNav === 'env'             && <ComingSoon title="Environments" />}
         {activeNav === 'skills'          && <SkillsTab />}
+        {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'about'           && <AboutTab />}
       </div>
     </div>

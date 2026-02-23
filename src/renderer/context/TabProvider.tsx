@@ -6,7 +6,7 @@ import { SseConnection } from '../api/SseConnection';
 import { startTabSidecar, stopTabSidecar, getTabServerUrl } from '../api/tauriClient';
 import { apiGetJson, apiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
-import type { Message, ContentBlock } from '../types/chat';
+import type { Message, ContentBlock, ChatImage } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
 import { useContext } from 'react';
 
@@ -62,6 +62,13 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+
+    // 工作区切换时重置状态，确保 sidecarReady false→true 能触发下游 effect
+    setSidecarReady(false);
+    setMessages([]);
+    setSessionId(null);
+    setSessions([]);
+    setSessionsFetched(false);
 
     const setup = async () => {
       await startTabSidecar(tabId, agentDir);
@@ -210,19 +217,24 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId, agentDir]);
 
-  const sendMessage = useCallback(async (text: string, permissionMode?: string, skill?: { name: string; content: string }) => {
+  const sendMessage = useCallback(async (text: string, permissionMode?: string, skill?: { name: string; content: string }, images?: ChatImage[]) => {
     const url = serverUrlRef.current;
     if (!url) return;
 
     isNewSessionRef.current = false;
 
-    // ── 前端展示用 blocks（不含 skill 内容原文） ──
+    // ── 前端展示用 blocks（用户 Prompt 优先，skill/图片在后） ──
     const blocks: Message['blocks'] = [];
+    if (text) {
+      blocks.push({ type: 'text', text });
+    }
     if (skill) {
       blocks.push({ type: 'skill', name: skill.name });
     }
-    if (text) {
-      blocks.push({ type: 'text', text });
+    if (images?.length) {
+      for (const img of images) {
+        blocks.push({ type: 'image', name: img.name, base64: `data:${img.mimeType};base64,${img.data}` });
+      }
     }
     if (blocks.length === 0) {
       blocks.push({ type: 'text', text: '' });
@@ -238,9 +250,9 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
     setIsLoading(true);
     setSessionState('running');
 
-    // ── 后端实际发送的消息（skill 内容 + 用户文本拼接） ──
+    // ── 后端实际发送的消息（用户文本优先，skill 内容在后） ──
     const backendMessage = skill
-      ? [skill.content, text].filter(Boolean).join('\n')
+      ? [text, skill.content].filter(Boolean).join('\n')
       : text;
 
     // Build providerEnv from refs (stable, avoids stale closure)
@@ -271,6 +283,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
         model: selectedModel,
         permissionMode,
         mcpEnabledServerIds: ws?.mcpEnabledServers,
+        images,
       });
     } catch {
       setIsLoading(false);

@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { Message } from '../types/chat';
+import type { Message, ChatImage } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
 
 export interface TabState {
@@ -10,7 +10,7 @@ export interface TabState {
   messages: Message[];
   isLoading: boolean;
   sessionState: 'idle' | 'running' | 'error';
-  sendMessage: (text: string, permissionMode?: string, skill?: { name: string; content: string }) => Promise<void>;
+  sendMessage: (text: string, permissionMode?: string, skill?: { name: string; content: string }, images?: ChatImage[]) => Promise<void>;
   stopResponse: () => Promise<void>;
   resetSession: () => Promise<void>;
   apiGet: <T>(path: string) => Promise<T>;

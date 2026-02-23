@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ContentBlock } from '../../types/chat';
+import { parsePartialJson } from '../../utils/parsePartialJson';
 import BashTool from './BashTool';
 import ReadTool from './ReadTool';
 import WriteTool from './WriteTool';
@@ -73,5 +74,5 @@ function renderTool(block: Extract<ContentBlock, { type: 'tool_use' }>) {
 }
 
 function tryParse(s: string): Record<string, unknown> {
-  try { return JSON.parse(s); } catch { return {}; }
+  return parsePartialJson<Record<string, unknown>>(s) ?? {};
 }
