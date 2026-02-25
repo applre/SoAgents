@@ -435,6 +435,99 @@ const server = Bun.serve({
       }
     }
 
+    // ── Git 初始化 ───────────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/git-init') {
+      const body = await req.json() as { agentDir: string };
+      if (!body.agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+
+      // 检测是否已经是 git 仓库
+      const check = Bun.spawnSync(['git', 'rev-parse', '--is-inside-work-tree'], { cwd: body.agentDir, stderr: 'pipe' });
+      if (check.exitCode === 0) {
+        return Response.json({ ok: true, alreadyInit: true });
+      }
+
+      // git init
+      const initResult = Bun.spawnSync(['git', 'init'], { cwd: body.agentDir, stderr: 'pipe' });
+      if (initResult.exitCode !== 0) {
+        return Response.json({ error: 'git init failed: ' + new TextDecoder().decode(initResult.stderr) }, { status: 500 });
+      }
+
+      // git add -A + commit（使用 fallback 用户配置，避免未配置 git user 导致失败）
+      Bun.spawnSync(['git', 'add', '-A'], { cwd: body.agentDir });
+      Bun.spawnSync(
+        ['git', '-c', 'user.name=SoAgents', '-c', 'user.email=soagents@local', 'commit', '-m', 'Initial commit', '--allow-empty'],
+        { cwd: body.agentDir, stderr: 'pipe' }
+      );
+
+      return Response.json({ ok: true, alreadyInit: false });
+    }
+
+    // ── Git 变动文件 ──────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/changed-files') {
+      const agentDir = url.searchParams.get('agentDir');
+      if (!agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+
+      // 检测是否为 git 仓库
+      const checkResult = Bun.spawnSync(['git', 'rev-parse', '--is-inside-work-tree'], { cwd: agentDir, stderr: 'pipe' });
+      if (checkResult.exitCode !== 0) {
+        return Response.json({ isGitRepo: false, files: [] });
+      }
+
+      const statusResult = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd: agentDir });
+      const output = new TextDecoder().decode(statusResult.stdout).trim();
+      if (!output) {
+        return Response.json({ isGitRepo: true, files: [] });
+      }
+
+      const files = output.split('\n').map((line) => {
+        const xy = line.substring(0, 2);
+        let filePath = line.substring(3);
+        if (filePath.startsWith('"') && filePath.endsWith('"')) {
+          filePath = filePath.slice(1, -1);
+        }
+        const renameMatch = filePath.match(/^(.+) -> (.+)$/);
+        if (renameMatch) filePath = renameMatch[2];
+
+        let status: string;
+        if (xy === '??') status = 'U';
+        else if (xy[0] === 'D' || xy[1] === 'D') status = 'D';
+        else if (xy[0] === 'A') status = 'A';
+        else if (xy[0] === 'R') status = 'R';
+        else status = 'M';
+
+        return { path: filePath, status };
+      });
+      return Response.json({ isGitRepo: true, files });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/file-diff') {
+      const agentDir = url.searchParams.get('agentDir');
+      const filePath = url.searchParams.get('path');
+      if (!agentDir || !filePath) return Response.json({ error: 'missing params' }, { status: 400 });
+
+      // 尝试 diff HEAD（含 staged + unstaged）
+      let diffResult = Bun.spawnSync(['git', 'diff', 'HEAD', '--', filePath], { cwd: agentDir });
+      let diff = new TextDecoder().decode(diffResult.stdout);
+
+      if (diffResult.exitCode !== 0 || !diff.trim()) {
+        // HEAD 不存在（无提交）或无差异，尝试 cached
+        const cachedResult = Bun.spawnSync(['git', 'diff', '--cached', '--', filePath], { cwd: agentDir });
+        diff = new TextDecoder().decode(cachedResult.stdout);
+      }
+
+      if (!diff.trim()) {
+        // untracked 文件或无差异 — 读取文件内容
+        try {
+          const content = readFileSync(join(agentDir, filePath), 'utf-8');
+          return Response.json({ diff: null, content, isNew: true });
+        } catch {
+          return Response.json({ diff: '', content: null, isNew: false });
+        }
+      }
+
+      return Response.json({ diff, isNew: false });
+    }
+
     return new Response("Not Found", { status: 404 });
   },
 });
