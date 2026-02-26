@@ -5,6 +5,8 @@ mod sidecar;
 mod commands;
 mod proxy;
 mod sse_proxy;
+mod updater;
+pub mod logger;
 
 use std::sync::{Arc, Mutex};
 use commands::SidecarState;
@@ -23,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(sidecar_state)
         .manage(sse_proxy::SseProxyState::new())
         .invoke_handler(tauri::generate_handler![
@@ -36,6 +39,10 @@ pub fn run() {
             proxy::cmd_proxy_http,
             sse_proxy::cmd_start_sse_proxy,
             sse_proxy::cmd_stop_sse_proxy,
+            updater::check_and_download_update,
+            updater::restart_app,
+            updater::test_update_connectivity,
+            updater::cmd_shutdown_for_update,
         ])
         .setup(|app| {
             // Initialize logging
@@ -63,16 +70,25 @@ pub fn run() {
                 }
             }
 
-            log::info!("[App] SoAgents started successfully");
+            // 初始化统一日志系统（保存全局 AppHandle）
+            logger::init_app_handle(app.handle());
+
+            ulog_info!("[App] SoAgents started successfully");
 
             sidecar::cleanup_stale_sidecars();
+
+            // Spawn background update check
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                updater::check_update_on_startup(app_handle).await;
+            });
 
             Ok(())
         })
         .on_window_event(move |_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Ok(mut manager) = cleanup_state.lock() {
-                    log::info!("[App] Stopping all sidecars on window close");
+                    ulog_info!("[App] Stopping all sidecars on window close");
                     manager.stop_all();
                 }
             }

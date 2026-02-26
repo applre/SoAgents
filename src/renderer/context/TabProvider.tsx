@@ -8,6 +8,8 @@ import { apiGetJson, apiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import type { Message, ContentBlock, ChatImage } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
+import type { LogEntry } from '../../shared/types/log';
+import { REACT_LOG_EVENT } from '../utils/frontendLogger';
 import { useContext } from 'react';
 
 interface Props {
@@ -35,6 +37,7 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
   const [sessionsFetched, setSessionsFetched] = useState(false);
   const [sidecarReady, setSidecarReady] = useState(false);
+  const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
 
   // Refs for stable access in sendMessage callback (avoid stale closure)
   const currentProviderRef = useRef(configCtx?.currentProvider);
@@ -51,6 +54,39 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
   const sseRef = useRef<SseConnection | null>(null);
   const serverUrlRef = useRef<string>('');
   const isNewSessionRef = useRef(false);
+
+  // ── Unified Logs: 监听 React 自定义事件 ──
+  const appendUnifiedLog = useCallback((entry: LogEntry) => {
+    setUnifiedLogs((prev) => {
+      const next = [...prev, entry];
+      return next.length > 3000 ? next.slice(-3000) : next;
+    });
+  }, []);
+
+  const clearUnifiedLogs = useCallback(() => {
+    setUnifiedLogs([]);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const entry = (e as CustomEvent<LogEntry>).detail;
+      appendUnifiedLog(entry);
+    };
+    window.addEventListener(REACT_LOG_EVENT, handler);
+    return () => window.removeEventListener(REACT_LOG_EVENT, handler);
+  }, [appendUnifiedLog]);
+
+  // ── Unified Logs: 监听 Rust 层 Tauri 事件 ──
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<LogEntry>('log:rust', (evt) => {
+        appendUnifiedLog(evt.payload);
+      }).then((fn) => { unlisten = fn; });
+    });
+    return () => { unlisten?.(); };
+  }, [appendUnifiedLog]);
 
   const refreshSessions = useCallback(async () => {
     const url = serverUrlRef.current;
@@ -203,6 +239,14 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       sse.on('chat:message-error', () => {
         setIsLoading(false);
         setSessionState('error');
+      });
+
+      // ── 统一日志: 接收 Bun/Rust 层日志 ──
+      sse.on('chat:log', (data) => {
+        const entry = data as LogEntry;
+        if (entry && entry.source && entry.level) {
+          appendUnifiedLog(entry);
+        }
       });
     };
 
@@ -414,8 +458,10 @@ export function TabProvider({ tabId, agentDir, children }: Props) {
       deleteSession,
       updateSessionTitle,
       refreshSessions,
+      unifiedLogs,
+      clearUnifiedLogs,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, refreshSessions]
+    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, refreshSessions, unifiedLogs, clearUnifiedLogs]
   );
 
   return <TabContext.Provider value={value}>{children}</TabContext.Provider>;

@@ -1,7 +1,8 @@
 import { useRef, useEffect, useCallback } from 'react';
 import type { Message } from '../types/chat';
 
-export function useAutoScroll(messages: Message[]) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function useAutoScroll(deps: Message[] | any[]) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
 
@@ -20,7 +21,8 @@ export function useAutoScroll(messages: Message[]) {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, scrollToBottom]);
 
   return { scrollRef, checkAtBottom };
 }

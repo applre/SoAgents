@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2, Folder, Check, Plus } from 'lucide-react';
 import { startWindowDrag, toggleMaximize } from './utils/env';
+import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
 import { startGlobalSidecar, getDefaultWorkspace } from './api/tauriClient';
@@ -14,6 +15,7 @@ import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
 import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
 import { useConfig } from './context/ConfigContext';
+import { useUpdater } from './hooks/useUpdater';
 import type { SessionMetadata } from '../shared/types/session';
 
 function createTab(overrides: Partial<Tab> = {}): Tab {
@@ -52,7 +54,11 @@ export default function App() {
   // 编辑器 action ref：由 Editor 组件通过 onActionRef 暴露
   const editorActionRef = useRef<{ handleAction: (a: ToolbarAction) => void; save: () => void } | null>(null);
 
+  // Auto-updater
+  const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
+
   useEffect(() => {
+    initFrontendLogger();
     startGlobalSidecar().catch(console.error);
     // 获取默认工作区路径，打开初始 tab
     getDefaultWorkspace().then((dir) => {
@@ -311,6 +317,9 @@ export default function App() {
             onOpenSettings={handleOpenSettings}
             onCollapse={() => setShowSidebar(false)}
             isSettingsActive={activeTab?.view === 'settings'}
+            updateReady={updateReady}
+            updateVersion={updateVersion}
+            onRestartAndUpdate={restartAndUpdate}
           />
         ) : (
           <div
@@ -523,7 +532,12 @@ export default function App() {
             {activeTab?.view === 'launcher' && (
               <Launcher tabId={activeTab.id} onSelectWorkspace={handleSelectWorkspace} />
             )}
-            {activeTab?.view === 'settings' && <Settings />}
+            {activeTab?.view === 'settings' && (
+              <Settings
+                checkForUpdate={checkForUpdate}
+                checking={checking}
+              />
+            )}
           </main>
         </div>
 

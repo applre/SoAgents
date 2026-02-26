@@ -1,7 +1,16 @@
+import type { LogEntry } from '../shared/types/log';
+
 // SSE 客户端注册表
 const clients = new Map<string, { send: (event: string, data: string) => void; close: () => void }>();
 
 let _clientCounter = 0;
+
+// 历史日志回放函数（由 logger.ts 注入）
+let _replayHistory: (() => LogEntry[]) | null = null;
+
+export function setLogHistoryProvider(fn: () => LogEntry[]): void {
+  _replayHistory = fn;
+}
 
 export function createSseHandler(): (req: Request) => Response {
   return (req: Request) => {
@@ -14,8 +23,8 @@ export function createSseHandler(): (req: Request) => Response {
       start(c) {
         controller = c;
         // 注册客户端
-        clients.set(clientId, {
-          send(event, data) {
+        const client = {
+          send(event: string, data: string) {
             const chunk = `event: ${event}\ndata: ${data}\n\n`;
             controller.enqueue(encoder.encode(chunk));
           },
@@ -23,7 +32,16 @@ export function createSseHandler(): (req: Request) => Response {
             try { controller.close(); } catch {}
             clients.delete(clientId);
           },
-        });
+        };
+        clients.set(clientId, client);
+
+        // 补发 Ring Buffer 中的历史日志
+        if (_replayHistory) {
+          for (const entry of _replayHistory()) {
+            client.send('chat:log', JSON.stringify(entry));
+          }
+        }
+
         // 心跳
         const heartbeat = setInterval(() => {
           try {

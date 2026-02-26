@@ -1,10 +1,12 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { TabProvider } from '../context/TabProvider';
 import { useTabState } from '../context/TabContext';
+import { useConfig } from '../context/ConfigContext';
 import MessageList from '../components/MessageList';
 import ChatInput from '../components/ChatInput';
 import PermissionPrompt from '../components/PermissionPrompt';
 import AskUserQuestionPrompt from '../components/AskUserQuestionPrompt';
+import UnifiedLogsPanel from '../components/UnifiedLogsPanel';
 import type { Tab } from '../types/tab';
 import type { SessionMetadata } from '../../shared/types/session';
 
@@ -34,7 +36,9 @@ interface ChatContentProps {
 }
 
 function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: ChatContentProps) {
-  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady } = useTabState();
+  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady, unifiedLogs, clearUnifiedLogs } = useTabState();
+  const { config } = useConfig();
+  const [showLogs, setShowLogs] = useState(false);
 
   // sidecar 就绪后拉取一次，确保左侧栏有数据
   useEffect(() => {
@@ -107,7 +111,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
 
   return (
     <div className="flex h-full flex-col">
-      <MessageList messages={messages} onOpenUrl={onOpenUrl} />
+      <MessageList messages={messages} isLoading={isLoading} onOpenUrl={onOpenUrl} />
       {pendingQuestion && (
         <AskUserQuestionPrompt
           questions={pendingQuestion.questions}
@@ -115,14 +119,30 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
           onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
         />
       )}
-      <ChatInput
-        onSend={sendMessage}
-        onStop={stopResponse}
-        isLoading={isLoading}
-        agentDir={agentDir}
-        injectText={injectText}
-        onInjectConsumed={onInjectConsumed}
-      />
+      <div className="relative">
+        <ChatInput
+          onSend={sendMessage}
+          onStop={stopResponse}
+          isLoading={isLoading}
+          agentDir={agentDir}
+          injectText={injectText}
+          onInjectConsumed={onInjectConsumed}
+        />
+        {/* 开发者模式: Logs 按钮 */}
+        {config.showDevTools && (
+          <button
+            type="button"
+            onClick={() => setShowLogs((prev) => !prev)}
+            className={`absolute right-3 bottom-2 rounded-lg px-2.5 py-1 text-[12px] font-medium transition-colors ${
+              showLogs
+                ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+                : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+            }`}
+          >
+            Logs
+          </button>
+        )}
+      </div>
       {pendingPermission && (
         <PermissionPrompt
           toolName={pendingPermission.toolName}
@@ -131,6 +151,14 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
           onRespond={(allow) => respondPermission(pendingPermission.toolUseId, allow)}
         />
       )}
+
+      {/* 统一日志面板 */}
+      <UnifiedLogsPanel
+        sseLogs={unifiedLogs}
+        isVisible={showLogs}
+        onClose={() => setShowLogs(false)}
+        onClearAll={clearUnifiedLogs}
+      />
     </div>
   );
 }

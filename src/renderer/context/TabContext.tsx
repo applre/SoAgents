@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { Message, ChatImage } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
+import type { LogEntry } from '../../shared/types/log';
 
 export interface TabState {
   tabId: string;
@@ -33,6 +34,8 @@ export interface TabState {
   deleteSession: (sessionId: string) => Promise<void>;
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
+  unifiedLogs: LogEntry[];
+  clearUnifiedLogs: () => void;
 }
 
 export const TabContext = createContext<TabState | null>(null);

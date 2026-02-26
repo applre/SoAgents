@@ -720,26 +720,9 @@ function ProviderConfigModal({
 // ── Provider Tab ──────────────────────────────────────────────
 
 function ProviderTab() {
-  const { config, currentProvider, updateConfig, refreshConfig } = useConfig();
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { config, currentProvider, allProviders, isLoading, updateConfig, refreshConfig } = useConfig();
   const [openId, setOpenId] = useState<string | null>(null);
   const [editProvider, setEditProvider] = useState<Provider | null | 'new'>(null);
-
-  const loadProviders = async () => {
-    try {
-      const data = await globalApiGetJson<Provider[]>('/api/providers');
-      setProviders(data);
-    } catch {
-      /* ignore */
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void loadProviders();
-  }, []);
 
   const handleSetActive = async (providerId: string) => {
     await updateConfig({ currentProviderId: providerId });
@@ -762,7 +745,6 @@ function ProviderTab() {
       config: data.config ?? {},
       models: data.models ?? [],
     });
-    await loadProviders();
     await refreshConfig();
   };
 
@@ -777,7 +759,6 @@ function ProviderTab() {
       config: data.config,
       models: data.models,
     });
-    await loadProviders();
     await refreshConfig();
   };
 
@@ -799,16 +780,15 @@ function ProviderTab() {
     await globalApiDeleteJson(`/api/providers/${providerId}`);
 
     // 刷新列表
-    await loadProviders();
     await refreshConfig();
   };
 
-  const openProvider = openId ? providers.find((p) => p.id === openId) : null;
+  const openProvider = openId ? allProviders.find((p) => p.id === openId) : null;
 
   // 按行分组（每行 2 列）
   const rows: Provider[][] = [];
-  for (let i = 0; i < providers.length; i += 2) {
-    rows.push(providers.slice(i, i + 2));
+  for (let i = 0; i < allProviders.length; i += 2) {
+    rows.push(allProviders.slice(i, i + 2));
   }
 
   return (
@@ -827,7 +807,7 @@ function ProviderTab() {
         </button>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <p className="text-sm text-[var(--ink-tertiary)]">加载中...</p>
       ) : (
         <div className="flex flex-col gap-4">
@@ -1744,10 +1724,17 @@ function GeneralTab() {
 
 // ── About Tab ────────────────────────────────────────────────
 
-function AboutTab() {
+function AboutTab({
+  checkForUpdate,
+  checking = false,
+}: {
+  checkForUpdate?: () => Promise<import('../hooks/useUpdater').CheckUpdateResult>;
+  checking?: boolean;
+}) {
   const { config, updateConfig } = useConfig();
   const [devMode, setDevMode] = useState(isDeveloperMode);
   const [appVersion, setAppVersion] = useState('0.1.0');
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -1810,6 +1797,40 @@ function AboutTab() {
         <p className="mt-1 text-[14px] text-[var(--ink-tertiary)]">
           版本 {appVersion}
         </p>
+        {checkForUpdate && (
+          <div className="mt-3 flex flex-col items-center gap-2">
+            <button
+              onClick={async () => {
+                setUpdateStatus(null);
+                const result = await checkForUpdate();
+                if (result.status === 'no-update') {
+                  setUpdateStatus('already-latest');
+                } else if (result.status === 'ready') {
+                  setUpdateStatus('ready');
+                } else if (result.status === 'error') {
+                  setUpdateStatus(`error:${result.error || '检查失败'}`);
+                }
+              }}
+              disabled={checking}
+              className="flex items-center gap-2 rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+            >
+              {checking ? (
+                <><RefreshCw size={13} className="animate-spin" />检查中...</>
+              ) : (
+                <>检查更新</>
+              )}
+            </button>
+            {updateStatus === 'already-latest' && (
+              <p className="text-[12px] text-[var(--success)]">已是最新版本</p>
+            )}
+            {updateStatus === 'ready' && (
+              <p className="text-[12px] text-[var(--accent)]">更新已下载，请重启应用</p>
+            )}
+            {updateStatus?.startsWith('error:') && (
+              <p className="text-[12px] text-red-400">{updateStatus.slice(6)}</p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 产品描述 */}
@@ -1879,7 +1900,12 @@ function AboutTab() {
 
 // ── 主组件 ────────────────────────────────────────────────────
 
-export default function Settings() {
+interface SettingsProps {
+  checkForUpdate?: () => Promise<import('../hooks/useUpdater').CheckUpdateResult>;
+  checking?: boolean;
+}
+
+export default function Settings({ checkForUpdate, checking }: SettingsProps) {
   const [activeNav, setActiveNav] = useState<NavId>('provider');
 
   return (
@@ -1914,7 +1940,7 @@ export default function Settings() {
         {activeNav === 'mcp'             && <MCPTab />}
         {activeNav === 'skills'          && <SkillsTab />}
         {activeNav === 'general'         && <GeneralTab />}
-        {activeNav === 'about'           && <AboutTab />}
+        {activeNav === 'about'           && <AboutTab checkForUpdate={checkForUpdate} checking={checking} />}
       </div>
     </div>
   );

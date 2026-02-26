@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { MoreHorizontal, PanelLeft, Pencil, Pin, Plus, Trash2 } from 'lucide-react';
+import { MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
@@ -17,6 +17,9 @@ interface Props {
   onOpenSettings: () => void;
   onCollapse: () => void;
   isSettingsActive?: boolean;
+  updateReady?: boolean;
+  updateVersion?: string | null;
+  onRestartAndUpdate?: () => void;
 }
 
 export default function LeftSidebar({
@@ -31,6 +34,9 @@ export default function LeftSidebar({
   onOpenSettings,
   onCollapse,
   isSettingsActive = false,
+  updateReady = false,
+  updateVersion,
+  onRestartAndUpdate,
 }: Props) {
   const [showSearch, setShowSearch] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -229,8 +235,21 @@ export default function LeftSidebar({
         />
       )}
 
-      {/* 固定底部：设置 */}
+      {/* 固定底部：更新提示 + 设置 */}
       <div style={{ padding: '0 14px 14px' }}>
+        {updateReady && onRestartAndUpdate && (
+          <button
+            onClick={onRestartAndUpdate}
+            className="flex w-full items-center justify-center gap-2 rounded-lg px-2 mb-2 h-[38px] text-[13px] font-semibold text-white transition-all hover:opacity-90"
+            style={{
+              background: 'linear-gradient(135deg, #22c55e, #16a34a)',
+              animation: 'pulse 2s ease-in-out infinite',
+            }}
+          >
+            <RefreshCw size={14} />
+            重启以更新 {updateVersion && `v${updateVersion}`}
+          </button>
+        )}
         <button
           onClick={onOpenSettings}
           className={`flex items-center gap-2.5 px-2 rounded-lg h-[38px] w-full transition-colors text-left ${

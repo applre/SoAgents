@@ -1,18 +1,26 @@
-import { createSseHandler } from './sse';
+import { createSseHandler, setLogHistoryProvider } from './sse';
 import { agentSession } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
 import { verifyProviderViaSdk } from './provider-verify';
+import { initLogger, getLogHistory } from './logger';
+import { appendUnifiedLogBatch } from './UnifiedLogger';
 import type { PermissionMode } from '../shared/types/permission';
 import type { AppConfig, ProviderEnv, Provider } from '../shared/types/config';
+import type { LogEntry } from '../shared/types/log';
 import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, copyFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
+
+// 初始化统一日志系统（拦截 console 方法）
+initLogger();
+// 连接 Ring Buffer 到 SSE，新客户端连接时补发历史日志
+setLogHistoryProvider(getLogHistory);
 
 // 启动时种子化内置 Skills
 SkillsStore.seedBundledSkills();
@@ -33,6 +41,13 @@ const server = Bun.serve({
 
     if (req.method === "GET" && url.pathname === "/api/ping") {
       return Response.json({ message: "pong" });
+    }
+
+    // 接收前端批量日志（写入统一日志文件）
+    if (req.method === "POST" && url.pathname === "/api/unified-log") {
+      const body = await req.json() as { entries: LogEntry[] };
+      appendUnifiedLogBatch(body.entries ?? []);
+      return Response.json({ ok: true });
     }
 
     if (req.method === "GET" && url.pathname === "/chat/events") {
@@ -151,7 +166,7 @@ const server = Bun.serve({
     if (req.method === 'POST' && url.pathname === '/api/providers') {
       const body = await req.json() as Omit<Provider, 'id'> & { id?: string };
       const { id: bodyId, ...rest } = body;
-      const id = ConfigStore.addCustomProvider(rest);
+      const id = ConfigStore.addCustomProvider(rest, bodyId);
       return Response.json({ ok: true, id });
     }
 

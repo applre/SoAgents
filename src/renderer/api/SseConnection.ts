@@ -33,6 +33,7 @@ export class SseConnection {
         'chat:status',
         'permission:request',
         'question:request',
+        'chat:log',
       ];
 
       for (const eventName of knownEvents) {

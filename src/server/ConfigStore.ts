@@ -37,14 +37,35 @@ export function writeConfig(config: AppConfig): void {
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
 }
 
+function isValidCustomProviderId(id: string): boolean {
+  return /^[a-z0-9-]+$/.test(id);
+}
+
 // Custom Provider CRUD
-export function addCustomProvider(provider: Omit<Provider, 'id'>): string {
+export function addCustomProvider(provider: Omit<Provider, 'id'>, preferredId?: string): string {
   const config = readConfig();
   if (!config.customProviders) {
     config.customProviders = [];
   }
-  // 生成唯一 ID: custom-{timestamp}-{random}
-  const id = `custom-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const allProviders = [...PROVIDERS, ...config.customProviders];
+  const preferred = preferredId?.trim();
+
+  let id: string;
+  if (preferred) {
+    if (!isValidCustomProviderId(preferred)) {
+      throw new Error('Provider ID 仅支持小写字母、数字、短横线');
+    }
+    if (allProviders.some((p) => p.id === preferred)) {
+      throw new Error(`Provider ID 已存在: ${preferred}`);
+    }
+    id = preferred;
+  } else {
+    // 生成唯一 ID: custom-{timestamp}-{random}
+    do {
+      id = `custom-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    } while (allProviders.some((p) => p.id === id));
+  }
+
   const newProvider: Provider = { ...provider, id };
   config.customProviders.push(newProvider);
   writeConfig(config);

@@ -117,10 +117,13 @@ class AgentSession {
       createdAt: Date.now(),
     });
 
-    // 检测 provider 切换（仅比较 baseUrl 和 apiKey，model 切换不算 provider 切换）
+    // 检测 provider 连接配置切换（model 切换不算 provider 切换）
     const providerChanged =
       (providerEnv?.baseUrl ?? '') !== (this.currentProviderEnv?.baseUrl ?? '') ||
-      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '');
+      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '') ||
+      (providerEnv?.authType ?? '') !== (this.currentProviderEnv?.authType ?? '') ||
+      (providerEnv?.timeout ?? 0) !== (this.currentProviderEnv?.timeout ?? 0) ||
+      !!providerEnv?.disableNonessential !== !!this.currentProviderEnv?.disableNonessential;
     if (providerChanged) {
       // 任何 Provider 切换都不 resume（thinking block 签名不兼容）
       this.sdkSessionId = null;
