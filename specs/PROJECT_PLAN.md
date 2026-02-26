@@ -31,7 +31,7 @@
 
 2026 年是 AI Agent 爆发的元年。Claude Agent SDK 的开源为开发者提供了构建强大 AI Agent 的基础能力，但目前大多数 Agent 工具仍以命令行为主（如 Claude Code CLI），对非技术用户存在较高的使用门槛。
 
-SoAgents 项目旨在通过学习和重建开源项目 SoAgents，掌握桌面端 AI Agent 客户端的完整技术栈，并在此基础上探索创新方向。
+SoAgents 项目旨在通过学习和建设一个开源项目，掌握桌面端 AI Agent 客户端的完整技术栈，并在此基础上探索创新方向。
 
 ### 1.2 项目定位
 
@@ -113,14 +113,14 @@ SoAgents 是一个**基于 Claude Agent SDK 的桌面端通用 AI Agent 客户�
 
 | 层级 | 技术选型 | 版本 | 选型理由 |
 |------|----------|------|----------|
-| **桌面框架** | Tauri v2 (Rust) | 2.9.5+ | 体积小、性能高、安全性好 |
-| **前端** | React 19 + TypeScript + Vite | React 19.2, Vite 7.x | 生态成熟、类型安全、开发效率高 |
-| **样式** | TailwindCSS v4 | 4.1.x | 原子化 CSS、快速迭代 |
+| **桌面框架** | Tauri v2 (Rust) | 2.9.5 | 体积小、性能高、安全性好 |
+| **前端** | React 19 + TypeScript + Vite | React 19.2.4, Vite 7.3.1 | 生态成熟、类型安全、开发效率高 |
+| **样式** | TailwindCSS v4 | 4.1.18 | 原子化 CSS、快速迭代 |
 | **代码编辑** | CodeMirror 6 | 6.x | 轻量、扩展性强 |
-| **拖拽排序** | @dnd-kit | 6.3+ | React 18/19 兼容 |
+| **拖拽排序** | @dnd-kit | 6.3.1 | React 18/19 兼容 |
 | **后端运行时** | Bun | 1.3.6 | 启动快、内置运行时 |
-| **AI SDK** | Claude Agent SDK | 0.2.44+ | 官方 SDK，功能完整 |
-| **通信代理** | Rust reqwest | 0.12+ | 绕过 CORS、低延迟 |
+| **AI SDK** | Claude Agent SDK | 0.2.44 | 官方 SDK，功能完整 |
+| **通信代理** | Rust reqwest | 0.12 | 绕过 CORS、低延迟 |
 | **存储** | 本地文件系统 (JSONL) | — | 隐私保护、无需数据库 |
 
 ### 4.2 核心架构
