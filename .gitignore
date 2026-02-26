@@ -51,3 +51,8 @@ src-tauri/gen/
 
 # Redundant lock file (project uses bun)
 package-lock.json
+
+# Misc generated files
+config/
+icon-changes-report.html
+icon.png
