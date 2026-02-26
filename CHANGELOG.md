@@ -6,8 +6,35 @@
 
 ## [Unreleased]
 
+---
+
+## [0.1.0] - 2026-02-23
+
+### 新增
+- **应用内 WebView**：聊天消息和 Markdown 预览中的 HTTP 链接点击后在 SecondTabBar 子标签页中打开，使用 Tauri v2 原生 WebView 加载（支持 GitHub 等设置了 X-Frame-Options 的网站）。导航栏支持 URL 显示、刷新、外部浏览器打开
+- **权限模式重设计**：从 default/acceptEdits/bypassPermissions 调整为 Plan/协同/自主三模式，对齐 Claude Code 标准模式。全新卡片式 UI，带图标、颜色和「推荐」标签
+- **Settings 通用 Tab**：开机启动（tauri-plugin-autostart）、默认工作区路径选择、网络代理配置
+- **Settings 关于 Tab**：版本信息、产品描述、外部链接、隐藏开发者选项（连击 5 次解锁）
+- **内置 Skills**：bundled-skills 目录新增 docx/pdf/pptx/xlsx/skill-creator/summarize 六个内置技能，应用启动时自动种子化
+- **MCP 预设**：内置 MCP 服务器预设配置（`src/shared/mcp-presets.ts`），支持启用/禁用切换，禁止删除内置项
+- **多模态图片消息**：agent-session 支持 base64 图片作为消息内容发送
+- **CustomSelect 组件**：统一的自定义下拉选择器（`src/renderer/components/CustomSelect.tsx`）
+
+### 改进
+- **Settings 页面重构**：MCP 和 Skills 管理 UI 整合到 Settings Tab 中，支持启用/禁用切换
+- **WorkspaceFilesPanel 增强**：文件面板功能优化
+- **AppConfig 类型扩展**：新增 ProxySettings、minimizeToTray、defaultWorkspacePath、showDevTools 等配置字段
+- **configService 升级**：改用 spread merge 自动兼容新配置字段
+
 ### 修复
-- **供应商 CRUD Bug**：修复 `addCustomProvider` 未自动生成 `id` 导致编辑/删除功能无法使用的问题，现在创建供应商时自动生成 `custom-{timestamp}-{random}` 格式的唯一 ID
+- **供应商 CRUD Bug**：修复 `addCustomProvider` 未自动生成 `id` 导致编辑/删除功能无法使用的问题
+- **Tauri unstable 特性**：启用 `unstable` feature flag 支持多 WebView 创建
+- 清理过时的 PLAN 和 specs 文档
+
+### 技术细节
+- Tauri Cargo.toml 新增 `unstable` feature + `tauri-plugin-autostart` 依赖
+- Tauri capabilities 新增 9 项 webview 权限 + autostart 权限
+- 新增 `useAutostart` hook、`developerMode` 工具、`parsePartialJson` 工具函数
 
 ---
 
@@ -136,7 +163,8 @@
 
 ---
 
-[Unreleased]: https://github.com/applre/SoAgents/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/applre/SoAgents/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/applre/SoAgents/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/applre/SoAgents/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/applre/SoAgents/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/applre/SoAgents/compare/v0.0.6...v0.0.7
