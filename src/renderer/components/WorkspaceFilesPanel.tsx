@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, Settings, Check, Plus } from 'lucide-react';
 import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
@@ -150,18 +150,18 @@ Assistant
 
 // ── 变动文件辅助组件 ─────────────────────────────────────────────
 const STATUS_STYLE: Record<string, { label: string; color: string; bg: string }> = {
-  M: { label: 'M', color: '#d29922', bg: 'rgba(210, 153, 34, 0.15)' },
-  A: { label: 'A', color: '#3fb950', bg: 'rgba(63, 185, 80, 0.15)' },
-  D: { label: 'D', color: '#f85149', bg: 'rgba(248, 81, 73, 0.15)' },
-  U: { label: 'U', color: '#8b949e', bg: 'rgba(139, 148, 158, 0.15)' },
-  R: { label: 'R', color: '#a371f7', bg: 'rgba(163, 113, 247, 0.15)' },
+  M: { label: '编辑', color: '#d29922', bg: 'rgba(210, 153, 34, 0.15)' },
+  A: { label: '新建', color: '#3fb950', bg: 'rgba(63, 185, 80, 0.15)' },
+  D: { label: '删除', color: '#f85149', bg: 'rgba(248, 81, 73, 0.15)' },
+  U: { label: '新建', color: '#8b949e', bg: 'rgba(139, 148, 158, 0.15)' },
+  R: { label: '重命名', color: '#a371f7', bg: 'rgba(163, 113, 247, 0.15)' },
 };
 
 function StatusBadge({ status }: { status: string }) {
   const s = STATUS_STYLE[status] ?? STATUS_STYLE.M;
   return (
     <span
-      className="inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[10px] font-bold shrink-0"
+      className="inline-flex items-center justify-center px-1.5 h-[18px] rounded text-[11px] font-medium shrink-0"
       style={{ color: s.color, background: s.bg }}
     >
       {s.label}
@@ -211,6 +211,151 @@ function DiffView({ result }: { result: FileDiffResult }) {
         );
       })}
     </div>
+  );
+}
+
+// ── 变动文件目录树 ─────────────────────────────────────────────
+
+interface ChangedTreeNode {
+  name: string;
+  fullPath: string;
+  type: 'dir' | 'file';
+  status?: string;
+  filePath?: string;
+  children: ChangedTreeNode[];
+  count: number;
+}
+
+function buildChangedTree(files: ChangedFileEntry[]): ChangedTreeNode[] {
+  const rootChildren: ChangedTreeNode[] = [];
+
+  for (const f of files) {
+    const parts = f.path.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+    let children = rootChildren;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      const fullPath = parts.slice(0, i + 1).join('/');
+
+      if (isLast) {
+        children.push({ name: part, fullPath, type: 'file', status: f.status, filePath: f.path, children: [], count: 0 });
+      } else {
+        let dir = children.find((c) => c.type === 'dir' && c.name === part);
+        if (!dir) {
+          dir = { name: part, fullPath, type: 'dir', children: [], count: 0 };
+          children.push(dir);
+        }
+        children = dir.children;
+      }
+    }
+  }
+
+  function calcCount(node: ChangedTreeNode): number {
+    if (node.type === 'file') return 1;
+    node.count = node.children.reduce((sum, c) => sum + calcCount(c), 0);
+    return node.count;
+  }
+  rootChildren.forEach((c) => calcCount(c));
+
+  function sortTree(nodes: ChangedTreeNode[]) {
+    nodes.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach((n) => { if (n.children.length > 0) sortTree(n.children); });
+  }
+  sortTree(rootChildren);
+
+  return rootChildren;
+}
+
+function ChangedFileTreeNode({
+  node, depth, expandedDirs, onToggleDir, expandedDiffPath, onToggleDiff, diffLoading, diffCache, agentDir, onOpenFile,
+}: {
+  node: ChangedTreeNode;
+  depth: number;
+  expandedDirs: Set<string>;
+  onToggleDir: (fullPath: string) => void;
+  expandedDiffPath: string | null;
+  onToggleDiff: (filePath: string) => void;
+  diffLoading: boolean;
+  diffCache: Record<string, FileDiffResult>;
+  agentDir?: string | null;
+  onOpenFile?: (path: string) => void;
+}) {
+  const indent = depth * 14 + 16;
+
+  if (node.type === 'dir') {
+    const isExpanded = expandedDirs.has(node.fullPath);
+    return (
+      <>
+        <div
+          onClick={() => onToggleDir(node.fullPath)}
+          className="flex items-center gap-1.5 py-1.5 hover:bg-[var(--hover)] transition-colors cursor-pointer select-none pr-3"
+          style={{ paddingLeft: indent }}
+        >
+          <span className="shrink-0 text-[var(--ink-tertiary)]">
+            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+          {isExpanded
+            ? <FolderOpen size={14} className="shrink-0 text-[var(--accent-light)]" />
+            : <Folder size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+          }
+          <span className="text-[13px] text-[var(--ink)] truncate">{node.name}</span>
+          <span className="text-[11px] text-[var(--ink-tertiary)] ml-auto shrink-0">{node.count}</span>
+        </div>
+        {isExpanded && node.children.map((child) => (
+          <ChangedFileTreeNode
+            key={child.fullPath}
+            node={child}
+            depth={depth + 1}
+            expandedDirs={expandedDirs}
+            onToggleDir={onToggleDir}
+            expandedDiffPath={expandedDiffPath}
+            onToggleDiff={onToggleDiff}
+            diffLoading={diffLoading}
+            diffCache={diffCache}
+            agentDir={agentDir}
+            onOpenFile={onOpenFile}
+          />
+        ))}
+      </>
+    );
+  }
+
+  // File node
+  const filePath = node.filePath!;
+  const isDiffExpanded = expandedDiffPath === filePath;
+
+  return (
+    <>
+      <div
+        onClick={() => {
+          onToggleDiff(filePath);
+          if (agentDir && onOpenFile) {
+            onOpenFile(`${agentDir}/${filePath}`);
+          }
+        }}
+        className="flex items-center gap-1.5 py-1.5 hover:bg-[var(--hover)] transition-colors cursor-pointer select-none pr-3"
+        style={{ paddingLeft: indent + 14 }}
+      >
+        <FileText size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+        <span className="text-[13px] text-[var(--ink)] truncate flex-1">{node.name}</span>
+        <StatusBadge status={node.status!} />
+      </div>
+      {isDiffExpanded && (
+        diffLoading && !diffCache[filePath] ? (
+          <div className="px-4 py-2 text-[12px] text-[var(--ink-tertiary)]">
+            <RefreshCw size={12} className="inline animate-spin mr-1" />
+            加载 diff…
+          </div>
+        ) : diffCache[filePath] ? (
+          <DiffView result={diffCache[filePath]} />
+        ) : null
+      )}
+    </>
   );
 }
 
@@ -304,6 +449,33 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
   const [expandedDiffPath, setExpandedDiffPath] = useState<string | null>(null);
   const [diffCache, setDiffCache] = useState<Record<string, FileDiffResult>>({});
   const [diffLoading, setDiffLoading] = useState(false);
+  const [expandedChangedDirs, setExpandedChangedDirs] = useState<Set<string>>(new Set());
+
+  const changedTree = useMemo(() => buildChangedTree(changedFiles), [changedFiles]);
+
+  // Auto-expand all directories when changed files update
+  useEffect(() => {
+    function collectDirPaths(nodes: ChangedTreeNode[]): string[] {
+      const paths: string[] = [];
+      for (const n of nodes) {
+        if (n.type === 'dir') {
+          paths.push(n.fullPath);
+          paths.push(...collectDirPaths(n.children));
+        }
+      }
+      return paths;
+    }
+    setExpandedChangedDirs(new Set(collectDirPaths(changedTree)));
+  }, [changedTree]);
+
+  const handleToggleChangedDir = useCallback((fullPath: string) => {
+    setExpandedChangedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(fullPath)) next.delete(fullPath);
+      else next.add(fullPath);
+      return next;
+    });
+  }, []);
 
   const fetchDir = useCallback(async (path: string): Promise<FileEntry[]> => {
     const hidden = showHiddenRef.current ? '&hidden=1' : '';
@@ -422,6 +594,7 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
   useEffect(() => {
     setDiffCache({});
     setExpandedDiffPath(null);
+    setExpandedChangedDirs(new Set());
     setIsGitRepo(null);
     setChangedFiles([]);
     gitInitTriedRef.current = false;
@@ -644,34 +817,20 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
               <p className="text-[11px] text-[var(--ink-tertiary)] mt-1">工作区内容与最近提交一致</p>
             </div>
           ) : (
-            changedFiles.map((f) => (
-              <div key={f.path}>
-                <div
-                  onClick={() => handleToggleFileDiff(f.path)}
-                  className="flex items-center gap-1.5 py-1.5 px-4 hover:bg-[var(--hover)] transition-colors cursor-pointer select-none"
-                >
-                  <span className="shrink-0 text-[var(--ink-tertiary)]">
-                    {expandedDiffPath === f.path ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  </span>
-                  <StatusBadge status={f.status} />
-                  <span className="text-[13px] text-[var(--ink)] truncate flex-1" title={f.path}>
-                    {f.path.includes('/') ? f.path.split('/').pop() : f.path}
-                  </span>
-                  <span className="text-[11px] text-[var(--ink-tertiary)] truncate max-w-[80px]" title={f.path}>
-                    {f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : ''}
-                  </span>
-                </div>
-                {expandedDiffPath === f.path && (
-                  diffLoading && !diffCache[f.path] ? (
-                    <div className="px-4 py-2 text-[12px] text-[var(--ink-tertiary)]">
-                      <RefreshCw size={12} className="inline animate-spin mr-1" />
-                      加载 diff…
-                    </div>
-                  ) : diffCache[f.path] ? (
-                    <DiffView result={diffCache[f.path]} />
-                  ) : null
-                )}
-              </div>
+            changedTree.map((node) => (
+              <ChangedFileTreeNode
+                key={node.fullPath}
+                node={node}
+                depth={0}
+                expandedDirs={expandedChangedDirs}
+                onToggleDir={handleToggleChangedDir}
+                expandedDiffPath={expandedDiffPath}
+                onToggleDiff={handleToggleFileDiff}
+                diffLoading={diffLoading}
+                diffCache={diffCache}
+                agentDir={agentDir}
+                onOpenFile={onOpenFile}
+              />
             ))
           )
         ) : activeTab === 'files' ? (

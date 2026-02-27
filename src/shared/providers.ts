@@ -64,7 +64,7 @@ export const PROVIDERS: Provider[] = [
     authType: 'auth_token',
     websiteUrl: 'https://platform.moonshot.cn/console',
     config: {
-      baseUrl: 'https://api.moonshot.cn/anthropic',
+      baseUrl: 'https://api.moonshot.ai/anthropic',
     },
     models: [
       { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'moonshot' },

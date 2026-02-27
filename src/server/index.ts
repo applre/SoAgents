@@ -488,7 +488,7 @@ const server = Bun.serve({
         return Response.json({ isGitRepo: false, files: [] });
       }
 
-      const statusResult = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd: agentDir });
+      const statusResult = Bun.spawnSync(['git', '-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all'], { cwd: agentDir });
       const output = new TextDecoder().decode(statusResult.stdout).trim();
       if (!output) {
         return Response.json({ isGitRepo: true, files: [] });
@@ -498,7 +498,18 @@ const server = Bun.serve({
         const xy = line.substring(0, 2);
         let filePath = line.substring(3);
         if (filePath.startsWith('"') && filePath.endsWith('"')) {
-          filePath = filePath.slice(1, -1);
+          // Decode git's octal-escaped paths (e.g. \345\210\253 → UTF-8 bytes → 中文)
+          const raw = filePath.slice(1, -1);
+          const bytes: number[] = [];
+          for (let i = 0; i < raw.length; i++) {
+            if (raw[i] === '\\' && i + 3 < raw.length && /^[0-7]{3}$/.test(raw.substring(i + 1, i + 4))) {
+              bytes.push(parseInt(raw.substring(i + 1, i + 4), 8));
+              i += 3;
+            } else {
+              bytes.push(raw.charCodeAt(i));
+            }
+          }
+          filePath = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
         }
         const renameMatch = filePath.match(/^(.+) -> (.+)$/);
         if (renameMatch) filePath = renameMatch[2];
