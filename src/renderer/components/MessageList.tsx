@@ -10,7 +10,7 @@ interface Props {
 }
 
 export default function MessageList({ messages, isLoading, onOpenUrl }: Props) {
-  const { scrollRef, checkAtBottom } = useAutoScroll([...messages, isLoading]);
+  const { scrollRef, checkAtBottom } = useAutoScroll(messages.length, isLoading);
 
   return (
     <div

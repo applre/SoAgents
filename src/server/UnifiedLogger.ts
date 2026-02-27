@@ -3,7 +3,9 @@ import { join } from 'path';
 import { homedir } from 'os';
 import type { LogEntry } from '../shared/types/log';
 
-const LOG_DIR = join(homedir(), '.soagents', 'logs');
+// 开发模式（bun 直接执行 .ts）用 logs_dev，发布版用 logs
+const isDev = import.meta.path.endsWith('.ts');
+const LOG_DIR = join(homedir(), '.soagents', isDev ? 'logs_dev' : 'logs');
 const RETENTION_DAYS = 30;
 
 function ensureLogDir(): void {

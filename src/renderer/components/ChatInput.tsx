@@ -7,7 +7,7 @@ import { useConfig } from '../context/ConfigContext';
 import { useTabState } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
-import type { ModelEntity } from '../../shared/types/config';
+import type { ModelEntity, Provider } from '../../shared/types/config';
 import type { ChatImage } from '../types/chat';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
@@ -48,9 +48,15 @@ interface AttachedFile {
 }
 
 export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed }: Props) {
-  const { allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
+  const { config, allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
   const { apiGet, messages } = useTabState();
   const isProviderLocked = messages.length > 0;
+
+  // Provider 可用性检查：subscription 类型暂时放行，api 类型需要有 key
+  const isProviderAvailable = useCallback((p: Provider): boolean => {
+    if (p.type === 'subscription') return true;
+    return !!config.apiKeys[p.id];
+  }, [config.apiKeys]);
 
   // Per-workspace entry (must be before permissionMode state init)
   const wsEntry = agentDir ? workspaces.find((w) => w.path === agentDir) : undefined;
@@ -97,6 +103,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     }
     return effectiveProvider.models[0];
   }, [effectiveProvider, wsEntry?.modelId]);
+  const isCurrentProviderAvailable = useMemo(() => isProviderAvailable(effectiveProvider), [isProviderAvailable, effectiveProvider]);
   const slashQuery = showSlash && text.startsWith('/') ? text.slice(1) : '';
 
   // 文件注入：从编辑器「去对话」时以附件卡片形式带入文件，同步获取真实文件大小
@@ -477,31 +484,39 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                     <span>选择供应商</span>
                   </button>
                 </div>
-                {allProviders.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (agentDir) {
-                        updateWorkspaceConfig(agentDir, { providerId: p.id });
-                      } else {
-                        updateConfig({ currentProviderId: p.id });
-                      }
-                      setShowProviderSubmenu(false);
-                    }}
-                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
-                      effectiveProvider.id === p.id
-                        ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-                        : 'text-[var(--ink)] hover:bg-[var(--hover)]'
-                    }`}
-                  >
-                    <span className="font-medium">{p.name}</span>
-                    <span className="text-[9px] text-[var(--ink-tertiary)] bg-[var(--hover)] px-1 py-0.5 rounded">
-                      {p.cloudProvider}
-                    </span>
-                  </button>
-                ))}
+                {allProviders.map((p) => {
+                  const available = isProviderAvailable(p);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      disabled={!available}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!available) return;
+                        if (agentDir) {
+                          updateWorkspaceConfig(agentDir, { providerId: p.id });
+                        } else {
+                          updateConfig({ currentProviderId: p.id });
+                        }
+                        setShowProviderSubmenu(false);
+                      }}
+                      title={!available ? '请在设置页面配置 API Key' : undefined}
+                      className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
+                        !available
+                          ? 'opacity-45 cursor-not-allowed text-[var(--ink-tertiary)]'
+                          : effectiveProvider.id === p.id
+                            ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                            : 'text-[var(--ink)] hover:bg-[var(--hover)]'
+                      }`}
+                    >
+                      <span className="font-medium">{p.name}</span>
+                      <span className="text-[9px] text-[var(--ink-tertiary)] bg-[var(--hover)] px-1 py-0.5 rounded">
+                        {available ? p.cloudProvider : '未配置'}
+                      </span>
+                    </button>
+                  );
+                })}
               </>
             ) : (
               <>
@@ -774,13 +789,13 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
 
             <button
               onClick={isLoading ? onStop : handleSend}
-              disabled={!isLoading && !canSend}
+              disabled={!isLoading && (!canSend || !isCurrentProviderAvailable)}
               className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
               style={{
-                background: isLoading || canSend ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
-                cursor: isLoading || canSend ? 'pointer' : 'default',
+                background: isLoading || (canSend && isCurrentProviderAvailable) ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
+                cursor: isLoading || (canSend && isCurrentProviderAvailable) ? 'pointer' : 'default',
               }}
-              title={isLoading ? '停止' : '发送 (Enter)'}
+              title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : isLoading ? '停止' : '发送 (Enter)'}
             >
               <Send size={14} color="white" strokeWidth={2} />
             </button>

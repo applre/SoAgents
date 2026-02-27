@@ -89,6 +89,9 @@ class AgentSession {
   private sdkSessionId: string | null = null;
   private currentSessionId: string | null = null;
   private currentProviderEnv: ProviderEnv | undefined = undefined;
+  // sendMessage 完成时 resolve，loadSession 用来等待进行中的 query 结束
+  private queryDonePromise: Promise<void> | null = null;
+  private queryDoneResolve: (() => void) | null = null;
 
   async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<void> {
     if (this.isRunning) return;
@@ -132,6 +135,10 @@ class AgentSession {
 
     this.isRunning = true;
     let assistantContent = '';
+    // 捕获当前 session ID，防止 loadSession 切换后 finally 保存到错误的 session
+    const activeSessionId = this.currentSessionId;
+    // 设置 queryDone promise，让 loadSession 能等待当前 query 完成
+    this.queryDonePromise = new Promise<void>((resolve) => { this.queryDoneResolve = resolve; });
 
     try {
       const mcpAll = MCPConfigStore.getAll();
@@ -285,6 +292,7 @@ class AgentSession {
             const delta = streamEvent.delta;
             if (delta?.type === 'text_delta' && delta.text) {
               hasStreamedContent = true;
+              assistantContent += delta.text;
               broadcast('chat:message-chunk', { text: delta.text });
             } else if (delta?.type === 'thinking_delta' && delta.thinking) {
               broadcast('chat:thinking-chunk', { thinking: delta.thinking });
@@ -299,12 +307,12 @@ class AgentSession {
             }
           }
         } else if (msg.type === 'assistant') {
-          // full assistant message — accumulate for storage; if no streaming, also broadcast
+          // full assistant message — 仅在无 streaming 时才累加（streaming 已在 delta 中累加）
           const betaMsg = msg.message as { content: Array<{ type: string; text?: string }> };
           for (const block of betaMsg.content) {
             if (block.type === 'text' && block.text) {
-              assistantContent += block.text;
               if (!hasStreamedContent) {
+                assistantContent += block.text;
                 broadcast('chat:message-chunk', { text: block.text });
               }
             }
@@ -338,23 +346,31 @@ class AgentSession {
     } finally {
       this.isRunning = false;
       this.currentQuery = null;
-      if (assistantContent) {
+      if (assistantContent && activeSessionId) {
         const assistantMsgId = crypto.randomUUID();
-        this.messages.push({
+        const assistantMsg: StoredMessage = {
           id: assistantMsgId,
           role: 'assistant',
           content: assistantContent,
           createdAt: Date.now(),
+        };
+        // 始终保存到正确的 session（用捕获的 activeSessionId）
+        SessionStore.saveMessage(activeSessionId, {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: assistantContent,
+          timestamp: new Date().toISOString(),
         });
-        // 保存 assistant 消息到 SessionStore
-        if (this.currentSessionId) {
-          SessionStore.saveMessage(this.currentSessionId, {
-            id: assistantMsgId,
-            role: 'assistant',
-            content: assistantContent,
-            timestamp: new Date().toISOString(),
-          });
+        // 仅在没有切换 session 时更新内存消息列表
+        if (this.currentSessionId === activeSessionId) {
+          this.messages.push(assistantMsg);
         }
+      }
+      // 通知等待者 query 已完成
+      if (this.queryDoneResolve) {
+        this.queryDoneResolve();
+        this.queryDoneResolve = null;
+        this.queryDonePromise = null;
       }
     }
   }
@@ -385,8 +401,14 @@ class AgentSession {
     this.sdkSessionId = null;
   }
 
-  loadSession(sessionId: string): void {
-    this.stop();
+  async loadSession(sessionId: string): Promise<void> {
+    // 先中断进行中的 query，等其 finally 完成保存后再切换
+    if (this.isRunning) {
+      this.stop();
+      if (this.queryDonePromise) {
+        await this.queryDonePromise;
+      }
+    }
     this.isRunning = false;
     this.currentSessionId = sessionId;
     this.sdkSessionId = null;

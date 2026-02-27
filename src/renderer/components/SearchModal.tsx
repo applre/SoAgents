@@ -1,6 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, X, MessageCircle } from 'lucide-react';
+import { Search, X, MessageCircle, Clock } from 'lucide-react';
 import { globalApiGetJson } from '../api/apiFetch';
+import type { SessionMetadata } from '../../shared/types/session';
+
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return '刚刚';
+  if (mins < 60) return `${mins} 分钟前`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  return new Date(iso).toLocaleDateString('zh-CN');
+}
 
 interface SearchMatch {
   id: string;
@@ -22,6 +35,7 @@ interface Props {
 export default function SearchModal({ onSelectSession, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [recentSessions, setRecentSessions] = useState<SessionMetadata[]>([]);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -29,6 +43,10 @@ export default function SearchModal({ onSelectSession, onClose }: Props) {
 
   useEffect(() => {
     inputRef.current?.focus();
+    // 加载最近对话
+    globalApiGetJson<SessionMetadata[]>('/chat/sessions')
+      .then((data) => setRecentSessions(data.slice(0, 10)))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -130,9 +148,34 @@ export default function SearchModal({ onSelectSession, onClose }: Props) {
               <div style={{ height: 1, background: 'var(--border)', margin: '0 16px' }} />
             </div>
           ))}
-          {!query.trim() && (
+          {!query.trim() && recentSessions.length > 0 && (
+            <>
+              <div className="px-4 pt-3 pb-1.5 text-[11px] font-medium text-[var(--ink-tertiary)] flex items-center gap-1.5">
+                <Clock size={11} />
+                最近对话
+              </div>
+              {recentSessions.map((s) => (
+                <div key={s.id}>
+                  <button
+                    onClick={() => handleSelect(s.id)}
+                    className="w-full text-left px-4 py-3 hover:bg-[var(--hover)] transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <MessageCircle size={13} className="shrink-0 text-[var(--accent)]" />
+                      <span className="text-[13px] font-semibold text-[var(--ink)] truncate flex-1">{s.title}</span>
+                      <span className="text-[11px] text-[var(--ink-tertiary)] shrink-0">
+                        {formatRelativeTime(s.lastActiveAt)}
+                      </span>
+                    </div>
+                  </button>
+                  <div style={{ height: 1, background: 'var(--border)', margin: '0 16px' }} />
+                </div>
+              ))}
+            </>
+          )}
+          {!query.trim() && recentSessions.length === 0 && (
             <div className="flex items-center justify-center py-10 text-[13px] text-[var(--ink-tertiary)]">
-              输入关键词搜索对话内容
+              暂无对话记录
             </div>
           )}
         </div>

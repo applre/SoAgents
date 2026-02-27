@@ -124,7 +124,7 @@ const server = Bun.serve({
 
     if (req.method === 'POST' && url.pathname === '/chat/load-session') {
       const body = await req.json() as { sessionId: string };
-      agentSession.loadSession(body.sessionId);
+      await agentSession.loadSession(body.sessionId);
       return Response.json({ ok: true, messages: agentSession.getCurrentMessages() });
     }
 

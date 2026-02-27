@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### 新增
+- **GitHub Actions CI**：push `v*` tag 自动构建签名公证的 DMG 并发布到 GitHub Releases（`.github/workflows/release.yml`）
+- **Provider 可用性防护**：未配置 API Key 的供应商在下拉列表中灰显禁用，发送按钮联动禁用，hover 提示"请在设置页面配置 API Key"
+- **搜索弹窗最近对话**：搜索弹窗打开时默认展示最近 10 条对话列表，带相对时间显示
+
+### 修复
+- **Session 切换消息丢失**：修复 agent 回答中途切换 session 导致已有回复内容丢失的问题。streaming chunk 同步累加到 `assistantContent`，`loadSession` 等待进行中的 query 完成保存后再切换，`finally` 块使用捕获的 session ID 保存到正确的 session
+- **useAutoScroll 依赖稳定性**：将 spread array 依赖改为 `triggerCount + isLoading`，避免无限重渲染
+
+### 改进
+- **日志目录隔离**：开发版日志写入 `~/.soagents/logs_dev/`，发布版写入 `~/.soagents/logs/`，两个版本可同时运行互不干扰
+
 ---
 
 ## [0.1.0] - 2026-02-23
