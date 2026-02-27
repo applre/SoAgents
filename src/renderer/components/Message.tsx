@@ -54,7 +54,7 @@ export default function MessageItem({ message, onOpenUrl }: Props) {
             );
           }
           return (
-            <div key={i} className={`prose prose-sm max-w-none ${isUser ? '[&_>*]:!text-white [&_>p_code]:bg-white/20 [&_a]:text-white/90' : ''}`}>
+            <div key={i} className={`prose prose-sm max-w-none ${isUser ? '[&_*]:!text-white [&_*]:!bg-transparent [&_code]:!bg-white/20 [&_pre]:!bg-white/10 [&_a]:!text-white/90' : ''}`}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
