@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
@@ -370,6 +371,51 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     }
     textareaRef.current?.focus();
   }, [processFiles]);
+
+  // Tauri 原生文件拖拽监听（浏览器 dataTransfer.files 在 Tauri 中拿不到系统文件）
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    listen<{ paths: string[]; position: { x: number; y: number } }>('tauri://drag-drop', async (event) => {
+      const paths = event.payload.paths;
+      if (!paths || paths.length === 0) return;
+      setIsDragging(false);
+      dragCounterRef.current = 0;
+      const newFiles: AttachedFile[] = await Promise.all(
+        paths.map(async (p): Promise<AttachedFile> => {
+          const name = p.split('/').pop() || p;
+          const ext = name.split('.').pop()?.toLowerCase() || '';
+          const isImg = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
+          try {
+            const info = await apiGet<{ size: number }>(`/api/file-stat?path=${encodeURIComponent(p)}`);
+            return { path: p, name, size: info.size, isImage: isImg };
+          } catch {
+            return { path: p, name, size: 0, isImage: isImg };
+          }
+        })
+      );
+      setAttachedFiles((prev) => {
+        const filtered = newFiles.filter((f) => !prev.some((pf) => pf.path === f.path));
+        return [...prev, ...filtered];
+      });
+      textareaRef.current?.focus();
+    }).then((fn) => { unlisten = fn; });
+
+    listen('tauri://drag-enter', () => setIsDragging(true)).then((fn) => {
+      const prev = unlisten;
+      unlisten = () => { prev?.(); fn(); };
+    });
+
+    listen('tauri://drag-leave', () => {
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+    }).then((fn) => {
+      const prev = unlisten;
+      unlisten = () => { prev?.(); fn(); };
+    });
+
+    return () => { unlisten?.(); };
+  }, [apiGet]);
 
   // 粘贴处理
   const handlePaste = useCallback(async (e: ClipboardEvent<HTMLTextAreaElement>) => {
