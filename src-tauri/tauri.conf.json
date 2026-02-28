@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SoAgents",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.soagents.app",
   "build": {
     "frontendDist": "../dist",
@@ -25,7 +25,10 @@
         "transparent": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 14, "y": 20 }
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 20
+        }
       }
     ],
     "security": {
@@ -34,7 +37,9 @@
         "enable": true,
         "scope": {
           "requireLiteralLeadingDot": false,
-          "allow": ["**/*"]
+          "allow": [
+            "**/*"
+          ]
         }
       }
     }
@@ -50,7 +55,10 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["dmg", "app"],
+    "targets": [
+      "dmg",
+      "app"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

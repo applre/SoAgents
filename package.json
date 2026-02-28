@@ -2,7 +2,7 @@
   "name": "soagents",
   "description": "SoAgents - Desktop AI Agent Client powered by Claude Agent SDK",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "author": "jingyu",
   "homepage": "https://github.com/applre/SoAgents",
