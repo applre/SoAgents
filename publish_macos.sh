@@ -75,7 +75,7 @@ APP_SIG="${BUNDLE_DIR}/macos/SoAgents.app.tar.gz.sig"
 
 echo "Creating tar.gz from SoAgents.app..."
 cd "${BUNDLE_DIR}/macos"
-tar -czf SoAgents.app.tar.gz SoAgents.app
+COPYFILE_DISABLE=1 tar -czf SoAgents.app.tar.gz SoAgents.app
 cd - > /dev/null
 
 echo "Created: $APP_TAR ($(du -h "$APP_TAR" | cut -f1))"
