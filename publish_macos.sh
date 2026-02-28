@@ -50,6 +50,24 @@ if [ ! -d "$APP_BUNDLE" ]; then
     exit 1
 fi
 
+# ── Re-sign bun binary with JIT entitlements ─────────────────────
+# Bun needs JIT compilation to run JavaScript. macOS Hardened Runtime
+# blocks JIT by default, so we must explicitly grant the entitlement.
+
+ENTITLEMENTS_FILE="src-tauri/Entitlements.plist"
+BUN_BINARY="${APP_BUNDLE}/Contents/MacOS/bun"
+
+if [ -f "$BUN_BINARY" ] && [ -f "$ENTITLEMENTS_FILE" ]; then
+    SIGN_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
+    echo "Re-signing bun binary with JIT entitlements (identity: ${SIGN_IDENTITY})..."
+    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_FILE" "$BUN_BINARY"
+    echo "Bun binary re-signed with JIT entitlements."
+else
+    echo "WARNING: bun binary or entitlements file not found, skipping re-sign"
+    [ ! -f "$BUN_BINARY" ] && echo "  Missing: $BUN_BINARY"
+    [ ! -f "$ENTITLEMENTS_FILE" ] && echo "  Missing: $ENTITLEMENTS_FILE"
+fi
+
 # ── Create .tar.gz from .app ─────────────────────────────────────
 
 APP_TAR="${BUNDLE_DIR}/macos/SoAgents.app.tar.gz"

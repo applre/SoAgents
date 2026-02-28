@@ -84,6 +84,25 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri:build
 
+      - name: Re-sign bun with JIT entitlements
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_BUNDLE="src-tauri/target/release/bundle/macos/SoAgents.app"
+          BUN_BINARY="${APP_BUNDLE}/Contents/MacOS/bun"
+          ENTITLEMENTS="src-tauri/Entitlements.plist"
+
+          if [ -f "$BUN_BINARY" ] && [ -f "$ENTITLEMENTS" ]; then
+            echo "Re-signing bun binary with JIT entitlements..."
+            codesign --force --sign "${APPLE_SIGNING_IDENTITY:--}" \
+              --entitlements "$ENTITLEMENTS" "$BUN_BINARY"
+            echo "Verifying entitlements..."
+            codesign -d --entitlements - "$BUN_BINARY"
+          else
+            echo "ERROR: bun binary or entitlements file not found"
+            exit 1
+          fi
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
