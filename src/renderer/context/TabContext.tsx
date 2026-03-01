@@ -34,6 +34,7 @@ export interface TabState {
   deleteSession: (sessionId: string) => Promise<void>;
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
+  runningSessions: Set<string>;
   unifiedLogs: LogEntry[];
   clearUnifiedLogs: () => void;
 }

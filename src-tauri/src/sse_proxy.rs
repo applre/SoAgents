@@ -21,14 +21,14 @@ impl SseProxyState {
 #[tauri::command]
 pub async fn cmd_start_sse_proxy(
     url: String,
-    tab_id: String,
+    session_id: String,
     app: AppHandle,
     state: tauri::State<'_, SseProxyState>,
 ) -> Result<(), String> {
     // 如果已有连接，先停止
     {
         let mut conns = state.connections.lock().unwrap();
-        if let Some(old) = conns.remove(&tab_id) {
+        if let Some(old) = conns.remove(&session_id) {
             let _ = old.cancel_tx.send(());
         }
     }
@@ -37,7 +37,7 @@ pub async fn cmd_start_sse_proxy(
 
     {
         let mut conns = state.connections.lock().unwrap();
-        conns.insert(tab_id.clone(), SseConnection { cancel_tx });
+        conns.insert(session_id.clone(), SseConnection { cancel_tx });
     }
 
     let client = reqwest::Client::builder()
@@ -83,7 +83,7 @@ pub async fn cmd_start_sse_proxy(
                                     current_event = event.to_string();
                                 } else if let Some(data) = line.strip_prefix("data: ") {
                                     // emit 到前端
-                                    let event_name = format!("sse:{}:{}", tab_id, current_event);
+                                    let event_name = format!("sse:{}:{}", session_id, current_event);
                                     let _ = app.emit(&event_name, data);
                                 }
                             }
@@ -100,11 +100,11 @@ pub async fn cmd_start_sse_proxy(
 
 #[tauri::command]
 pub async fn cmd_stop_sse_proxy(
-    tab_id: String,
+    session_id: String,
     state: tauri::State<'_, SseProxyState>,
 ) -> Result<(), String> {
     let mut conns = state.connections.lock().unwrap();
-    if let Some(conn) = conns.remove(&tab_id) {
+    if let Some(conn) = conns.remove(&session_id) {
         let _ = conn.cancel_tx.send(());
     }
     Ok(())

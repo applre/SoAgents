@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../utils/env';
-import { getTabServerUrl } from './tauriClient';
+import { getSessionServerUrl } from './tauriClient';
 
 // 通过 Rust 代理发送 HTTP 请求（避免 CORS）
 async function proxyFetch(url: string, options: RequestInit = {}): Promise<string> {
@@ -36,7 +36,7 @@ export async function apiPostJson<T>(baseUrl: string, path: string, body: unknow
 let _globalUrl: string | null = null;
 async function getGlobalUrl(): Promise<string> {
   if (!_globalUrl) {
-    _globalUrl = await getTabServerUrl('__global__');
+    _globalUrl = await getSessionServerUrl('__global__');
   }
   return _globalUrl;
 }

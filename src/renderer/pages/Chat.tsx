@@ -13,6 +13,7 @@ import type { SessionMetadata } from '../../shared/types/session';
 interface Props {
   tab: Tab;
   onSessionsChange?: (tabId: string, sessions: SessionMetadata[]) => void;
+  onRunningSessionsChange?: (runningSessions: Set<string>) => void;
   onActiveSessionChange?: (sessionId: string | null) => void;
   onExposeReset?: (resetFn: () => Promise<void>) => void;
   onExposeDeleteSession?: (fn: (sessionId: string) => Promise<void>) => void;
@@ -163,7 +164,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
   );
 }
 
-export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: Props) {
+export default function Chat({ tab, onSessionsChange, onRunningSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: Props) {
   if (!tab.agentDir) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -173,7 +174,7 @@ export default function Chat({ tab, onSessionsChange, onActiveSessionChange, onE
   }
 
   return (
-    <TabProvider tabId={tab.id} agentDir={tab.agentDir}>
+    <TabProvider tabId={tab.id} agentDir={tab.agentDir} onRunningSessionsChange={onRunningSessionsChange}>
       <ChatContent
         agentDir={tab.agentDir}
         sessionId={tab.sessionId}

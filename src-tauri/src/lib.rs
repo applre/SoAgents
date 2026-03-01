@@ -29,9 +29,9 @@ pub fn run() {
         .manage(sidecar_state)
         .manage(sse_proxy::SseProxyState::new())
         .invoke_handler(tauri::generate_handler![
-            commands::cmd_start_tab_sidecar,
-            commands::cmd_stop_tab_sidecar,
-            commands::cmd_get_tab_server_url,
+            commands::cmd_start_session_sidecar,
+            commands::cmd_stop_session_sidecar,
+            commands::cmd_get_session_server_url,
             commands::cmd_start_global_sidecar,
             commands::cmd_stop_all_sidecars,
             commands::cmd_get_default_workspace,

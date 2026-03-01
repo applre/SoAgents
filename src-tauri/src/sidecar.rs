@@ -234,7 +234,7 @@ impl SidecarManager {
 
     pub fn start_sidecar(
         &mut self,
-        tab_id: String,
+        sidecar_id: String,
         agent_dir: Option<PathBuf>,
         bun_path: &PathBuf,
         script_path: &PathBuf,
@@ -242,11 +242,11 @@ impl SidecarManager {
         ensure_high_file_descriptor_limit();
 
         // Idempotent: if already running, return existing port
-        if let Some(instance) = self.instances.get_mut(&tab_id) {
+        if let Some(instance) = self.instances.get_mut(&sidecar_id) {
             if let Ok(None) = instance.process.try_wait() {
                 return Ok(instance.port);
             }
-            self.instances.remove(&tab_id);
+            self.instances.remove(&sidecar_id);
         }
 
         let port = self.port_counter.fetch_add(1, Ordering::SeqCst);
@@ -267,8 +267,8 @@ impl SidecarManager {
         let cwd = cwd.unwrap_or_else(|| PathBuf::from("."));
 
         log::info!(
-            "[sidecar] Starting sidecar for tab '{}' on port {} | bun={:?} script={:?} cwd={:?}",
-            tab_id,
+            "[sidecar] Starting sidecar '{}' on port {} | bun={:?} script={:?} cwd={:?}",
+            sidecar_id,
             port,
             bun_path,
             script_path,
@@ -330,20 +330,20 @@ impl SidecarManager {
 
         if !healthy {
             log::warn!(
-                "[sidecar] Health check failed for tab '{}' on port {}",
-                tab_id,
+                "[sidecar] Health check failed for sidecar '{}' on port {}",
+                sidecar_id,
                 port
             );
         } else {
             log::info!(
-                "[sidecar] Sidecar for tab '{}' is healthy on port {}",
-                tab_id,
+                "[sidecar] Sidecar '{}' is healthy on port {}",
+                sidecar_id,
                 port
             );
         }
 
         self.instances.insert(
-            tab_id,
+            sidecar_id,
             SidecarInstance {
                 process: child,
                 port,
@@ -355,9 +355,9 @@ impl SidecarManager {
         Ok(port)
     }
 
-    pub fn stop_sidecar(&mut self, tab_id: &str) -> Result<(), String> {
-        if let Some(mut instance) = self.instances.remove(tab_id) {
-            log::info!("[sidecar] Stopping sidecar for tab '{}'", tab_id);
+    pub fn stop_sidecar(&mut self, sidecar_id: &str) -> Result<(), String> {
+        if let Some(mut instance) = self.instances.remove(sidecar_id) {
+            log::info!("[sidecar] Stopping sidecar '{}'", sidecar_id);
 
             let _ = instance.process.kill();
 
@@ -368,8 +368,8 @@ impl SidecarManager {
                     Ok(None) => {
                         if start.elapsed() > std::time::Duration::from_secs(5) {
                             log::warn!(
-                                "[sidecar] Process for tab '{}' did not exit in 5s",
-                                tab_id
+                                "[sidecar] Process '{}' did not exit in 5s",
+                                sidecar_id
                             );
                             break;
                         }
@@ -382,19 +382,19 @@ impl SidecarManager {
                 }
             }
 
-            log::info!("[sidecar] Sidecar for tab '{}' stopped", tab_id);
+            log::info!("[sidecar] Sidecar '{}' stopped", sidecar_id);
         }
         Ok(())
     }
 
     pub fn stop_all(&mut self) {
-        let tab_ids: Vec<String> = self.instances.keys().cloned().collect();
-        for tab_id in tab_ids {
-            let _ = self.stop_sidecar(&tab_id);
+        let sidecar_ids: Vec<String> = self.instances.keys().cloned().collect();
+        for sidecar_id in sidecar_ids {
+            let _ = self.stop_sidecar(&sidecar_id);
         }
     }
 
-    pub fn get_port(&self, tab_id: &str) -> Option<u16> {
-        self.instances.get(tab_id).map(|i| i.port)
+    pub fn get_port(&self, sidecar_id: &str) -> Option<u16> {
+        self.instances.get(sidecar_id).map(|i| i.port)
     }
 }

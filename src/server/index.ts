@@ -1,5 +1,5 @@
 import { createSseHandler, setLogHistoryProvider } from './sse';
-import { agentSession } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -55,47 +55,67 @@ const server = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }> };
+      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }> };
       const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
         : 'acceptEdits';
-      agentSession.sendMessage(body.message, body.agentDir, body.providerEnv, body.model, mode, body.mcpEnabledServerIds, body.images).catch(console.error);
-      return Response.json({ ok: true });
+      let sessionId = body.sessionId ?? null;
+      if (!sessionId) {
+        const session = SessionStore.createSession(body.agentDir, body.message.slice(0, 50));
+        sessionId = session.id;
+      }
+      const runner = getOrCreateRunner(sessionId);
+      runner.sendMessage(body.message, body.agentDir, body.providerEnv, body.model, mode, body.mcpEnabledServerIds, body.images).catch(console.error);
+      return Response.json({ ok: true, sessionId });
     }
 
     if (req.method === "POST" && url.pathname === "/chat/stop") {
-      agentSession.stop();
+      await req.json().catch(() => ({}));
+      getRunner()?.stop();
       return Response.json({ ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/chat/permission-response') {
       const body = await req.json() as { toolUseId: string; allow: boolean };
-      agentSession.respondPermission(body.toolUseId, body.allow);
+      getRunner()?.respondPermission(body.toolUseId, body.allow);
       return Response.json({ ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/question/respond') {
       const body = await req.json() as { toolUseId: string; answers: Record<string, string> };
-      agentSession.respondQuestion(body.toolUseId, body.answers);
+      getRunner()?.respondQuestion(body.toolUseId, body.answers);
       return Response.json({ ok: true });
     }
 
     if (req.method === "POST" && url.pathname === "/chat/reset") {
-      agentSession.reset();
+      resetState();
       return Response.json({ ok: true });
     }
 
     if (req.method === "GET" && url.pathname === "/chat/messages") {
-      return Response.json(agentSession.getMessages());
+      const sid = getCurrentSessionId();
+      if (!sid) return Response.json([]);
+      const msgs = SessionStore.getSessionMessages(sid);
+      return Response.json(msgs.map((m: import('../shared/types/session').SessionMessage) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        createdAt: new Date(m.timestamp).getTime(),
+      })));
     }
 
     if (req.method === "GET" && url.pathname === "/agent/state") {
-      return Response.json(agentSession.getState());
+      const sid = getCurrentSessionId();
+      return Response.json({
+        sessionId: sid,
+        isRunning: isRunning(),
+        runningSessionIds: isRunning() && sid ? [sid] : [],
+      });
     }
 
     if (req.method === 'GET' && url.pathname === '/chat/sessions') {
-      return Response.json(agentSession.getSessions());
+      return Response.json(SessionStore.listSessions());
     }
 
     if (req.method === 'GET' && url.pathname === '/chat/search') {
@@ -122,14 +142,27 @@ const server = Bun.serve({
       return Response.json(results);
     }
 
-    if (req.method === 'POST' && url.pathname === '/chat/load-session') {
-      const body = await req.json() as { sessionId: string };
-      await agentSession.loadSession(body.sessionId);
-      return Response.json({ ok: true, messages: agentSession.getCurrentMessages() });
+    if (req.method === 'POST' && url.pathname === '/sessions/create') {
+      const body = await req.json() as { agentDir: string; title?: string };
+      const session = SessionStore.createSession(body.agentDir, body.title);
+      return Response.json({ sessionId: session.id });
+    }
+
+    if (req.method === 'GET' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/messages$/)) {
+      const sessionId = url.pathname.split('/')[3];
+      try {
+        const msgs = SessionStore.getSessionMessages(sessionId);
+        return Response.json(msgs);
+      } catch {
+        return Response.json([]);
+      }
     }
 
     if (req.method === 'DELETE' && url.pathname.startsWith('/chat/sessions/')) {
       const sessionId = url.pathname.replace('/chat/sessions/', '');
+      if (getCurrentSessionId() === sessionId) {
+        removeRunner();
+      }
       SessionStore.deleteSession(sessionId);
       return Response.json({ ok: true });
     }
@@ -531,27 +564,26 @@ const server = Bun.serve({
       const filePath = url.searchParams.get('path');
       if (!agentDir || !filePath) return Response.json({ error: 'missing params' }, { status: 400 });
 
-      // 尝试 diff HEAD（含 staged + unstaged）
-      let diffResult = Bun.spawnSync(['git', 'diff', 'HEAD', '--', filePath], { cwd: agentDir });
-      let diff = new TextDecoder().decode(diffResult.stdout);
+      let before = '';
+      let after = '';
 
-      if (diffResult.exitCode !== 0 || !diff.trim()) {
-        // HEAD 不存在（无提交）或无差异，尝试 cached
-        const cachedResult = Bun.spawnSync(['git', 'diff', '--cached', '--', filePath], { cwd: agentDir });
-        diff = new TextDecoder().decode(cachedResult.stdout);
-      }
-
-      if (!diff.trim()) {
-        // untracked 文件或无差异 — 读取文件内容
-        try {
-          const content = readFileSync(join(agentDir, filePath), 'utf-8');
-          return Response.json({ diff: null, content, isNew: true });
-        } catch {
-          return Response.json({ diff: '', content: null, isNew: false });
+      // 尝试获取 HEAD 版本（before）
+      const hasHead = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: agentDir });
+      if (hasHead.exitCode === 0) {
+        const showResult = Bun.spawnSync(['git', 'show', `HEAD:${filePath}`], { cwd: agentDir });
+        if (showResult.exitCode === 0) {
+          before = new TextDecoder().decode(showResult.stdout);
         }
       }
 
-      return Response.json({ diff, isNew: false });
+      // 读取当前工作区文件（after）
+      try {
+        after = readFileSync(join(agentDir, filePath), 'utf-8');
+      } catch {
+        // 文件已删除
+      }
+
+      return Response.json({ before, after });
     }
 
     return new Response("Not Found", { status: 404 });

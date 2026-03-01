@@ -6,9 +6,9 @@ use crate::sidecar::{self, SidecarManager, GLOBAL_SIDECAR_ID};
 pub type SidecarState = Arc<Mutex<SidecarManager>>;
 
 #[tauri::command]
-pub fn cmd_start_tab_sidecar(
+pub fn cmd_start_session_sidecar(
     app_handle: tauri::AppHandle,
-    tab_id: String,
+    session_id: String,
     agent_dir: Option<String>,
     state: tauri::State<'_, SidecarState>,
 ) -> Result<(), String> {
@@ -17,29 +17,29 @@ pub fn cmd_start_tab_sidecar(
 
     let agent_path = agent_dir.map(PathBuf::from);
     let mut manager = state.lock().map_err(|e| format!("Lock error: {}", e))?;
-    manager.start_sidecar(tab_id, agent_path, &bun_path, &script_path)?;
+    manager.start_sidecar(session_id, agent_path, &bun_path, &script_path)?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn cmd_stop_tab_sidecar(
-    tab_id: String,
+pub fn cmd_stop_session_sidecar(
+    session_id: String,
     state: tauri::State<'_, SidecarState>,
 ) -> Result<(), String> {
     let mut manager = state.lock().map_err(|e| format!("Lock error: {}", e))?;
-    manager.stop_sidecar(&tab_id)
+    manager.stop_sidecar(&session_id)
 }
 
 #[tauri::command]
-pub fn cmd_get_tab_server_url(
-    tab_id: String,
+pub fn cmd_get_session_server_url(
+    session_id: String,
     state: tauri::State<'_, SidecarState>,
 ) -> Result<String, String> {
     let manager = state.lock().map_err(|e| format!("Lock error: {}", e))?;
     manager
-        .get_port(&tab_id)
+        .get_port(&session_id)
         .map(|port| format!("http://127.0.0.1:{}", port))
-        .ok_or_else(|| format!("No sidecar running for tab '{}'", tab_id))
+        .ok_or_else(|| format!("No sidecar running for session '{}'", session_id))
 }
 
 #[tauri::command]
