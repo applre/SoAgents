@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, Settings, Check, Plus } from 'lucide-react';
 import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
+import DiffViewer from './DiffViewer';
 
 interface FileEntry {
   name: string;
@@ -15,9 +16,8 @@ interface ChangedFileEntry {
 }
 
 interface FileDiffResult {
-  diff: string | null;
-  content: string | null;
-  isNew: boolean;
+  before: string;
+  after: string;
 }
 
 interface Props {
@@ -169,50 +169,7 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function DiffView({ result }: { result: FileDiffResult }) {
-  const lines: string[] = [];
-  if (result.isNew && result.content) {
-    lines.push(...result.content.split('\n').map((l) => `+${l}`));
-  } else if (result.diff) {
-    let inHunk = false;
-    for (const line of result.diff.split('\n')) {
-      if (line.startsWith('@@')) inHunk = true;
-      if (inHunk) lines.push(line);
-    }
-  }
-
-  if (lines.length === 0) {
-    return <div className="px-3 py-2 text-[12px] text-[var(--ink-tertiary)] italic">无差异内容</div>;
-  }
-
-  return (
-    <div className="max-h-[300px] overflow-auto border-t border-[var(--border)] bg-[var(--paper)]">
-      {lines.map((line, i) => {
-        let bg = 'transparent';
-        let color = 'var(--ink-tertiary)';
-        if (line.startsWith('+') && !line.startsWith('+++')) {
-          bg = 'rgba(46, 160, 67, 0.15)';
-          color = '#3fb950';
-        } else if (line.startsWith('-') && !line.startsWith('---')) {
-          bg = 'rgba(248, 81, 73, 0.15)';
-          color = '#f85149';
-        } else if (line.startsWith('@@')) {
-          bg = 'rgba(56, 139, 253, 0.1)';
-          color = '#58a6ff';
-        }
-        return (
-          <div
-            key={i}
-            className="text-[11px] font-mono leading-[18px] px-2 whitespace-pre"
-            style={{ background: bg, color }}
-          >
-            {line}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+// DiffView 已替换为 DiffViewer 组件
 
 // ── 变动文件目录树 ─────────────────────────────────────────────
 
@@ -352,7 +309,7 @@ function ChangedFileTreeNode({
             加载 diff…
           </div>
         ) : diffCache[filePath] ? (
-          <DiffView result={diffCache[filePath]} />
+          <DiffViewer before={diffCache[filePath].before} after={diffCache[filePath].after} filePath={filePath} />
         ) : null
       )}
     </>

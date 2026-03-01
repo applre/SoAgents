@@ -1,14 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import CodeMirror from '@uiw/react-codemirror';
-import { markdown } from '@codemirror/lang-markdown';
-import { javascript } from '@codemirror/lang-javascript';
-import { python } from '@codemirror/lang-python';
-import { rust } from '@codemirror/lang-rust';
-import { css } from '@codemirror/lang-css';
-import { html } from '@codemirror/lang-html';
-import { json } from '@codemirror/lang-json';
 import { EditorView } from '@codemirror/view';
+import { getLangExtension } from '../utils/codemirror';
 import { EditorSelection } from '@codemirror/state';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -43,23 +37,7 @@ function getFileExt(filePath: string) {
 function isImageFile(filePath: string) { return IMAGE_EXTS.has(getFileExt(filePath)); }
 function isBinaryFile(filePath: string) { return BINARY_EXTS.has(getFileExt(filePath)); }
 
-// 根据扩展名返回 CodeMirror 语言插件
-function getLangExtension(filePath: string) {
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  switch (ext) {
-    case 'js': return javascript();
-    case 'jsx': return javascript({ jsx: true });
-    case 'ts': return javascript({ typescript: true });
-    case 'tsx': return javascript({ jsx: true, typescript: true });
-    case 'py': return python();
-    case 'rs': return rust();
-    case 'css': return css();
-    case 'html': case 'htm': return html();
-    case 'json': return json();
-    case 'md': case 'markdown': return markdown();
-    default: return markdown(); // 其他文件用 markdown（无额外高亮但可编辑）
-  }
-}
+// getLangExtension 已提取到 ../utils/codemirror.ts
 
 // 是否为 Markdown 文件（支持预览模式）
 function isMarkdownFile(filePath: string) {
