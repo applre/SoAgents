@@ -5,7 +5,6 @@ import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import { resolveClaudeCodeCli } from './provider-verify';
-import type { SessionMetadata, SessionMessage } from '../shared/types/session';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
 
@@ -13,6 +12,21 @@ interface ChatImage {
   name: string;
   mimeType: string;
   data: string; // 纯 base64
+}
+
+/** 消息队列项 */
+interface QueueItem {
+  sdkMessage: SDKUserMessage;
+  text: string; // 用于日志和持久化
+}
+
+/** 会话启动所需的配置快照 */
+interface SessionConfig {
+  agentDir: string;
+  providerEnv?: ProviderEnv;
+  model?: string;
+  permissionMode: PermissionMode;
+  mcpEnabledServerIds?: string[];
 }
 
 export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string, string | undefined> {
@@ -72,82 +86,166 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string,
   return env;
 }
 
-interface StoredMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  createdAt: number;
-}
+// ── SessionRunner: 持久会话模式 ──
+// subprocess 在首条消息时启动，后续消息通过队列投递，无需重启。
+// Provider/Model/PermissionMode 变更时自动重启子进程。
 
-class AgentSession {
-  private sessionId: string = crypto.randomUUID();
-  private messages: StoredMessage[] = [];
-  private isRunning = false;
-  private currentQuery: ReturnType<typeof query> | null = null;
+class SessionRunner {
+  readonly sessionId: string;
+
+  // ── 会话状态 ──
+  private sessionActive = false;   // subprocess 存活中
+  private isStreaming = false;     // AI 正在生成回复（前端 isRunning 映射到此）
+  private querySession: ReturnType<typeof query> | null = null;
+  private sdkSessionId: string | null = null;
+
+  // ── 配置快照（用于变更检测）──
+  private providerEnv: ProviderEnv | undefined;
+  private currentModel: string | undefined;
+  private currentPermissionMode: PermissionMode = 'acceptEdits';
+  private sessionConfig: SessionConfig | null = null;
+
+  // ── 持久 Session 门控 ──
+  private messageResolver: ((item: QueueItem | null) => void) | null = null;
+  private resolveTurnComplete: (() => void) | null = null;
+  private shouldAbort = false;
+  private sessionTerminationPromise: Promise<void> | null = null;
+  private messageQueue: QueueItem[] = [];
+
+  // ── 每轮助手内容 ──
+  private turnAssistantContent = '';
+  private turnHasStreamedContent = false;
+  private currentToolId = '';
+
+  // ── 权限/问题处理 ──
   private pendingPermissions = new Map<string, (allow: boolean) => void>();
   private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
-  private sdkSessionId: string | null = null;
-  private currentSessionId: string | null = null;
-  private currentProviderEnv: ProviderEnv | undefined = undefined;
-  // sendMessage 完成时 resolve，loadSession 用来等待进行中的 query 结束
-  private queryDonePromise: Promise<void> | null = null;
-  private queryDoneResolve: (() => void) | null = null;
 
-  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<void> {
-    if (this.isRunning) return;
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+  }
 
-    // 如果没有当前 session，创建一个新的
-    if (this.currentSessionId === null) {
-      const session = SessionStore.createSession(agentDir, text.slice(0, 50));
-      this.currentSessionId = session.id;
+  /** 前端通过 /agent/state 读取此值判断 AI 是否在处理 */
+  getIsRunning(): boolean {
+    return this.isStreaming;
+  }
+
+  // ── 消息队列门控 ──
+
+  /** 投递消息到 generator（或推入队列等待） */
+  private wakeGenerator(item: QueueItem | null): void {
+    if (this.messageResolver) {
+      const resolve = this.messageResolver;
+      this.messageResolver = null;
+      resolve(item);
+    } else if (item) {
+      this.messageQueue.push(item);
+    }
+  }
+
+  /** generator 阻塞等待下一条消息 */
+  private waitForMessage(): Promise<QueueItem | null> {
+    if (this.shouldAbort) return Promise.resolve(null);
+    if (this.messageQueue.length > 0) return Promise.resolve(this.messageQueue.shift()!);
+    return new Promise(resolve => { this.messageResolver = resolve; });
+  }
+
+  /** result 事件到达后解锁 generator 进入下一轮 */
+  private signalTurnComplete(): void {
+    if (this.resolveTurnComplete) {
+      const resolve = this.resolveTurnComplete;
+      this.resolveTurnComplete = null;
+      resolve();
+    }
+  }
+
+  /** generator 阻塞等待 AI 回复完成 */
+  private waitForTurnComplete(): Promise<void> {
+    if (this.shouldAbort) return Promise.resolve();
+    return new Promise(resolve => { this.resolveTurnComplete = resolve; });
+  }
+
+  /** 中止持久 session：唤醒所有被阻塞的 Promise + 中断 subprocess */
+  private abortSession(): void {
+    this.shouldAbort = true;
+    // 唤醒 generator 的 waitForMessage
+    if (this.messageResolver) {
+      const resolve = this.messageResolver;
+      this.messageResolver = null;
+      resolve(null);
+    }
+    // 唤醒 generator 的 waitForTurnComplete
+    this.signalTurnComplete();
+    // 中断 SDK subprocess
+    if (this.querySession) {
+      this.querySession.interrupt().catch(() => {});
+    }
+  }
+
+  // ── 持久 messageGenerator ──
+
+  private async *messageGenerator(): AsyncGenerator<SDKUserMessage> {
+    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator started (persistent mode)`);
+
+    while (true) {
+      const item = await this.waitForMessage();
+      if (!item) {
+        console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator received null — exiting`);
+        return;
+      }
+
+      // 重置每轮状态
+      this.turnAssistantContent = '';
+      this.turnHasStreamedContent = false;
+      this.currentToolId = '';
+      this.isStreaming = true;
+
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}"`);
+      yield item.sdkMessage;
+
+      // 等待本轮 AI 回复完成（result 消息到达后解锁）
+      await this.waitForTurnComplete();
+
+      if (this.shouldAbort) {
+        console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator abort flag set, exiting`);
+        return;
+      }
+    }
+  }
+
+  // ── 启动持久会话 ──
+
+  private startSession(config: SessionConfig): void {
+    // fire-and-forget: 后台运行事件消费循环
+    this.runSession(config).catch((err) => {
+      console.error(`[SessionRunner:${this.sessionId.slice(0, 8)}] runSession unexpected error:`, err);
+    });
+  }
+
+  private async runSession(config: SessionConfig): Promise<void> {
+    if (this.sessionTerminationPromise) {
+      await this.sessionTerminationPromise;
     }
 
-    const userMsgId = crypto.randomUUID();
-    const userTimestamp = new Date().toISOString();
+    if (this.sessionActive) return;
 
-    // 保存用户消息到 SessionStore
-    SessionStore.saveMessage(this.currentSessionId, {
-      id: userMsgId,
-      role: 'user',
-      content: text,
-      timestamp: userTimestamp,
-    });
+    this.shouldAbort = false;
+    this.sessionActive = true;
+    this.sessionConfig = config;
 
-    this.messages.push({
-      id: userMsgId,
-      role: 'user',
-      content: text,
-      createdAt: Date.now(),
-    });
+    let resolveTermination!: () => void;
+    this.sessionTerminationPromise = new Promise(r => { resolveTermination = r; });
 
-    // 检测 provider 连接配置切换（model 切换不算 provider 切换）
-    const providerChanged =
-      (providerEnv?.baseUrl ?? '') !== (this.currentProviderEnv?.baseUrl ?? '') ||
-      (providerEnv?.apiKey ?? '') !== (this.currentProviderEnv?.apiKey ?? '') ||
-      (providerEnv?.authType ?? '') !== (this.currentProviderEnv?.authType ?? '') ||
-      (providerEnv?.timeout ?? 0) !== (this.currentProviderEnv?.timeout ?? 0) ||
-      !!providerEnv?.disableNonessential !== !!this.currentProviderEnv?.disableNonessential;
-    if (providerChanged) {
-      // 任何 Provider 切换都不 resume（thinking block 签名不兼容）
-      this.sdkSessionId = null;
-      this.currentProviderEnv = providerEnv;
-    }
-
-    this.isRunning = true;
-    let assistantContent = '';
-    // 捕获当前 session ID，防止 loadSession 切换后 finally 保存到错误的 session
-    const activeSessionId = this.currentSessionId;
-    // 设置 queryDone promise，让 loadSession 能等待当前 query 完成
-    this.queryDonePromise = new Promise<void>((resolve) => { this.queryDoneResolve = resolve; });
+    const activeSessionId = this.sessionId;
+    const logPrefix = `[SessionRunner:${activeSessionId.slice(0, 8)}]`;
 
     try {
+      // ── 构建 MCP 配置 ──
       const mcpAll = MCPConfigStore.getAll();
       const globalEnabledIds = new Set(MCPConfigStore.getEnabledIds());
-
-      // 双层过滤：全局启用 ∩ 工作区启用
       let mcpFiltered = mcpAll.filter((s) => globalEnabledIds.has(s.id));
-      if (mcpEnabledServerIds !== undefined) {
-        const workspaceSet = new Set(mcpEnabledServerIds);
+      if (config.mcpEnabledServerIds !== undefined) {
+        const workspaceSet = new Set(config.mcpEnabledServerIds);
         mcpFiltered = mcpFiltered.filter((s) => workspaceSet.has(s.id));
       }
 
@@ -164,15 +262,15 @@ class AgentSession {
           }
         }
       }
-      const resolvedPermissionMode = permissionMode ?? 'acceptEdits';
 
-      console.log(`[AgentSession] Starting query for: "${text}" in ${agentDir}, mode: ${resolvedPermissionMode}, model: ${model ?? 'default'}, provider: ${providerEnv?.baseUrl ?? 'default(subscription)'}, authType: ${providerEnv?.authType ?? 'N/A'}, apiKey: ${providerEnv?.apiKey ? '***' + providerEnv.apiKey.slice(-4) : 'none'}, images: ${images?.length ?? 0}`);
+      const resolvedPermissionMode = config.permissionMode;
 
+      // ── 权限处理回调 ──
       const canUseTool = resolvedPermissionMode !== 'bypassPermissions'
         ? async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
-            // AskUserQuestion 拦截 — 广播给前端，等待用户回答
             if (toolName === 'AskUserQuestion') {
               broadcast('question:request', {
+                sessionId: activeSessionId,
                 toolUseId: toolUseID,
                 questions: toolInput.questions,
               });
@@ -195,7 +293,7 @@ class AgentSession {
               return { behavior: 'allow' as const, updatedInput: { ...toolInput, answers } };
             }
 
-            broadcast('permission:request', { toolName, toolUseId: toolUseID, toolInput });
+            broadcast('permission:request', { sessionId: activeSessionId, toolName, toolUseId: toolUseID, toolInput });
             const allowed = await new Promise<boolean>((resolve) => {
               const timeout = setTimeout(() => {
                 this.pendingPermissions.delete(toolUseID);
@@ -218,51 +316,23 @@ class AgentSession {
           }
         : undefined;
 
-      // 构建 prompt：有图片时使用多模态 AsyncIterable<SDKUserMessage>，否则纯文本
-      let prompt: string | AsyncIterable<SDKUserMessage>;
-      if (images && images.length > 0) {
-        const sessionId = this.sdkSessionId ?? crypto.randomUUID();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const contentBlocks: any[] = [];
-        // 用户文本优先（session 标题取前 50 字符）
-        if (text) {
-          contentBlocks.push({ type: 'text', text });
-        }
-        for (const img of images) {
-          contentBlocks.push({
-            type: 'image',
-            source: { type: 'base64', media_type: img.mimeType, data: img.data },
-          });
-        }
-        prompt = (async function* () {
-          yield {
-            type: 'user' as const,
-            message: { role: 'user' as const, content: contentBlocks },
-            parent_tool_use_id: null,
-            session_id: sessionId,
-          } as SDKUserMessage;
-        })();
-      } else {
-        prompt = text;
-      }
+      console.log(`${logPrefix} Starting subprocess, cwd=${config.agentDir}, mode=${resolvedPermissionMode}, model=${config.model ?? 'default'}, provider=${config.providerEnv?.baseUrl ?? 'default(subscription)'}, resume=${this.sdkSessionId ? 'yes' : 'no'}`);
 
+      // ── 创建 query（子进程在此启动）──
       const q = query({
-        prompt,
+        prompt: this.messageGenerator(),
         options: {
           allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-          cwd: agentDir,
-          systemPrompt: `当前工作目录为：${agentDir}\n所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。`,
+          cwd: config.agentDir,
+          systemPrompt: `当前工作目录为：${config.agentDir}\n所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。`,
           permissionMode: resolvedPermissionMode,
           ...(resolvedPermissionMode === 'bypassPermissions'
             ? { allowDangerouslySkipPermissions: true } : {}),
-          model,
-          env: buildClaudeSessionEnv(providerEnv),
-          // 指定 CLI 路径和运行时，防止 SDK 使用全局安装的 CLI（可能携带 OAuth 凭证）
+          model: config.model,
+          env: buildClaudeSessionEnv(config.providerEnv),
           pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
           executable: 'bun',
-          stderr: (message: string) => { console.error(`[AgentSession] SDK stderr: ${message}`); },
-          // 仅用 project 级 settings，不读 ~/.claude/ 用户配置
-          // 避免 OAuth 凭证覆盖 env 传入的第三方 provider 配置
+          stderr: (message: string) => { console.error(`${logPrefix} SDK stderr: ${message}`); },
           settingSources: ['project'],
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           mcpServers: mcpServers as any,
@@ -271,172 +341,312 @@ class AgentSession {
           canUseTool,
         },
       });
-      this.currentQuery = q;
+      this.querySession = q;
 
-      let hasStreamedContent = false;
-      let currentToolId = '';
-
+      // ── 消费流事件（持久循环，直到 generator return 或 abort）──
       for await (const event of q) {
-        const msg = event as SDKMessage;
-
-        if (msg.type === 'stream_event') {
-          // streaming chunks — broadcast only, don't accumulate (assistant msg handles storage)
-          const streamEvent = msg.event as { type: string; delta?: { type: string; text?: string; thinking?: string; partial_json?: string }; content_block?: { type: string; name?: string; id?: string }; message?: { model?: string; id?: string } };
-
-          // 捕获 message_start 中的实际模型名
-          if (streamEvent.type === 'message_start' && streamEvent.message) {
-            console.log(`[AgentSession] API responded with model: ${streamEvent.message.model}, msg_id: ${streamEvent.message.id}`);
-          }
-
-          if (streamEvent.type === 'content_block_delta') {
-            const delta = streamEvent.delta;
-            if (delta?.type === 'text_delta' && delta.text) {
-              hasStreamedContent = true;
-              assistantContent += delta.text;
-              broadcast('chat:message-chunk', { text: delta.text });
-            } else if (delta?.type === 'thinking_delta' && delta.thinking) {
-              broadcast('chat:thinking-chunk', { thinking: delta.thinking });
-            } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
-              broadcast('chat:tool-input-delta', { id: currentToolId, partial_json: delta.partial_json });
-            }
-          } else if (streamEvent.type === 'content_block_start') {
-            const block = streamEvent.content_block;
-            if (block?.type === 'tool_use') {
-              currentToolId = block.id ?? '';
-              broadcast('chat:tool-use-start', { name: block.name, id: block.id });
-            }
-          }
-        } else if (msg.type === 'assistant') {
-          // full assistant message — 仅在无 streaming 时才累加（streaming 已在 delta 中累加）
-          const betaMsg = msg.message as { content: Array<{ type: string; text?: string }> };
-          for (const block of betaMsg.content) {
-            if (block.type === 'text' && block.text) {
-              if (!hasStreamedContent) {
-                assistantContent += block.text;
-                broadcast('chat:message-chunk', { text: block.text });
-              }
-            }
-          }
-        } else if (msg.type === 'user') {
-          const userMsg = msg.message as { content: Array<{ type: string; tool_use_id?: string; content?: string; is_error?: boolean }> };
-          for (const block of userMsg.content ?? []) {
-            if (block.type === 'tool_result') {
-              broadcast('chat:tool-result', {
-                id: block.tool_use_id ?? '',
-                content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-                isError: block.is_error ?? false,
-              });
-            }
-          }
-        } else if (msg.type === 'result') {
-          // 提取 sdkSessionId
-          if ((msg as SDKMessage & { session_id?: string }).session_id) {
-            this.sdkSessionId = (msg as SDKMessage & { session_id?: string }).session_id!;
-          }
-          broadcast('chat:message-complete', null);
-        }
+        this.handleStreamEvent(event as SDKMessage, activeSessionId);
       }
+
     } catch (err: unknown) {
       const e = err as Error;
-      console.error('[AgentSession] Error:', err);
+      console.error(`${logPrefix} Error:`, err);
       if (e?.name !== 'AbortError') {
-        broadcast('chat:message-error', { error: String(err) });
+        broadcast('chat:message-error', { sessionId: activeSessionId, error: String(err) });
       }
-      broadcast('chat:message-complete', null);
+      // 确保当前轮有 complete 事件
+      if (this.isStreaming) {
+        broadcast('chat:message-complete', { sessionId: activeSessionId });
+        this.saveTurnAssistantContent(activeSessionId);
+      }
     } finally {
-      this.isRunning = false;
-      this.currentQuery = null;
-      if (assistantContent && activeSessionId) {
-        const assistantMsgId = crypto.randomUUID();
-        const assistantMsg: StoredMessage = {
-          id: assistantMsgId,
-          role: 'assistant',
-          content: assistantContent,
-          createdAt: Date.now(),
-        };
-        // 始终保存到正确的 session（用捕获的 activeSessionId）
-        SessionStore.saveMessage(activeSessionId, {
-          id: assistantMsgId,
-          role: 'assistant',
-          content: assistantContent,
-          timestamp: new Date().toISOString(),
-        });
-        // 仅在没有切换 session 时更新内存消息列表
-        if (this.currentSessionId === activeSessionId) {
-          this.messages.push(assistantMsg);
-        }
+      this.sessionActive = false;
+      this.isStreaming = false;
+      this.querySession = null;
+      this.sessionConfig = null;
+
+      // 清理阻塞的 gate
+      if (this.messageResolver) {
+        const resolve = this.messageResolver;
+        this.messageResolver = null;
+        resolve(null);
       }
-      // 通知等待者 query 已完成
-      if (this.queryDoneResolve) {
-        this.queryDoneResolve();
-        this.queryDoneResolve = null;
-        this.queryDonePromise = null;
-      }
+      this.signalTurnComplete();
+
+      // 清空队列中未处理的消息
+      this.messageQueue.length = 0;
+
+      console.log(`${logPrefix} Subprocess terminated`);
+      resolveTermination();
     }
   }
 
-  respondPermission(toolUseId: string, allow: boolean): void {
-    const resolve = this.pendingPermissions.get(toolUseId);
-    if (resolve) resolve(allow);
+  /** 处理单个 SDK 流事件 */
+  private handleStreamEvent(msg: SDKMessage, activeSessionId: string): void {
+    if (msg.type === 'stream_event') {
+      const streamEvent = msg.event as {
+        type: string;
+        delta?: { type: string; text?: string; thinking?: string; partial_json?: string };
+        content_block?: { type: string; name?: string; id?: string };
+        message?: { model?: string; id?: string };
+      };
+
+      if (streamEvent.type === 'message_start' && streamEvent.message) {
+        console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] API responded with model: ${streamEvent.message.model}, msg_id: ${streamEvent.message.id}`);
+      }
+
+      if (streamEvent.type === 'content_block_delta') {
+        const delta = streamEvent.delta;
+        if (delta?.type === 'text_delta' && delta.text) {
+          this.turnHasStreamedContent = true;
+          this.turnAssistantContent += delta.text;
+          broadcast('chat:message-chunk', { sessionId: activeSessionId, text: delta.text });
+        } else if (delta?.type === 'thinking_delta' && delta.thinking) {
+          broadcast('chat:thinking-chunk', { sessionId: activeSessionId, thinking: delta.thinking });
+        } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+          broadcast('chat:tool-input-delta', { sessionId: activeSessionId, id: this.currentToolId, partial_json: delta.partial_json });
+        }
+      } else if (streamEvent.type === 'content_block_start') {
+        const block = streamEvent.content_block;
+        if (block?.type === 'tool_use') {
+          this.currentToolId = block.id ?? '';
+          broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
+        }
+      }
+    } else if (msg.type === 'assistant') {
+      const betaMsg = msg.message as { content: Array<{ type: string; text?: string }> };
+      for (const block of betaMsg.content) {
+        if (block.type === 'text' && block.text) {
+          if (!this.turnHasStreamedContent) {
+            this.turnAssistantContent += block.text;
+            broadcast('chat:message-chunk', { sessionId: activeSessionId, text: block.text });
+          }
+        }
+      }
+    } else if (msg.type === 'user') {
+      const userMsg = msg.message as { content: Array<{ type: string; tool_use_id?: string; content?: string; is_error?: boolean }> };
+      for (const block of userMsg.content ?? []) {
+        if (block.type === 'tool_result') {
+          broadcast('chat:tool-result', {
+            sessionId: activeSessionId,
+            id: block.tool_use_id ?? '',
+            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+            isError: block.is_error ?? false,
+          });
+        }
+      }
+    } else if (msg.type === 'result') {
+      // 提取 sdkSessionId 用于恢复
+      if ((msg as SDKMessage & { session_id?: string }).session_id) {
+        this.sdkSessionId = (msg as SDKMessage & { session_id?: string }).session_id!;
+      }
+
+      // 保存助手消息并通知前端
+      this.saveTurnAssistantContent(activeSessionId);
+      broadcast('chat:message-complete', { sessionId: activeSessionId });
+
+      // 标记流式结束，解锁 generator 进入下一轮
+      this.isStreaming = false;
+      this.signalTurnComplete();
+    }
   }
 
-  respondQuestion(toolUseId: string, answers: Record<string, string>): void {
-    const resolve = this.pendingQuestions.get(toolUseId);
-    if (resolve) resolve(answers);
+  /** 保存当前轮的助手内容到 SessionStore */
+  private saveTurnAssistantContent(sessionId: string): void {
+    if (this.turnAssistantContent) {
+      SessionStore.saveMessage(sessionId, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: this.turnAssistantContent,
+        timestamp: new Date().toISOString(),
+      });
+      this.turnAssistantContent = '';
+    }
+  }
+
+  // ── 配置变更检测 ──
+
+  /** 检测是否需要重启会话 */
+  private needsSessionRestart(providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode): boolean {
+    const resolvedMode = permissionMode ?? 'acceptEdits';
+
+    // Provider 变更
+    const providerChanged =
+      (providerEnv?.baseUrl ?? '') !== (this.providerEnv?.baseUrl ?? '') ||
+      (providerEnv?.apiKey ?? '') !== (this.providerEnv?.apiKey ?? '') ||
+      (providerEnv?.authType ?? '') !== (this.providerEnv?.authType ?? '') ||
+      (providerEnv?.timeout ?? 0) !== (this.providerEnv?.timeout ?? 0) ||
+      !!providerEnv?.disableNonessential !== !!this.providerEnv?.disableNonessential;
+
+    // Model 变更
+    const modelChanged = (model ?? '') !== (this.currentModel ?? '');
+
+    // PermissionMode 变更
+    const modeChanged = resolvedMode !== this.currentPermissionMode;
+
+    if (providerChanged) {
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Provider changed, session restart required`);
+      // Provider 切换不 resume（thinking block 签名不兼容）
+      this.sdkSessionId = null;
+    }
+    if (modelChanged) {
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Model changed: ${this.currentModel} → ${model}, session restart required`);
+    }
+    if (modeChanged) {
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] PermissionMode changed: ${this.currentPermissionMode} → ${resolvedMode}, session restart required`);
+    }
+
+    return providerChanged || modelChanged || modeChanged;
+  }
+
+  // ── 公共 API ──
+
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<void> {
+    // 如果正在 streaming，拒绝新消息（保持当前语义）
+    if (this.isStreaming) return;
+
+    const activeSessionId = this.sessionId;
+
+    // 保存用户消息到 SessionStore
+    SessionStore.saveMessage(activeSessionId, {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: text,
+      timestamp: new Date().toISOString(),
+    });
+
+    // 检测是否需要重启
+    const needsRestart = this.sessionActive && this.needsSessionRestart(providerEnv, model, permissionMode);
+    if (needsRestart) {
+      this.abortSession();
+      if (this.sessionTerminationPromise) {
+        await this.sessionTerminationPromise;
+      }
+    }
+
+    // 更新配置快照
+    this.providerEnv = providerEnv;
+    this.currentModel = model;
+    this.currentPermissionMode = permissionMode ?? 'acceptEdits';
+
+    const resolvedMode = permissionMode ?? 'acceptEdits';
+
+    console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] sendMessage: "${text.slice(0, 50)}" in ${agentDir}, mode: ${resolvedMode}, model: ${model ?? 'default'}, provider: ${providerEnv?.baseUrl ?? 'default(subscription)'}, authType: ${providerEnv?.authType ?? 'N/A'}, apiKey: ${providerEnv?.apiKey ? '***' + providerEnv.apiKey.slice(-4) : 'none'}, images: ${images?.length ?? 0}, sessionActive: ${this.sessionActive}`);
+
+    // 构建 SDK 用户消息
+    // generator 模式下 message 必须是 MessageParam 对象（不能是裸字符串）
+    const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let messageContent: { role: 'user'; content: any };
+
+    if (images && images.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contentBlocks: any[] = [];
+      if (text) {
+        contentBlocks.push({ type: 'text', text });
+      }
+      for (const img of images) {
+        contentBlocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mimeType, data: img.data },
+        });
+      }
+      messageContent = { role: 'user' as const, content: contentBlocks };
+    } else {
+      messageContent = { role: 'user' as const, content: text };
+    }
+
+    const queueItem: QueueItem = {
+      sdkMessage: {
+        type: 'user' as const,
+        message: messageContent,
+        parent_tool_use_id: null,
+        session_id: sdkSid,
+      } as SDKUserMessage,
+      text,
+    };
+
+    // 启动会话（如果未运行）
+    if (!this.sessionActive) {
+      const config: SessionConfig = {
+        agentDir,
+        providerEnv,
+        model,
+        permissionMode: resolvedMode,
+        mcpEnabledServerIds,
+      };
+      // 先投递消息，再启动会话（确保 generator 能立即取到）
+      this.wakeGenerator(queueItem);
+      this.startSession(config);
+    } else {
+      // 会话已运行，直接投递
+      this.wakeGenerator(queueItem);
+    }
   }
 
   stop(): void {
-    if (this.currentQuery) {
-      this.currentQuery.interrupt().catch(() => {});
+    this.abortSession();
+  }
+
+  respondPermission(toolUseId: string, allow: boolean): boolean {
+    const resolve = this.pendingPermissions.get(toolUseId);
+    if (resolve) {
+      resolve(allow);
+      return true;
     }
+    return false;
   }
 
-  reset(): void {
-    this.stop();
-    this.messages = [];
-    this.sessionId = crypto.randomUUID();
-    this.isRunning = false;
-    this.currentQuery = null;
-    this.currentSessionId = null;
-    this.sdkSessionId = null;
-  }
-
-  async loadSession(sessionId: string): Promise<void> {
-    // 先中断进行中的 query，等其 finally 完成保存后再切换
-    if (this.isRunning) {
-      this.stop();
-      if (this.queryDonePromise) {
-        await this.queryDonePromise;
-      }
+  respondQuestion(toolUseId: string, answers: Record<string, string>): boolean {
+    const resolve = this.pendingQuestions.get(toolUseId);
+    if (resolve) {
+      resolve(answers);
+      return true;
     }
-    this.isRunning = false;
-    this.currentSessionId = sessionId;
-    this.sdkSessionId = null;
-    const storedMessages = SessionStore.getSessionMessages(sessionId);
-    this.messages = storedMessages.map((m: SessionMessage) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      createdAt: new Date(m.timestamp).getTime(),
-    }));
-    SessionStore.touchSession(sessionId);
-  }
-
-  getSessions(): SessionMetadata[] {
-    return SessionStore.listSessions();
-  }
-
-  getCurrentMessages(): StoredMessage[] {
-    return this.messages;
-  }
-
-  getState() {
-    return { sessionId: this.sessionId, isRunning: this.isRunning };
-  }
-
-  getMessages() {
-    return this.messages;
+    return false;
   }
 }
 
-export const agentSession = new AgentSession();
+// ── 模块级单 Runner 管理（每个 Sidecar 只服务一个 Session）──
+
+let runner: SessionRunner | null = null;
+let currentSessionId: string | null = null;
+
+export function getOrCreateRunner(sid: string): SessionRunner {
+  if (runner && currentSessionId === sid) return runner;
+  // 如果之前有不同 session 的 runner，先停掉
+  if (runner && currentSessionId !== sid) {
+    runner.stop();
+  }
+  runner = new SessionRunner(sid);
+  currentSessionId = sid;
+  return runner;
+}
+
+export function getRunner(): SessionRunner | null {
+  return runner;
+}
+
+export function getCurrentSessionId(): string | null {
+  return currentSessionId;
+}
+
+export function resetState(): void {
+  if (runner) {
+    runner.stop();
+  }
+  runner = null;
+  currentSessionId = null;
+}
+
+export function removeRunner(): void {
+  if (runner) {
+    runner.stop();
+    runner = null;
+    currentSessionId = null;
+  }
+}
+
+export function isRunning(): boolean {
+  return runner?.getIsRunning() ?? false;
+}
