@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap } from 'lucide-react';
+import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, Square, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import { globalApiGetJson } from '../api/apiFetch';
@@ -843,7 +843,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               }}
               title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : isLoading ? '停止' : '发送 (Enter)'}
             >
-              <Send size={14} color="white" strokeWidth={2} />
+              {isLoading ? <Square size={12} color="white" fill="white" /> : <Send size={14} color="white" strokeWidth={2} />}
             </button>
           </div>
         </div>

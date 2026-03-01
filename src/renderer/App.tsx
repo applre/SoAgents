@@ -1,5 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2, Folder, Check, Plus } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2, Folder, Check, Plus, MessageSquare, FileText, X } from 'lucide-react';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { startWindowDrag, toggleMaximize } from './utils/env';
 import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
@@ -34,11 +49,81 @@ function createTab(overrides: Partial<Tab> = {}): Tab {
 
 const INITIAL_TAB = createTab();
 
+/* ── 可拖拽的文件 Tab 项 ── */
+function SortableFileTab({ file, isActive, onActivate, onClose }: {
+  file: OpenFile;
+  isActive: boolean;
+  onActivate: (filePath: string) => void;
+  onClose: (filePath: string) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: file.filePath });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`group flex shrink-0 min-w-[100px] items-center gap-1.5 rounded-md transition-colors ${
+        !isActive ? 'hover:bg-[var(--hover)]' : ''
+      }`}
+      onClick={() => onActivate(file.filePath)}
+    >
+      <div
+        className="flex items-center gap-1.5"
+        style={{
+          height: 34,
+          borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+          padding: '0 8px',
+          cursor: 'pointer',
+        }}
+      >
+        <FileText size={14} className="shrink-0" style={{ color: isActive ? 'var(--ink-secondary)' : 'var(--ink-tertiary)' }} />
+        <span
+          title={file.title}
+          className="max-w-[160px] truncate"
+          style={{
+            fontSize: 14,
+            fontWeight: isActive ? 600 : 500,
+            color: isActive ? 'var(--ink)' : 'var(--ink-tertiary)',
+          }}
+        >
+          {file.title}
+        </span>
+        <button
+          onClick={(e) => { e.stopPropagation(); onClose(file.filePath); }}
+          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded transition-all hover:bg-black/10 ${
+            isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          style={{ color: 'var(--ink-tertiary)' }}
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([INITIAL_TAB]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB.id);
   const [tabSessions, setTabSessions] = useState<Record<string, SessionMetadata[]>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
@@ -107,6 +192,10 @@ export default function App() {
 
   const handleSessionsChange = useCallback((tabId: string, s: SessionMetadata[]) => {
     setTabSessions((prev) => ({ ...prev, [tabId]: s }));
+  }, []);
+
+  const handleRunningSessionsChange = useCallback((rs: Set<string>) => {
+    setRunningSessions(rs);
   }, []);
 
   const activeTab = useMemo(
@@ -258,6 +347,25 @@ export default function App() {
     );
   }, [activeTabId]);
 
+  // 拖拽排序文件 tabs
+  const fileTabSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+  );
+  const handleFileTabDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id || !activeTab) return;
+    const files = activeTab.openFiles;
+    const oldIndex = files.findIndex((f) => f.filePath === active.id);
+    const newIndex = files.findIndex((f) => f.filePath === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabId) return t;
+        return { ...t, openFiles: arrayMove(t.openFiles, oldIndex, newIndex) };
+      })
+    );
+  }, [activeTab, activeTabId]);
+
   // 切换 SecondTabBar；从文件切到对话时注入文件路径引用
   const handleSwitchSubTab = useCallback((subTab: 'chat' | string, fromFilePath?: string) => {
     setTabs((prev) =>
@@ -309,6 +417,7 @@ export default function App() {
             sessions={tabSessions[activeTabId] ?? []}
             activeSessionId={activeSessionId}
             pinnedSessionIds={pinnedSessionIds}
+            runningSessions={runningSessions}
             onNewChat={handleNewChat}
             onSelectSession={handleSelectSession}
             onDeleteSession={handleDeleteSession}
@@ -378,13 +487,13 @@ export default function App() {
           {/* SecondTabBar：对话 + 打开的文件 tabs */}
           {activeTab && activeTab.view === 'chat' && (
             <div
-              className="flex items-center shrink-0 bg-[var(--paper)]"
+              className="flex items-center shrink-0 overflow-x-auto bg-[var(--paper)] scrollbar-hide"
               style={{ borderBottom: '1px solid var(--border)', padding: '0 20px', gap: 4, height: 44 }}
               onMouseDown={startWindowDrag}
             >
               <button
                 onClick={() => handleSwitchSubTab('chat')}
-                className="flex items-center gap-2 rounded-lg px-3 transition-colors"
+                className="flex shrink-0 items-center gap-1.5 px-3 transition-colors"
                 onMouseDown={(e) => e.stopPropagation()}
                 style={{
                   height: 34,
@@ -395,52 +504,36 @@ export default function App() {
                   borderRadius: 0,
                 }}
               >
-                对话
+                <MessageSquare size={14} className="shrink-0" />
+                <span>对话</span>
+                {(() => {
+                  const sessions = tabSessions[activeTabId] ?? [];
+                  const session = activeSessionId ? sessions.find((s) => s.id === activeSessionId) : null;
+                  return session?.title ? (
+                    <span className="max-w-[120px] truncate text-[var(--ink-tertiary)] font-normal" title={session.title}>
+                      {session.title}
+                    </span>
+                  ) : null;
+                })()}
               </button>
 
-              {activeTab.openFiles.map((f) => {
-                const isActive = activeTab.activeSubTab === f.filePath;
-                return (
-                  <div
-                    key={f.filePath}
-                    className="flex items-center gap-1.5"
-                    style={{
-                      height: 34,
-                      borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-                      padding: '0 8px',
-                    }}
-                    onMouseDown={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      onClick={() => handleSwitchSubTab(f.filePath)}
-                      style={{
-                        fontSize: 14,
-                        fontWeight: isActive ? 600 : 500,
-                        color: isActive ? 'var(--ink)' : 'var(--ink-tertiary)',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {f.title}
-                    </button>
-                    <button
-                      onClick={() => handleCloseFileTab(f.filePath)}
-                      style={{
-                        fontSize: 14,
-                        color: 'var(--ink-tertiary)',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        lineHeight: 1,
-                      }}
-                      className="hover:text-[var(--ink)] transition-colors"
-                    >
-                      ×
-                    </button>
-                  </div>
-                );
-              })}
+              <DndContext
+                sensors={fileTabSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleFileTabDragEnd}
+              >
+                <SortableContext items={activeTab.openFiles.map((f) => f.filePath)} strategy={horizontalListSortingStrategy}>
+                  {activeTab.openFiles.map((f) => (
+                    <SortableFileTab
+                      key={f.filePath}
+                      file={f}
+                      isActive={activeTab.activeSubTab === f.filePath}
+                      onActivate={(fp) => handleSwitchSubTab(fp)}
+                      onClose={handleCloseFileTab}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
             </div>
           )}
 
@@ -486,6 +579,7 @@ export default function App() {
                     <Chat
                       tab={t}
                       onSessionsChange={handleSessionsChange}
+                      onRunningSessionsChange={t.id === activeTabId ? handleRunningSessionsChange : undefined}
                       onActiveSessionChange={t.id === activeTabId ? setActiveSessionId : undefined}
                       onExposeReset={t.id === activeTabId ? handleExposeReset : undefined}
                       onExposeDeleteSession={t.id === activeTabId ? handleExposeDeleteSession : undefined}
