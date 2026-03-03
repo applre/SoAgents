@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { TabContext, type TabState } from './TabContext';
 import { ConfigContext } from './ConfigContext';
 import { SseConnection } from '../api/SseConnection';
-import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl } from '../api/tauriClient';
+import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl, listRunningSidecars } from '../api/tauriClient';
 import { apiGetJson, apiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import type { Message, ContentBlock, ChatImage } from '../types/chat';
@@ -410,13 +410,71 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     // 获取 session 列表（通过 global sidecar）
     refreshSessions().catch(console.error);
 
+    // 发现运行中的 sidecar 并重连
+    listRunningSidecars().then(async (sidecars) => {
+      const matching = sidecars.filter(
+        (s) => s.agentDir === agentDir && s.sessionId !== '__global__'
+      );
+      for (const sc of matching) {
+        const url = `http://127.0.0.1:${sc.port}`;
+        try {
+          // 查询 agent 状态
+          const state = await apiGetJson<{ isRunning: boolean }>(url, '/agent/state');
+          if (state.isRunning) {
+            // 重连 SSE
+            serverUrlMapRef.current.set(sc.sessionId, url);
+            const sse = new SseConnection(sc.sessionId, url);
+            sseMapRef.current.set(sc.sessionId, sse);
+            await sse.connect();
+            registerSseHandlers(sse, sc.sessionId);
+            lastActivityRef.current.set(sc.sessionId, Date.now());
+            runningSessionsRef.current.add(sc.sessionId);
+
+            // 恢复 pending 请求
+            const pending = await apiGetJson<{
+              permission: { toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null;
+              question: { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> } | null;
+            }>(url, '/agent/pending-requests').catch(() => ({ permission: null, question: null }));
+            if (pending.permission && activeSessionIdRef.current === sc.sessionId) {
+              setPendingPermission(pending.permission);
+            }
+            if (pending.question && activeSessionIdRef.current === sc.sessionId) {
+              setPendingQuestion(pending.question);
+            }
+
+            // 拉取最新消息
+            const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; createdAt: number }>>(url, '/chat/messages');
+            sessionMessagesRef.current.set(sc.sessionId, msgs.map(m => ({
+              id: m.id,
+              role: m.role as 'user' | 'assistant',
+              blocks: [{ type: 'text' as const, text: m.content }],
+              createdAt: m.createdAt,
+            })));
+
+            // 如果用户正在查看此 session，更新 UI 状态
+            if (activeSessionIdRef.current === sc.sessionId) {
+              const cached = sessionMessagesRef.current.get(sc.sessionId);
+              if (cached) {
+                setMessages(cached);
+                messagesRef.current = cached;
+              }
+              setIsLoading(true);
+              setSessionState('running');
+            }
+          } else {
+            // Agent 已完成，记录以便空闲回收
+            serverUrlMapRef.current.set(sc.sessionId, url);
+            lastActivityRef.current.set(sc.sessionId, Date.now());
+          }
+        } catch { /* sidecar 可能已经退出 */ }
+      }
+      setRunningSessions(new Set(runningSessionsRef.current));
+    }).catch(console.error);
+
     return () => {
-      // Tab unmount: 停止所有 session sidecar
-      const sessionIds = Array.from(sseMapRef.current.keys());
-      for (const sid of sessionIds) {
-        const sse = sseMapRef.current.get(sid);
-        if (sse) sse.disconnect();
-        stopSessionSidecar(sid).catch(() => {});
+      // Tab unmount: 只断开 SSE 连接，不停止 sidecar（让 Agent 继续运行）
+      for (const sse of sseMapRef.current.values()) {
+        sse.disconnect();
       }
       sseMapRef.current.clear();
       serverUrlMapRef.current.clear();
@@ -449,7 +507,7 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     return () => clearInterval(interval);
   }, [stopSessionSidecarCleanup]);
 
-  const sendMessage = useCallback(async (text: string, permissionMode?: string, skill?: { name: string; content: string }, images?: ChatImage[]) => {
+  const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[]) => {
     let currentSessionId = activeSessionIdRef.current;
     // 同一 session 不能同时发两条消息
     if (currentSessionId && runningSessionsRef.current.has(currentSessionId)) {
@@ -461,8 +519,10 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     if (text) {
       blocks.push({ type: 'text', text });
     }
-    if (skill) {
-      blocks.push({ type: 'skill', name: skill.name });
+    if (skills?.length) {
+      for (const s of skills) {
+        blocks.push({ type: 'skill', name: s.name });
+      }
     }
     if (images?.length) {
       for (const img of images) {
@@ -484,9 +544,8 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     setSessionState('running');
 
     // ── 后端实际发送的消息（用户文本优先，skill 内容在后） ──
-    const backendMessage = skill
-      ? [text, skill.content].filter(Boolean).join('\n')
-      : text;
+    const skillContents = skills?.map(s => s.content).filter(Boolean) ?? [];
+    const backendMessage = [text, ...skillContents].filter(Boolean).join('\n');
 
     // Build providerEnv from refs (stable, avoids stale closure)
     const ws = workspacesRef.current.find((w) => w.path === agentDir);
@@ -502,6 +561,7 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
           baseUrl: provider.config?.baseUrl,
           apiKey: keys[provider.id] ?? '',
           authType: provider.authType,
+          apiProtocol: provider.apiProtocol,
           timeout: provider.config?.timeout,
           disableNonessential: provider.config?.disableNonessential,
         }

@@ -1,10 +1,10 @@
 import { createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
-import { verifyProviderViaSdk } from './provider-verify';
+import { verifyProviderViaSdk, checkAnthropicSubscription, verifySubscription } from './provider-verify';
 import { initLogger, getLogHistory } from './logger';
 import { appendUnifiedLogBatch } from './UnifiedLogger';
 import type { PermissionMode } from '../shared/types/permission';
@@ -103,6 +103,10 @@ const server = Bun.serve({
         content: m.content,
         createdAt: new Date(m.timestamp).getTime(),
       })));
+    }
+
+    if (req.method === 'GET' && url.pathname === '/agent/pending-requests') {
+      return Response.json(getPendingState());
     }
 
     if (req.method === "GET" && url.pathname === "/agent/state") {
@@ -216,6 +220,24 @@ const server = Bun.serve({
       return Response.json({ ok: true });
     }
 
+    // Provider 验证状态缓存
+    if (req.method === 'GET' && url.pathname === '/api/provider-verify-status') {
+      return Response.json(ConfigStore.getProviderVerifyStatus());
+    }
+
+    if (req.method === 'PUT' && url.pathname === '/api/provider-verify-status') {
+      const body = await req.json() as { providerId: string; status: 'valid' | 'invalid'; accountEmail?: string };
+      ConfigStore.saveProviderVerifyStatus(body.providerId, body.status, body.accountEmail);
+      return Response.json({ ok: true });
+    }
+
+    // 预设 Provider 自定义模型管理
+    if (req.method === 'PUT' && url.pathname === '/api/preset-custom-models') {
+      const body = await req.json() as { providerId: string; models: Array<{ model: string; modelName: string; modelSeries: string }> };
+      ConfigStore.savePresetCustomModels(body.providerId, body.models);
+      return Response.json({ ok: true });
+    }
+
     // 文件信息
     if (req.method === 'GET' && url.pathname === '/api/file-stat') {
       const filePath = url.searchParams.get('path');
@@ -307,6 +329,36 @@ const server = Bun.serve({
       return Response.json({ ok: true });
     }
 
+    // ── Subscription 状态与验证 ──
+
+    if (req.method === 'GET' && url.pathname === '/api/subscription/status') {
+      try {
+        const status = checkAnthropicSubscription();
+        return Response.json(status);
+      } catch (error) {
+        console.error('[api/subscription/status] Error:', error);
+        return Response.json(
+          { available: false, error: error instanceof Error ? error.message : 'Check failed' },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/subscription/verify') {
+      try {
+        console.log('[api/subscription/verify] Starting verification...');
+        const result = await verifySubscription();
+        console.log('[api/subscription/verify] Result:', JSON.stringify(result));
+        return Response.json(result);
+      } catch (error) {
+        console.error('[api/subscription/verify] Error:', error);
+        return Response.json(
+          { success: false, error: error instanceof Error ? error.message : 'Verification failed' },
+          { status: 500 },
+        );
+      }
+    }
+
     // Provider API Key 验证（通过 SDK 子进程发真实对话验证）
     if (req.method === 'POST' && url.pathname === '/api/verify-provider-key') {
       const body = await req.json() as {
@@ -314,6 +366,7 @@ const server = Bun.serve({
         apiKey: string;
         model?: string;
         authType?: string;
+        apiProtocol?: string;
       };
       if (!body.apiKey) {
         return Response.json({ result: 'fail', error: '请输入 API Key' });
@@ -323,6 +376,7 @@ const server = Bun.serve({
         body.apiKey,
         body.authType ?? 'both',
         body.model || undefined,
+        body.apiProtocol === 'openai' ? 'openai' : undefined,
       );
       return Response.json({
         result: result.success ? 'ok' : 'fail',
@@ -584,6 +638,26 @@ const server = Bun.serve({
       }
 
       return Response.json({ before, after });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/search-files') {
+      const agentDir = url.searchParams.get('agentDir');
+      const q = url.searchParams.get('q') ?? '';
+      if (!agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+      if (!q) return Response.json([]);
+
+      const glob = new Bun.Glob(`**/*${q}*`);
+      const results: { path: string; name: string; type: 'file' | 'dir' }[] = [];
+      try {
+        for await (const file of glob.scan({ cwd: agentDir, onlyFiles: false, dot: false })) {
+          if (file.includes('node_modules/') || file.includes('.git/') || file.includes('.DS_Store')) continue;
+          const name = file.split('/').pop() || file;
+          const isDir = file.endsWith('/');
+          results.push({ path: isDir ? file.slice(0, -1) : file, name, type: isDir ? 'dir' : 'file' });
+          if (results.length >= 20) break;
+        }
+      } catch { /* 目录不存在等 */ }
+      return Response.json(results);
     }
 
     return new Response("Not Found", { status: 404 });

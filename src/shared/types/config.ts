@@ -7,6 +7,13 @@
  */
 export type ProviderAuthType = 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
 
+/**
+ * API protocol for providers
+ * - 'anthropic': Anthropic Messages API (default)
+ * - 'openai': OpenAI Chat Completions API (via bridge)
+ */
+export type ApiProtocol = 'anthropic' | 'openai';
+
 export interface ModelEntity {
   model: string;         // SDK model ID, e.g. "claude-sonnet-4-6"
   modelName: string;     // 显示名, e.g. "Claude Sonnet 4.6"
@@ -31,6 +38,9 @@ export interface Provider {
 
   // 认证方式 (默认 'both' 以保持向后兼容)
   authType?: ProviderAuthType;
+
+  // API 协议 (默认 'anthropic')
+  apiProtocol?: ApiProtocol;
 
   // 官网链接 (用于"去官网"入口)
   websiteUrl?: string;
@@ -69,6 +79,23 @@ export function isValidProxyHost(host: string): boolean {
   return /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(host);
 }
 
+// ── Provider Verify Status ──
+
+export interface ProviderVerifyStatus {
+  status: 'valid' | 'invalid';
+  verifiedAt: string; // ISO timestamp
+  accountEmail?: string; // 订阅 Provider: 检测账户切换
+}
+
+export const VERIFY_EXPIRY_DAYS = 30;
+
+export function isVerifyExpired(verifiedAt: string): boolean {
+  const verifiedDate = new Date(verifiedAt);
+  if (isNaN(verifiedDate.getTime())) return true;
+  const daysDiff = (Date.now() - verifiedDate.getTime()) / (1000 * 60 * 60 * 24);
+  return daysDiff > VERIFY_EXPIRY_DAYS;
+}
+
 // ── App Config ──
 
 export interface AppConfig {
@@ -76,6 +103,10 @@ export interface AppConfig {
   currentModelId?: string;
   apiKeys: Record<string, string>;
   customProviders?: Provider[];
+  /** 用户给预设 Provider 追加的自定义模型 */
+  presetCustomModels?: Record<string, ModelEntity[]>;
+  /** Provider 验证状态缓存 (key = provider ID) */
+  providerVerifyStatus?: Record<string, ProviderVerifyStatus>;
   minimizeToTray?: boolean;
   defaultWorkspacePath?: string;
   proxySettings?: ProxySettings;
@@ -86,6 +117,7 @@ export interface ProviderEnv {
   baseUrl?: string;
   apiKey?: string;
   authType?: ProviderAuthType;
+  apiProtocol?: ApiProtocol;
   timeout?: number;
   disableNonessential?: boolean;
 }

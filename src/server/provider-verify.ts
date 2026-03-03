@@ -6,10 +6,25 @@
 import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildClaudeSessionEnv } from './agent-session';
 import type { ProviderAuthType } from '../shared/types/config';
+
+// ── Subscription types ──
+
+export interface SubscriptionInfo {
+  accountUuid?: string;
+  email?: string;
+  displayName?: string;
+  organizationName?: string;
+}
+
+export interface SubscriptionStatus {
+  available: boolean;
+  path?: string;
+  info?: SubscriptionInfo;
+}
 
 /**
  * 解析 Claude Code CLI 路径
@@ -27,6 +42,20 @@ export function resolveClaudeCodeCli(): string {
     }
     throw new Error('Cannot resolve @anthropic-ai/claude-agent-sdk/cli.js');
   }
+}
+
+// Subscription 验证错误解析
+function parseSubscriptionError(errorText: string): string {
+  if (errorText.includes('authentication') || errorText.includes('login') || errorText.includes('/login')) {
+    return '登录已过期，请重新登录 (claude --login)';
+  } else if (errorText.includes('forbidden') || errorText.includes('403')) {
+    return '登录已过期，请重新登录 (claude --login)';
+  } else if (errorText.includes('rate limit') || errorText.includes('429')) {
+    return '请求频率限制，请稍后再试';
+  } else if (errorText.includes('network') || errorText.includes('connect')) {
+    return '网络连接失败';
+  }
+  return errorText.slice(0, 100) || '验证失败';
 }
 
 // Provider 验证错误解析
@@ -128,8 +157,14 @@ async function verifyViaSdk(
           continue;
         }
 
-        // assistant 消息也确认 API 响应正常
+        // assistant 消息：先检查 SDK 包装的错误（API 返回 403/401 时 SDK 会包装成带 error 字段的 assistant 消息）
         if (message.type === 'assistant') {
+          const assistantMsg = message as { error?: string; message?: { content?: Array<{ text?: string }> } };
+          if (assistantMsg.error) {
+            const errorDetail = assistantMsg.message?.content?.[0]?.text ?? assistantMsg.error;
+            console.error(`[${logPrefix}] auth error: ${errorDetail}`);
+            return { success: false, error: parseError(errorDetail.toLowerCase()) };
+          }
           const elapsed = Date.now() - startTime;
           console.log(`[${logPrefix}] verification successful (${elapsed}ms)`);
           return { success: true };
@@ -185,12 +220,14 @@ export async function verifyProviderViaSdk(
   apiKey: string,
   authType: string,
   model?: string,
+  apiProtocol?: 'anthropic' | 'openai',
 ): Promise<{ success: boolean; error?: string }> {
-  console.log(`[provider/verify] Starting SDK verification for ${baseUrl}, model=${model ?? 'default'}, authType=${authType}`);
+  console.log(`[provider/verify] Starting SDK verification for ${baseUrl}, model=${model ?? 'default'}, authType=${authType}, apiProtocol=${apiProtocol ?? 'anthropic'}`);
   const env = buildClaudeSessionEnv({
     baseUrl,
     apiKey,
     authType: authType as ProviderAuthType,
+    apiProtocol,
   });
   return verifyViaSdk(env as NodeJS.ProcessEnv, {
     model,
@@ -199,5 +236,52 @@ export async function verifyProviderViaSdk(
     parseError: parseProviderError,
     // 用 'project' 避免读 ~/.claude/settings.json 中的 plugins 导致超时
     settingSources: ['project'],
+  });
+}
+
+/**
+ * 检测本地 Anthropic 订阅凭证
+ * Claude CLI 将 OAuth 账户信息存储在 ~/.claude.json
+ */
+export function checkAnthropicSubscription(): SubscriptionStatus {
+  const claudeJsonPath = join(homedir(), '.claude.json');
+
+  if (!existsSync(claudeJsonPath)) {
+    return { available: false };
+  }
+
+  try {
+    const content = readFileSync(claudeJsonPath, 'utf-8');
+    const config = JSON.parse(content);
+
+    if (config.oauthAccount && config.oauthAccount.accountUuid) {
+      return {
+        available: true,
+        path: claudeJsonPath,
+        info: {
+          accountUuid: config.oauthAccount.accountUuid,
+          email: config.oauthAccount.emailAddress,
+          displayName: config.oauthAccount.displayName,
+          organizationName: config.oauthAccount.organizationName,
+        },
+      };
+    }
+  } catch { /* ignore */ }
+
+  return { available: false };
+}
+
+/**
+ * 验证 Anthropic 订阅（通过 SDK 发测试请求）
+ */
+export async function verifySubscription(): Promise<{ success: boolean; error?: string }> {
+  console.log('[subscription/verify] Starting SDK verification...');
+  const env = buildClaudeSessionEnv(); // 无 provider 覆盖 = 默认 Anthropic OAuth
+  return verifyViaSdk(env as NodeJS.ProcessEnv, {
+    sessionId: randomUUID(),
+    logPrefix: 'subscription/verify',
+    parseError: parseSubscriptionError,
+    // Subscription 需要 'user' 来读取 ~/.claude/ OAuth 凭证
+    settingSources: ['user'],
   });
 }

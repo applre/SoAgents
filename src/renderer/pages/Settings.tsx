@@ -1,14 +1,14 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Brain, Settings2,
   KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Puzzle, Wrench, X,
-  Info, FolderOpen, ExternalLink, Eye, Loader2,
+  Info, FolderOpen, ExternalLink, Eye, Loader2, AlertCircle,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
-import type { Provider, ProviderAuthType, ProxyProtocol, ProxySettings } from '../../shared/types/config';
-import { PROXY_DEFAULTS, isValidProxyHost } from '../../shared/types/config';
-import { getModelsDisplay } from '../../shared/providers';
+import type { Provider, ProviderAuthType, ApiProtocol, ModelEntity, ProxyProtocol, ProxySettings, ProviderVerifyStatus } from '../../shared/types/config';
+import { PROXY_DEFAULTS, isValidProxyHost, isVerifyExpired } from '../../shared/types/config';
+import { PROVIDERS, getModelsDisplay } from '../../shared/providers';
 import {
   globalApiGetJson,
   globalApiPostJson,
@@ -56,6 +56,23 @@ interface SkillInfo {
   enabled: boolean;
 }
 
+// ── Subscription 类型 ─────────────────────────────────────────
+
+interface SubscriptionInfo {
+  accountUuid?: string;
+  email?: string;
+  displayName?: string;
+  organizationName?: string;
+}
+
+interface SubscriptionStatusData {
+  available: boolean;
+  path?: string;
+  info?: SubscriptionInfo;
+  verifyStatus?: 'idle' | 'loading' | 'valid' | 'invalid';
+  verifyError?: string;
+}
+
 type NavId = 'provider' | 'mcp' | 'skills' | 'general' | 'about';
 
 const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucideProps> }[] = [
@@ -77,14 +94,18 @@ function ProviderCard({
   provider,
   apiKey,
   isActive,
+  subscriptionStatus,
   onOpenDetail,
   onOpenEdit,
+  onReVerifySubscription,
 }: {
   provider: Provider;
   apiKey: string;
   isActive: boolean;
+  subscriptionStatus?: SubscriptionStatusData | null;
   onOpenDetail: () => void;
   onOpenEdit: () => void;
+  onReVerifySubscription?: () => void;
 }) {
   const hasKey = !!apiKey;
 
@@ -131,6 +152,74 @@ function ProviderCard({
       {provider.models?.length > 0 && (
         <p className="text-[13px] text-[var(--ink-secondary)]">{getModelsDisplay(provider)}</p>
       )}
+      {/* 订阅 Provider: 显示账户信息和验证状态 */}
+      {provider.type === 'subscription' && (
+        <div className="space-y-1.5">
+          <p className="text-[13px] text-[var(--ink-secondary)]">使用 Anthropic 订阅账户，无需 API Key</p>
+          <div className="flex items-center gap-2 text-xs flex-wrap">
+            {subscriptionStatus?.available ? (
+              <>
+                <span className="text-[var(--ink-tertiary)] font-mono text-[11px]">
+                  {subscriptionStatus.info?.email}
+                </span>
+                {subscriptionStatus.verifyStatus === 'loading' && (
+                  <div className="flex items-center gap-1 text-[var(--ink-tertiary)]">
+                    <Loader2 size={13} className="animate-spin" />
+                  </div>
+                )}
+                {subscriptionStatus.verifyStatus === 'valid' && (
+                  <div className="flex items-center gap-1 text-[var(--success)]">
+                    <CircleCheck size={13} />
+                    <span className="font-medium">已验证</span>
+                    {onReVerifySubscription && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onReVerifySubscription(); }}
+                        className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                        title="重新验证"
+                      >
+                        <RefreshCw size={11} />
+                      </button>
+                    )}
+                  </div>
+                )}
+                {subscriptionStatus.verifyStatus === 'invalid' && (
+                  <div className="flex items-center gap-1 text-red-400">
+                    <AlertCircle size={13} />
+                    <span className="font-medium">验证失败</span>
+                    {onReVerifySubscription && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onReVerifySubscription(); }}
+                        className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                        title="重新验证"
+                      >
+                        <RefreshCw size={11} />
+                      </button>
+                    )}
+                  </div>
+                )}
+                {subscriptionStatus.verifyStatus === 'idle' && (
+                  <span className="text-[var(--ink-tertiary)]">检测中...</span>
+                )}
+              </>
+            ) : subscriptionStatus !== null ? (
+              <span className="text-[var(--ink-tertiary)]">
+                未登录，请先使用 Claude Code CLI 登录 (claude --login)
+              </span>
+            ) : null}
+          </div>
+        </div>
+      )}
+      {/* API Provider: 显示 cloudProvider 标签 */}
+      {provider.type !== 'subscription' && (
+        <div className="flex items-center gap-1.5">
+          <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-tertiary)]">{provider.cloudProvider}</span>
+          {provider.apiProtocol === 'openai' && (
+            <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-tertiary)]">OpenAI 协议</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -140,12 +229,14 @@ function ProviderCard({
 function ProviderEditModal({
   provider,
   onSave,
+  onSavePresetModels,
   onDelete,
   onSaveKey,
   onClose,
 }: {
   provider: Provider | null;
   onSave: (data: Partial<Provider>) => Promise<void>;
+  onSavePresetModels?: (providerId: string, models: ModelEntity[]) => Promise<void>;
   onDelete?: () => Promise<void>;
   onSaveKey?: (id: string, key: string) => Promise<void>;
   onClose: () => void;
@@ -154,10 +245,9 @@ function ProviderEditModal({
   const isBuiltin = provider?.isBuiltin ?? false;
 
   const [form, setForm] = useState({
-    id: provider?.id ?? '',
     name: provider?.name ?? '',
     vendor: provider?.vendor ?? '',
-    type: (provider?.type ?? 'api') as 'subscription' | 'api',
+    apiProtocol: (provider?.apiProtocol ?? 'anthropic') as ApiProtocol,
     baseUrl: provider?.config?.baseUrl ?? '',
     authType: (provider?.authType ?? 'auth_token') as Extract<ProviderAuthType, 'auth_token' | 'api_key'>,
     models: provider?.models?.map((m) => m.model) ?? [],
@@ -184,23 +274,17 @@ function ProviderEditModal({
       setError('名称不能为空');
       return false;
     }
-    if (isNew && !form.id.trim()) {
-      setError('ID 不能为空');
-      return false;
-    }
-    if (form.type === 'api' && !form.baseUrl.trim()) {
+    if (!form.baseUrl.trim()) {
       setError('Base URL 不能为空');
       return false;
     }
-    if (form.type === 'api' && form.baseUrl.trim()) {
-      try {
-        new URL(form.baseUrl);
-      } catch {
-        setError('Base URL 格式不正确');
-        return false;
-      }
+    try {
+      new URL(form.baseUrl);
+    } catch {
+      setError('Base URL 格式不正确');
+      return false;
     }
-    if (form.type === 'api' && form.models.length === 0) {
+    if (form.models.length === 0) {
       setError('至少添加一个模型');
       return false;
     }
@@ -208,20 +292,35 @@ function ProviderEditModal({
   };
 
   const handleSave = async () => {
-    if (!validate()) return;
     setSaving(true);
     setError('');
     try {
-      const providerId = form.id.trim();
+      if (isBuiltin && provider && onSavePresetModels) {
+        // 预设 Provider: 只保存用户追加的自定义模型
+        const presetModelIds = new Set(
+          PROVIDERS.find((p) => p.id === provider.id)?.models.map((m) => m.model) ?? [],
+        );
+        const customModels = form.models
+          .filter((m) => !presetModelIds.has(m))
+          .map((m) => ({ model: m, modelName: m, modelSeries: 'custom' }));
+        await onSavePresetModels(provider.id, customModels);
+        onClose();
+        return;
+      }
+      if (!validate()) { setSaving(false); return; }
+      const providerId = isNew
+        ? `custom-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+        : provider!.id;
       await onSave({
         id: providerId,
         name: form.name.trim(),
         vendor: form.vendor.trim() || form.name.trim(),
         cloudProvider: '自定义',
-        type: form.type,
+        type: 'api',
         primaryModel: form.models[0] ?? '',
         isBuiltin: false,
         authType: form.authType,
+        apiProtocol: form.apiProtocol === 'openai' ? 'openai' : undefined,
         config: {
           baseUrl: form.baseUrl.trim() || undefined,
         },
@@ -268,10 +367,10 @@ function ProviderEditModal({
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
             <h3 className="text-[17px] font-bold text-[var(--ink)]">
-              {isNew ? '添加自定义供应商' : isBuiltin ? '查看供应商' : '编辑供应商'}
+              {isNew ? '添加自定义供应商' : isBuiltin ? '管理供应商模型' : '编辑供应商'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">
-              {isBuiltin ? '预设供应商仅可配置 API Key，不可编辑' : '配置供应商基本信息'}
+              {isBuiltin ? '预设供应商可追加自定义模型' : '配置供应商基本信息'}
             </p>
           </div>
           <button
@@ -290,26 +389,13 @@ function ProviderEditModal({
             </div>
           )}
 
-          {isNew && (
-            <div>
-              <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">ID</label>
-              <input
-                type="text"
-                placeholder="custom-provider"
-                value={form.id}
-                onChange={(e) => setForm((f) => ({ ...f, id: e.target.value }))}
-                disabled={isBuiltin}
-                className={inputCls}
-              />
-              <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">唯一标识符，仅支持小写字母、数字、短横线</p>
-            </div>
-          )}
-
           <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">名称</label>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">
+              供应商名称 {!isBuiltin && <span className="text-red-400">*</span>}
+            </label>
             <input
               type="text"
-              placeholder="我的供应商"
+              placeholder="例如: My Custom Provider"
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               disabled={isBuiltin}
@@ -318,23 +404,10 @@ function ProviderEditModal({
           </div>
 
           <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">类型</label>
-            <CustomSelect
-              value={form.type}
-              options={[
-                { value: 'api', label: 'API' },
-                { value: 'subscription', label: '订阅' },
-              ]}
-              onChange={(v) => setForm((f) => ({ ...f, type: v as 'subscription' | 'api' }))}
-              className="w-full"
-            />
-          </div>
-
-          <div>
             <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">服务商标签</label>
             <input
               type="text"
-              placeholder="云服务商"
+              placeholder="例如: 云服务商"
               value={form.vendor}
               onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
               disabled={isBuiltin}
@@ -342,98 +415,142 @@ function ProviderEditModal({
             />
           </div>
 
-          {form.type === 'api' && (
-            <>
-              <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API Base URL（Anthropic 兼容协议）</label>
+          <div>
+            <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">API 协议</label>
+            {form.apiProtocol === 'openai' && (
+              <p className="mb-1 text-[11px] text-[var(--ink-tertiary)]">
+                通过内置桥接自动转换为 Anthropic 协议，存在稳定性风险
+              </p>
+            )}
+            <div className={`flex gap-4${form.apiProtocol !== 'openai' ? ' mt-1' : ''}`}>
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
-                  type="url"
-                  placeholder="https://api.example.com/anthropic"
-                  value={form.baseUrl}
-                  onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))}
+                  type="radio"
+                  name="apiProtocol"
+                  value="anthropic"
+                  checked={form.apiProtocol !== 'openai'}
+                  onChange={() => setForm((f) => ({ ...f, apiProtocol: 'anthropic' as ApiProtocol, authType: 'auth_token' as const }))}
                   disabled={isBuiltin}
-                  className={inputCls}
+                  className="accent-[var(--accent)]"
                 />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">认证方式</label>
-                <div className="flex gap-4 mt-1">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="authType"
-                      value="auth_token"
-                      checked={form.authType === 'auth_token'}
-                      onChange={() => setForm((f) => ({ ...f, authType: 'auth_token' }))}
-                      className="accent-[var(--accent)]"
-                    />
-                    <span className="text-[13px] text-[var(--ink)]">AUTH_TOKEN</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="authType"
-                      value="api_key"
-                      checked={form.authType === 'api_key'}
-                      onChange={() => setForm((f) => ({ ...f, authType: 'api_key' }))}
-                      className="accent-[var(--accent)]"
-                    />
-                    <span className="text-[13px] text-[var(--ink)]">API_KEY</span>
-                  </label>
-                </div>
-                <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">请根据供应商认证参数进行选择</p>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">模型 ID</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="输入模型 ID，按 Enter 添加"
-                    value={form.newModelInput}
-                    onChange={(e) => setForm((f) => ({ ...f, newModelInput: e.target.value }))}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel(); } }}
-                    disabled={isBuiltin}
-                    className={inputCls}
-                  />
-                  <button
-                    type="button"
-                    onClick={addModel}
-                    disabled={!form.newModelInput.trim() || isBuiltin}
-                    className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-2 text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
-                  >
-                    <Plus size={16} />
-                  </button>
-                </div>
-                {form.models.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {form.models.map((model, index) => (
-                      <div key={model} className="flex items-center gap-1 rounded-md bg-[var(--hover)] px-2 py-1 text-[12px] font-medium text-[var(--ink)]">
-                        <span className="text-[10px] text-[var(--ink-tertiary)]">{index + 1}.</span>
-                        <span>{model}</span>
-                        {!isBuiltin && (
-                          <button type="button" onClick={() => removeModel(model)} className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] hover:text-red-400">
-                            <X size={12} />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API Key</label>
+                <span className="text-[13px] text-[var(--ink)]">Anthropic 兼容</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
-                  type="password"
-                  placeholder="可选，稍后设置"
-                  value={form.apiKey}
-                  onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
-                  className={inputCls}
+                  type="radio"
+                  name="apiProtocol"
+                  value="openai"
+                  checked={form.apiProtocol === 'openai'}
+                  onChange={() => setForm((f) => ({ ...f, apiProtocol: 'openai' as ApiProtocol, authType: 'api_key' as const }))}
+                  disabled={isBuiltin}
+                  className="accent-[var(--accent)]"
                 />
+                <span className="text-[13px] text-[var(--ink)]">OpenAI 兼容</span>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">
+              API Base URL {!isBuiltin && <span className="text-red-400">*</span>}
+            </label>
+            <input
+              type="url"
+              placeholder={form.apiProtocol === 'openai' ? 'https://api.openai.com/v1' : 'https://api.example.com/anthropic'}
+              value={form.baseUrl}
+              onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))}
+              disabled={isBuiltin}
+              className={inputCls}
+            />
+          </div>
+
+          <div>
+            <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">认证方式</label>
+            <p className="mb-1 text-[11px] text-[var(--ink-tertiary)]">请根据供应商认证参数进行选择</p>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="authType"
+                  value="auth_token"
+                  checked={form.authType === 'auth_token'}
+                  onChange={() => setForm((f) => ({ ...f, authType: 'auth_token' }))}
+                  disabled={isBuiltin}
+                  className="accent-[var(--accent)]"
+                />
+                <span className="text-[13px] text-[var(--ink)]">AUTH_TOKEN</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="authType"
+                  value="api_key"
+                  checked={form.authType === 'api_key'}
+                  onChange={() => setForm((f) => ({ ...f, authType: 'api_key' }))}
+                  disabled={isBuiltin}
+                  className="accent-[var(--accent)]"
+                />
+                <span className="text-[13px] text-[var(--ink)]">API_KEY</span>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">
+              模型 ID {!isBuiltin && <span className="text-red-400">*</span>}
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="输入模型 ID，按 Enter 添加"
+                value={form.newModelInput}
+                onChange={(e) => setForm((f) => ({ ...f, newModelInput: e.target.value }))}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel(); } }}
+                className={inputCls}
+              />
+              <button
+                type="button"
+                onClick={addModel}
+                disabled={!form.newModelInput.trim()}
+                className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-2 text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
+            {form.models.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {form.models.map((model, index) => {
+                  const isPresetModel = isBuiltin && provider?.models?.some((m) => m.model === model);
+                  return (
+                    <div key={model} className="flex items-center gap-1 rounded-md bg-[var(--hover)] px-2 py-1 text-[12px] font-medium text-[var(--ink)]">
+                      <span className="text-[10px] text-[var(--ink-tertiary)]">{index + 1}.</span>
+                      <span>{model}</span>
+                      {isPresetModel && (
+                        <span className="text-[10px] text-[var(--ink-tertiary)] ml-0.5">预设</span>
+                      )}
+                      {!isPresetModel && (
+                        <button type="button" onClick={() => removeModel(model)} className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] hover:text-red-400">
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            </>
+            )}
+          </div>
+
+          {isNew && (
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API Key</label>
+              <input
+                type="password"
+                placeholder="可选，稍后设置"
+                value={form.apiKey}
+                onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+                className={inputCls}
+              />
+            </div>
           )}
         </div>
 
@@ -482,12 +599,19 @@ function ProviderEditModal({
           </div>
         )}
         {isBuiltin && (
-          <div className="px-6 pb-6">
+          <div className="flex items-center justify-between gap-3 px-6 pb-6">
             <button
               onClick={onClose}
-              className="w-full rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+              className="flex-1 rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
             >
-              关闭
+              取消
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-50"
+            >
+              {saving ? '保存中...' : '保存'}
             </button>
           </div>
         )}
@@ -541,15 +665,19 @@ function ProviderConfigModal({
   provider,
   apiKey,
   isActive,
+  subscriptionStatus,
   onSetActive,
   onSaveKey,
+  onReVerifySubscription,
   onClose,
 }: {
   provider: Provider;
   apiKey: string;
   isActive: boolean;
+  subscriptionStatus: SubscriptionStatusData | null;
   onSetActive: () => Promise<void>;
   onSaveKey: (id: string, key: string) => Promise<void>;
+  onReVerifySubscription?: () => void;
   onClose: () => void;
 }) {
   const [input, setInput] = useState(apiKey);
@@ -581,6 +709,7 @@ function ProviderConfigModal({
         apiKey: input,
         model: provider.primaryModel,
         authType: provider.authType,
+        apiProtocol: provider.apiProtocol,
       });
       setValidResult(resp.result);
       if (resp.error) setValidError(resp.error);
@@ -634,11 +763,74 @@ function ProviderConfigModal({
         {/* 内容 */}
         <div className="px-6 py-5 space-y-4">
           {provider.type === 'subscription' ? (
-            <div className="flex items-center gap-2.5 rounded-xl bg-[var(--surface)] border border-[var(--border)] px-4 py-3">
-              <CircleCheck size={16} className="text-[var(--success)] shrink-0" />
-              <div>
-                <p className="text-[13px] font-medium text-[var(--ink)]">订阅账户</p>
-                <p className="text-[12px] text-[var(--ink-tertiary)]">通过 Claude 官方订阅使用，无需 API Key</p>
+            <div className="rounded-xl bg-[var(--surface)] border border-[var(--border)] px-4 py-3 space-y-2">
+              <div className="flex items-center gap-2.5">
+                <CircleCheck size={16} className="text-[var(--success)] shrink-0" />
+                <div>
+                  <p className="text-[13px] font-medium text-[var(--ink)]">订阅账户</p>
+                  <p className="text-[12px] text-[var(--ink-tertiary)]">通过 Claude 官方订阅使用，无需 API Key</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-xs flex-wrap">
+                {subscriptionStatus?.available ? (
+                  <>
+                    <span className="text-[var(--ink-tertiary)] font-mono text-[10px]">
+                      {subscriptionStatus.info?.email}
+                    </span>
+                    {subscriptionStatus.verifyStatus === 'loading' && (
+                      <div className="flex items-center gap-1.5 text-[var(--ink-tertiary)]">
+                        <Loader2 size={14} className="animate-spin" />
+                        <span>验证中...</span>
+                      </div>
+                    )}
+                    {subscriptionStatus.verifyStatus === 'valid' && (
+                      <div className="flex items-center gap-1.5 text-[var(--success)]">
+                        <CircleCheck size={14} />
+                        <span className="font-medium">已验证</span>
+                        {onReVerifySubscription && (
+                          <button
+                            type="button"
+                            onClick={onReVerifySubscription}
+                            className="ml-1 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                            title="重新验证"
+                          >
+                            <RefreshCw size={12} />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {subscriptionStatus.verifyStatus === 'invalid' && (
+                      <div className="flex items-center gap-1.5 text-red-400">
+                        <AlertCircle size={14} />
+                        <span className="font-medium">验证失败</span>
+                        {onReVerifySubscription && (
+                          <button
+                            type="button"
+                            onClick={onReVerifySubscription}
+                            className="ml-1 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                            title="重新验证"
+                          >
+                            <RefreshCw size={12} />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {subscriptionStatus.verifyStatus === 'idle' && (
+                      <div className="flex items-center gap-1.5 text-[var(--ink-tertiary)]">
+                        <span>检测中...</span>
+                      </div>
+                    )}
+                    {subscriptionStatus.verifyStatus === 'invalid' && subscriptionStatus.verifyError && (
+                      <span className="text-red-400 text-[10px] w-full mt-1">
+                        {subscriptionStatus.verifyError}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[var(--ink-tertiary)]">
+                    未登录，请先使用 Claude Code CLI 登录 (claude --login)
+                  </span>
+                )}
               </div>
             </div>
           ) : (
@@ -724,6 +916,130 @@ function ProviderTab() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [editProvider, setEditProvider] = useState<Provider | null | 'new'>(null);
 
+  // ── Subscription 状态 + 30 天验证缓存 ──
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusData | null>(null);
+  const verifyStatusCacheRef = useRef<Record<string, ProviderVerifyStatus>>({});
+
+  const SUBSCRIPTION_PROVIDER_ID = 'anthropic-sub';
+
+  // 保存验证状态到后端持久化
+  const saveVerifyStatus = useCallback(async (providerId: string, status: 'valid' | 'invalid', accountEmail?: string) => {
+    try {
+      await globalApiPutJson('/api/provider-verify-status', { providerId, status, accountEmail });
+      verifyStatusCacheRef.current[providerId] = {
+        status,
+        verifiedAt: new Date().toISOString(),
+        ...(accountEmail ? { accountEmail } : {}),
+      };
+    } catch (err) {
+      console.error('[Settings] Failed to save verify status:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    let retryCount = 0;
+    const maxRetries = 3;
+    const retryDelay = 1500;
+
+    const verifySubscriptionCredentials = async (status: SubscriptionStatusData, forceVerify = false) => {
+      if (!status.available || !status.info) return;
+
+      const currentEmail = status.info.email;
+      const cached = verifyStatusCacheRef.current[SUBSCRIPTION_PROVIDER_ID];
+
+      // 只缓存成功验证；失败的每次重试
+      if (!forceVerify && cached && cached.status === 'valid') {
+        const isExpired = isVerifyExpired(cached.verifiedAt);
+        const isSameAccount = cached.accountEmail === currentEmail;
+        if (!isExpired && isSameAccount) {
+          console.log('[Settings] Using cached subscription verification (valid)');
+          if (isMounted) {
+            setSubscriptionStatus((prev) => prev ? { ...prev, verifyStatus: 'valid' } : prev);
+          }
+          return;
+        }
+      }
+
+      if (isMounted) {
+        setSubscriptionStatus((prev) => prev ? { ...prev, verifyStatus: 'loading' } : prev);
+      }
+      try {
+        const result = await globalApiPostJson<{ success: boolean; error?: string }>('/api/subscription/verify', {});
+        if (result.success) {
+          await saveVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
+        }
+        if (isMounted) {
+          setSubscriptionStatus((prev) => prev ? {
+            ...prev,
+            verifyStatus: result.success ? 'valid' : 'invalid',
+            verifyError: result.error,
+          } : prev);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setSubscriptionStatus((prev) => prev ? {
+            ...prev,
+            verifyStatus: 'invalid',
+            verifyError: err instanceof Error ? err.message : '验证失败',
+          } : prev);
+        }
+      }
+    };
+
+    const checkSubscription = () => {
+      // 先加载缓存的验证状态
+      globalApiGetJson<Record<string, ProviderVerifyStatus>>('/api/provider-verify-status')
+        .then((cache) => { verifyStatusCacheRef.current = cache; })
+        .catch(() => { /* ignore */ });
+
+      globalApiGetJson<SubscriptionStatusData>('/api/subscription/status')
+        .then((status) => {
+          if (!isMounted) return;
+          setSubscriptionStatus({ ...status, verifyStatus: 'idle' });
+          if (status.available && status.info) {
+            verifySubscriptionCredentials(status);
+          }
+        })
+        .catch((err) => {
+          if (!isMounted) return;
+          if (retryCount < maxRetries) {
+            retryCount++;
+            setTimeout(checkSubscription, retryDelay);
+          } else {
+            console.error('[Settings] Failed to check subscription:', err);
+            setSubscriptionStatus({ available: false });
+          }
+        });
+    };
+
+    const timer = setTimeout(checkSubscription, 500);
+    return () => { isMounted = false; clearTimeout(timer); };
+  }, [saveVerifyStatus]);
+
+  const handleReVerifySubscription = useCallback(async () => {
+    if (!subscriptionStatus?.available || !subscriptionStatus?.info) return;
+    const currentEmail = subscriptionStatus.info.email;
+    setSubscriptionStatus((prev) => prev ? { ...prev, verifyStatus: 'loading', verifyError: undefined } : prev);
+    try {
+      const result = await globalApiPostJson<{ success: boolean; error?: string }>('/api/subscription/verify', {});
+      if (result.success) {
+        await saveVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
+      }
+      setSubscriptionStatus((prev) => prev ? {
+        ...prev,
+        verifyStatus: result.success ? 'valid' : 'invalid',
+        verifyError: result.error,
+      } : prev);
+    } catch (err) {
+      setSubscriptionStatus((prev) => prev ? {
+        ...prev,
+        verifyStatus: 'invalid',
+        verifyError: err instanceof Error ? err.message : '验证失败',
+      } : prev);
+    }
+  }, [subscriptionStatus, saveVerifyStatus]);
+
   const handleSetActive = async (providerId: string) => {
     await updateConfig({ currentProviderId: providerId });
   };
@@ -742,6 +1058,7 @@ function ProviderTab() {
       primaryModel: data.primaryModel ?? '',
       isBuiltin: false,
       authType: data.authType,
+      apiProtocol: data.apiProtocol,
       config: data.config ?? {},
       models: data.models ?? [],
     });
@@ -756,9 +1073,15 @@ function ProviderTab() {
       type: data.type,
       primaryModel: data.primaryModel,
       authType: data.authType,
+      apiProtocol: data.apiProtocol,
       config: data.config,
       models: data.models,
     });
+    await refreshConfig();
+  };
+
+  const handleSavePresetModels = async (providerId: string, models: ModelEntity[]) => {
+    await globalApiPutJson('/api/preset-custom-models', { providerId, models });
     await refreshConfig();
   };
 
@@ -819,8 +1142,10 @@ function ProviderTab() {
                   provider={provider}
                   apiKey={config.apiKeys[provider.id] ?? ''}
                   isActive={currentProvider.id === provider.id}
+                  subscriptionStatus={provider.type === 'subscription' ? subscriptionStatus : undefined}
                   onOpenDetail={() => setOpenId(provider.id)}
                   onOpenEdit={() => setEditProvider(provider)}
+                  onReVerifySubscription={provider.type === 'subscription' ? handleReVerifySubscription : undefined}
                 />
               ))}
               {row.length === 1 && <div />}
@@ -834,8 +1159,10 @@ function ProviderTab() {
           provider={openProvider}
           apiKey={config.apiKeys[openProvider.id] ?? ''}
           isActive={currentProvider.id === openProvider.id}
+          subscriptionStatus={openProvider.type === 'subscription' ? subscriptionStatus : null}
           onSetActive={() => handleSetActive(openProvider.id)}
           onSaveKey={handleSaveKey}
+          onReVerifySubscription={openProvider.type === 'subscription' ? handleReVerifySubscription : undefined}
           onClose={() => setOpenId(null)}
         />
       )}
@@ -844,6 +1171,7 @@ function ProviderTab() {
         <ProviderEditModal
           provider={editProvider === 'new' ? null : editProvider}
           onSave={editProvider === 'new' ? handleAddProvider : handleUpdateProvider}
+          onSavePresetModels={handleSavePresetModels}
           onDelete={editProvider !== 'new' ? handleDeleteProvider : undefined}
           onSaveKey={handleSaveKey}
           onClose={() => setEditProvider(null)}

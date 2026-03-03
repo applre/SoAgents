@@ -83,6 +83,12 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string,
     delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
   }
 
+  // 6. OpenAI 协议桥接 — TODO: 需要移植 openai-bridge 模块实现回环翻译
+  // 目前仅记录日志，实际 bridge 功能待后续实现
+  if (providerEnv?.apiProtocol === 'openai') {
+    console.warn('[env] apiProtocol=openai detected but bridge not yet implemented');
+  }
+
   return env;
 }
 
@@ -120,6 +126,8 @@ class SessionRunner {
   // ── 权限/问题处理 ──
   private pendingPermissions = new Map<string, (allow: boolean) => void>();
   private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
+  private pendingPermissionData = new Map<string, { toolName: string; toolUseId: string; toolInput: Record<string, unknown> }>();
+  private pendingQuestionData = new Map<string, { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }>();
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -269,6 +277,11 @@ class SessionRunner {
       const canUseTool = resolvedPermissionMode !== 'bypassPermissions'
         ? async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
             if (toolName === 'AskUserQuestion') {
+              const questionData = {
+                toolUseId: toolUseID,
+                questions: toolInput.questions as Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>,
+              };
+              this.pendingQuestionData.set(toolUseID, questionData);
               broadcast('question:request', {
                 sessionId: activeSessionId,
                 toolUseId: toolUseID,
@@ -277,36 +290,43 @@ class SessionRunner {
               const answers = await new Promise<Record<string, string>>((resolve) => {
                 const timeout = setTimeout(() => {
                   this.pendingQuestions.delete(toolUseID);
+                  this.pendingQuestionData.delete(toolUseID);
                   resolve({});
                 }, 120000);
                 signal?.addEventListener('abort', () => {
                   clearTimeout(timeout);
                   this.pendingQuestions.delete(toolUseID);
+                  this.pendingQuestionData.delete(toolUseID);
                   resolve({});
                 });
                 this.pendingQuestions.set(toolUseID, (ans: Record<string, string>) => {
                   clearTimeout(timeout);
                   this.pendingQuestions.delete(toolUseID);
+                  this.pendingQuestionData.delete(toolUseID);
                   resolve(ans);
                 });
               });
               return { behavior: 'allow' as const, updatedInput: { ...toolInput, answers } };
             }
 
+            this.pendingPermissionData.set(toolUseID, { toolName, toolUseId: toolUseID, toolInput });
             broadcast('permission:request', { sessionId: activeSessionId, toolName, toolUseId: toolUseID, toolInput });
             const allowed = await new Promise<boolean>((resolve) => {
               const timeout = setTimeout(() => {
                 this.pendingPermissions.delete(toolUseID);
+                this.pendingPermissionData.delete(toolUseID);
                 resolve(true);
               }, 30000);
               signal?.addEventListener('abort', () => {
                 clearTimeout(timeout);
                 this.pendingPermissions.delete(toolUseID);
+                this.pendingPermissionData.delete(toolUseID);
                 resolve(false);
               });
               this.pendingPermissions.set(toolUseID, (allow: boolean) => {
                 clearTimeout(timeout);
                 this.pendingPermissions.delete(toolUseID);
+                this.pendingPermissionData.delete(toolUseID);
                 resolve(allow);
               });
             });
@@ -591,6 +611,7 @@ class SessionRunner {
   respondPermission(toolUseId: string, allow: boolean): boolean {
     const resolve = this.pendingPermissions.get(toolUseId);
     if (resolve) {
+      this.pendingPermissionData.delete(toolUseId);
       resolve(allow);
       return true;
     }
@@ -600,10 +621,24 @@ class SessionRunner {
   respondQuestion(toolUseId: string, answers: Record<string, string>): boolean {
     const resolve = this.pendingQuestions.get(toolUseId);
     if (resolve) {
+      this.pendingQuestionData.delete(toolUseId);
       resolve(answers);
       return true;
     }
     return false;
+  }
+
+  getPendingState(): {
+    permission: { toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null;
+    question: { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> } | null;
+  } {
+    const permission = this.pendingPermissionData.size > 0
+      ? this.pendingPermissionData.values().next().value ?? null
+      : null;
+    const question = this.pendingQuestionData.size > 0
+      ? this.pendingQuestionData.values().next().value ?? null
+      : null;
+    return { permission, question };
   }
 }
 
@@ -649,4 +684,8 @@ export function removeRunner(): void {
 
 export function isRunning(): boolean {
   return runner?.getIsRunning() ?? false;
+}
+
+export function getPendingState() {
+  return runner?.getPendingState() ?? { permission: null, question: null };
 }

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import type { AppConfig, Provider } from '../shared/types/config';
+import type { AppConfig, Provider, ModelEntity, ProviderVerifyStatus } from '../shared/types/config';
 import { DEFAULT_CONFIG, PROVIDERS } from '../shared/providers';
 
 const DATA_DIR = join(homedir(), '.soagents');
@@ -26,6 +26,8 @@ export function readConfig(): AppConfig {
       currentModelId: parsed.currentModelId,
       apiKeys: parsed.apiKeys ?? {},
       customProviders: parsed.customProviders ?? [],
+      presetCustomModels: parsed.presetCustomModels,
+      providerVerifyStatus: parsed.providerVerifyStatus,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -94,7 +96,57 @@ export function deleteCustomProvider(id: string): void {
   writeConfig(config);
 }
 
+export function savePresetCustomModels(providerId: string, models: ModelEntity[]): void {
+  const config = readConfig();
+  if (!config.presetCustomModels) {
+    config.presetCustomModels = {};
+  }
+  if (models.length === 0) {
+    delete config.presetCustomModels[providerId];
+  } else {
+    config.presetCustomModels[providerId] = models;
+  }
+  writeConfig(config);
+}
+
+export function saveProviderVerifyStatus(
+  providerId: string,
+  status: 'valid' | 'invalid',
+  accountEmail?: string,
+): void {
+  const config = readConfig();
+  if (!config.providerVerifyStatus) {
+    config.providerVerifyStatus = {};
+  }
+  config.providerVerifyStatus[providerId] = {
+    status,
+    verifiedAt: new Date().toISOString(),
+    ...(accountEmail ? { accountEmail } : {}),
+  };
+  writeConfig(config);
+}
+
+export function getProviderVerifyStatus(): Record<string, ProviderVerifyStatus> {
+  const config = readConfig();
+  return config.providerVerifyStatus ?? {};
+}
+
+/** 将 presetCustomModels 合并到预设 Provider 的模型列表中 */
+function mergePresetCustomModels(providers: Provider[], presetCustomModels?: Record<string, ModelEntity[]>): Provider[] {
+  if (!presetCustomModels) return providers;
+  return providers.map((p) => {
+    const extra = presetCustomModels[p.id];
+    if (!extra?.length || !p.isBuiltin) return p;
+    // 去重：只追加 model ID 不存在于预设中的
+    const existingIds = new Set(p.models.map((m) => m.model));
+    const newModels = extra.filter((m) => !existingIds.has(m.model));
+    if (newModels.length === 0) return p;
+    return { ...p, models: [...p.models, ...newModels] };
+  });
+}
+
 export function getAllProviders(): Provider[] {
   const config = readConfig();
-  return [...PROVIDERS, ...(config.customProviders ?? [])];
+  const presets = mergePresetCustomModels(PROVIDERS, config.presetCustomModels);
+  return [...presets, ...(config.customProviders ?? [])];
 }
