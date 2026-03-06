@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# ── Load .env if present ─────────────────────────────────────────
+[ -f .env ] && set -a && source .env && set +a
+
 # ── Configuration ────────────────────────────────────────────────
 
 BUCKET="soagents-releases"
@@ -88,7 +91,7 @@ if [ ! -f "$SIGNING_KEY_PATH" ]; then
 fi
 
 echo "Signing with tauri signer..."
-npx tauri signer sign "$APP_TAR" --private-key-path "$SIGNING_KEY_PATH" --password "soagents" 2>&1
+npx tauri signer sign "$APP_TAR" --private-key-path "$SIGNING_KEY_PATH" --password "${TAURI_SIGNING_PASSWORD:?ERROR: TAURI_SIGNING_PASSWORD not set}" 2>&1
 
 if [ ! -f "$APP_SIG" ]; then
     echo "ERROR: Signature file was not created: $APP_SIG"

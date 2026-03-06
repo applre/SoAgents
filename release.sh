@@ -28,25 +28,24 @@ err()   { echo -e "${RED}✗${NC} $1"; exit 1; }
 
 # ── Parse args ───────────────────────────────────────────────────
 BUMP_ARG="${1:-}"
-SKIP_BUILD=false
 DRY_RUN=false
 
 for arg in "$@"; do
   case "$arg" in
-    --skip-build) SKIP_BUILD=true ;;
     --dry-run)    DRY_RUN=true ;;
   esac
 done
 
 if [ -z "$BUMP_ARG" ]; then
-  echo -e "${BOLD}Usage:${NC} ./release.sh <patch|minor|major|x.y.z> [--skip-build] [--dry-run]"
+  echo -e "${BOLD}Usage:${NC} ./release.sh <patch|minor|major|x.y.z> [--dry-run]"
   echo ""
   echo "Examples:"
   echo "  ./release.sh patch            # 0.1.0 → 0.1.1"
   echo "  ./release.sh minor            # 0.1.0 → 0.2.0"
   echo "  ./release.sh 0.2.0            # explicit version"
-  echo "  ./release.sh patch --skip-build"
-  echo "  ./release.sh patch --dry-run"
+  echo "  ./release.sh patch --dry-run  # preview changes"
+  echo ""
+  echo "构建和发布由 GitHub Actions 自动完成（push tag 后触发）"
   exit 1
 fi
 
@@ -154,9 +153,7 @@ if $DRY_RUN; then
   echo "Would update CHANGELOG.md"
   echo "Would commit: chore: release v${NEW_VERSION}"
   echo "Would tag: v${NEW_VERSION}"
-  if ! $SKIP_BUILD; then
-    echo "Would build and publish via publish_macos.sh"
-  fi
+  echo "Would push tag → GitHub Actions auto build + publish"
   exit 0
 fi
 
@@ -276,46 +273,13 @@ info "Pushing to remote..."
 git push && git push --tags
 ok "Pushed to remote"
 
-# ── Build + Publish ──────────────────────────────────────────────
-if $SKIP_BUILD; then
-  warn "Skipping build & publish (--skip-build)"
-  echo ""
-  echo -e "${GREEN}${BOLD}Release v${NEW_VERSION} tagged and pushed!${NC}"
-  echo "To build and publish later:"
-  echo "  TAURI_SIGNING_PRIVATE_KEY=\"\$(cat ~/.tauri/soagents.key)\" npm run tauri:build"
-  echo "  ./publish_macos.sh"
-  exit 0
-fi
-
-echo ""
-info "Building SoAgents v${NEW_VERSION}..."
-
-# Source .env for signing key
-if [ -f .env ]; then
-  set -a
-  source .env
-  set +a
-fi
-
-# Ensure signing key is set
-if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -f "$HOME/.tauri/soagents.key" ]; then
-  export TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/soagents.key")"
-fi
-
-npm run tauri:build
-
-ok "Build complete"
-
-echo ""
-info "Publishing to R2..."
-./publish_macos.sh
-
 echo ""
 echo "═══════════════════════════════════════════════════"
-echo -e "  ${GREEN}${BOLD}SoAgents v${NEW_VERSION} released!${NC}"
+echo -e "  ${GREEN}${BOLD}Release v${NEW_VERSION} tagged and pushed!${NC}"
 echo "═══════════════════════════════════════════════════"
 echo ""
 echo "  Tag:       v${NEW_VERSION}"
-echo "  Manifest:  https://download.soagents.ai/update/darwin-aarch64.json"
-echo "  GitHub:    https://github.com/applre/SoAgents/releases/tag/v${NEW_VERSION}"
+echo "  CI 构建:   GitHub Actions 将自动构建、签名并发布到 GitHub Release + R2"
+echo "  监控:      https://github.com/applre/SoAgents/actions"
+echo "  Release:   https://github.com/applre/SoAgents/releases/tag/v${NEW_VERSION}"
 echo ""

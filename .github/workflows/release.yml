@@ -103,6 +103,28 @@ jobs:
             exit 1
           fi
 
+      - name: Repackage tar.gz and sign for Tauri updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          APP_TAR="${BUNDLE_DIR}/macos/SoAgents.app.tar.gz"
+
+          echo "Repackaging tar.gz after bun re-signing..."
+          cd "${BUNDLE_DIR}/macos"
+          rm -f SoAgents.app.tar.gz SoAgents.app.tar.gz.sig
+          COPYFILE_DISABLE=1 tar -czf SoAgents.app.tar.gz SoAgents.app
+          cd -
+
+          echo "Signing with tauri signer..."
+          npx tauri signer sign "$APP_TAR" \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+
+          echo "tar.gz size: $(du -h "$APP_TAR" | cut -f1)"
+          echo "sig exists: $(test -f "${APP_TAR}.sig" && echo yes || echo no)"
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -113,3 +135,57 @@ jobs:
             src-tauri/target/release/bundle/macos/*.sig
           draft: true
           generate_release_notes: true
+
+      - name: Generate Tauri update manifest and upload to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          APP_TAR="${BUNDLE_DIR}/macos/SoAgents.app.tar.gz"
+          APP_SIG="${BUNDLE_DIR}/macos/SoAgents.app.tar.gz.sig"
+          BUCKET="soagents-releases"
+          BASE_URL="https://download.soagents.ai"
+          TARGET="aarch64"
+          TAURI_TARGET="darwin-aarch64"
+
+          SIGNATURE=$(cat "$APP_SIG")
+          RELEASE_FILENAME="SoAgents_${VERSION}_${TARGET}.app.tar.gz"
+          RELEASE_URL="${BASE_URL}/releases/v${VERSION}/${RELEASE_FILENAME}"
+
+          # Generate update manifest
+          cat > /tmp/update-manifest.json <<MANIFEST
+          {
+            "version": "${VERSION}",
+            "notes": "SoAgents v${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "${TAURI_TARGET}": {
+                "url": "${RELEASE_URL}",
+                "signature": "${SIGNATURE}"
+              }
+            }
+          }
+          MANIFEST
+
+          echo "Update manifest:"
+          cat /tmp/update-manifest.json
+
+          # Upload tar.gz to R2
+          echo "Uploading build artifact to R2..."
+          aws s3 cp "$APP_TAR" \
+            "s3://${BUCKET}/releases/v${VERSION}/${RELEASE_FILENAME}" \
+            --endpoint-url "$R2_ENDPOINT"
+
+          # Upload update manifest to R2
+          echo "Uploading update manifest to R2..."
+          aws s3 cp /tmp/update-manifest.json \
+            "s3://${BUCKET}/update/${TAURI_TARGET}.json" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type "application/json"
+
+          echo "Done!"
+          echo "Release: ${RELEASE_URL}"
+          echo "Manifest: ${BASE_URL}/update/${TAURI_TARGET}.json"
