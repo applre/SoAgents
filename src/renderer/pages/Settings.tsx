@@ -250,6 +250,8 @@ function ProviderEditModal({
     apiProtocol: (provider?.apiProtocol ?? 'anthropic') as ApiProtocol,
     baseUrl: provider?.config?.baseUrl ?? '',
     authType: (provider?.authType ?? 'auth_token') as Extract<ProviderAuthType, 'auth_token' | 'api_key'>,
+    maxOutputTokens: String(provider?.maxOutputTokens ?? ''),
+    upstreamFormat: (provider?.upstreamFormat ?? 'chat_completions') as 'chat_completions' | 'responses',
     models: provider?.models?.map((m) => m.model) ?? [],
     newModelInput: '',
     apiKey: '',

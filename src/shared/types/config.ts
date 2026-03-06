@@ -42,6 +42,15 @@ export interface Provider {
   // API 协议 (默认 'anthropic')
   apiProtocol?: ApiProtocol;
 
+  // 上游 API 格式（仅 apiProtocol === 'openai' 时生效）
+  // 'chat_completions' (默认): OpenAI Chat Completions API
+  // 'responses': OpenAI Responses API
+  upstreamFormat?: 'chat_completions' | 'responses';
+
+  // 最大输出 token 数限制（仅 apiProtocol === 'openai' 时生效）
+  // Bridge 会将 SDK 发送的 max_tokens 截断到此值
+  maxOutputTokens?: number;
+
   // 官网链接 (用于"去官网"入口)
   websiteUrl?: string;
 
@@ -120,4 +129,6 @@ export interface ProviderEnv {
   apiProtocol?: ApiProtocol;
   timeout?: number;
   disableNonessential?: boolean;
+  maxOutputTokens?: number;
+  upstreamFormat?: 'chat_completions' | 'responses';
 }
