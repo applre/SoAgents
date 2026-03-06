@@ -30,3 +30,6 @@ futures-util = "0.3"
 libc = "0.2"
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
+cron = "0.13"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }

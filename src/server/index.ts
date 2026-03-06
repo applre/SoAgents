@@ -8,7 +8,8 @@ import { verifyProviderViaSdk, checkAnthropicSubscription, verifySubscription } 
 import { initLogger, getLogHistory } from './logger';
 import { appendUnifiedLogBatch } from './UnifiedLogger';
 import type { PermissionMode } from '../shared/types/permission';
-import type { AppConfig, ProviderEnv, Provider } from '../shared/types/config';
+import type { AppConfig, ProviderEnv, Provider, ProviderAuthType } from '../shared/types/config';
+import { PROVIDERS } from '../shared/providers';
 import type { LogEntry } from '../shared/types/log';
 import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, copyFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -60,13 +61,44 @@ const server = Bun.serve({
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
         : 'acceptEdits';
+
+      // Auto-resolve providerEnv from config when not provided (e.g. scheduled tasks)
+      let resolvedProviderEnv = body.providerEnv;
+      let resolvedModel = body.model;
+      if (!resolvedProviderEnv) {
+        const config = ConfigStore.readConfig();
+        const allProviders = [...PROVIDERS, ...(config.customProviders ?? [])];
+        const provider = allProviders.find(p => p.id === config.currentProviderId);
+        if (provider && provider.type !== 'subscription') {
+          const apiKey = config.apiKeys?.[provider.id];
+          if (apiKey) {
+            resolvedProviderEnv = {
+              baseUrl: provider.config?.baseUrl as string | undefined,
+              apiKey,
+              authType: provider.authType as ProviderAuthType | undefined,
+              timeout: provider.config?.timeout as number | undefined,
+              disableNonessential: provider.config?.disableNonessential as boolean | undefined,
+            };
+          }
+        }
+        // Also auto-resolve model if not provided
+        if (!resolvedModel && config.currentModelId) {
+          resolvedModel = config.currentModelId;
+        } else if (!resolvedModel && provider?.primaryModel) {
+          resolvedModel = provider.primaryModel;
+        }
+        if (resolvedProviderEnv || provider?.type === 'subscription') {
+          console.log(`[chat/send] Auto-resolved provider: ${provider?.id ?? 'unknown'}, model: ${resolvedModel ?? 'default'}`);
+        }
+      }
+
       let sessionId = body.sessionId ?? null;
       if (!sessionId) {
         const session = SessionStore.createSession(body.agentDir, body.message.slice(0, 50));
         sessionId = session.id;
       }
       const runner = getOrCreateRunner(sessionId);
-      runner.sendMessage(body.message, body.agentDir, body.providerEnv, body.model, mode, body.mcpEnabledServerIds, body.images).catch(console.error);
+      runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images).catch(console.error);
       return Response.json({ ok: true, sessionId });
     }
 
@@ -367,6 +399,8 @@ const server = Bun.serve({
         model?: string;
         authType?: string;
         apiProtocol?: string;
+        maxOutputTokens?: number;
+        upstreamFormat?: string;
       };
       if (!body.apiKey) {
         return Response.json({ result: 'fail', error: '请输入 API Key' });
@@ -377,6 +411,8 @@ const server = Bun.serve({
         body.authType ?? 'both',
         body.model || undefined,
         body.apiProtocol === 'openai' ? 'openai' : undefined,
+        body.maxOutputTokens,
+        body.upstreamFormat === 'responses' ? 'responses' : undefined,
       );
       return Response.json({
         result: result.success ? 'ok' : 'fail',

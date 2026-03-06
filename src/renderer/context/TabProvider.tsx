@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { TabContext, type TabState } from './TabContext';
 import { ConfigContext } from './ConfigContext';
 import { SseConnection } from '../api/SseConnection';
@@ -482,6 +483,66 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId, agentDir]);
+
+  // ── 定时任务 session 开始/完成时自动发现 sidecar + 刷新 ──
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    listen<{ sessionId: string; workingDirectory: string }>('scheduler:session-started', (event) => {
+      if (event.payload.workingDirectory !== agentDir) return;
+      const sid = event.payload.sessionId;
+      refreshSessions().catch(console.error);
+      // 发现并连接定时任务的 sidecar（它使用 sessionId 作为 sidecar ID）
+      (async () => {
+        try {
+          const sidecars = await listRunningSidecars();
+          const sc = sidecars.find((s) => s.sessionId === sid);
+          if (!sc || sseMapRef.current.has(sid)) return;
+          const url = `http://127.0.0.1:${sc.port}`;
+          serverUrlMapRef.current.set(sid, url);
+          const sse = new SseConnection(sid, url);
+          sseMapRef.current.set(sid, sse);
+          await sse.connect();
+          registerSseHandlers(sse, sid);
+          lastActivityRef.current.set(sid, Date.now());
+          runningSessionsRef.current.add(sid);
+          setRunningSessions(new Set(runningSessionsRef.current));
+        } catch { /* sidecar may not be ready yet */ }
+      })();
+    }).then(fn => unlisteners.push(fn));
+    listen<{ sessionId: string; workingDirectory: string }>('scheduler:session-finished', (event) => {
+      if (event.payload.workingDirectory !== agentDir) return;
+      const finishedSid = event.payload.sessionId;
+      refreshSessions().catch(console.error);
+      // 标记不再运行
+      runningSessionsRef.current.delete(finishedSid);
+      setRunningSessions(new Set(runningSessionsRef.current));
+      if (activeSessionIdRef.current === finishedSid) {
+        setIsLoading(false);
+        setSessionState('idle');
+      }
+      // 如果当前正在查看该 session，清除缓存并重新加载消息
+      if (activeSessionIdRef.current === finishedSid) {
+        sessionMessagesRef.current.delete(toSessionKey(finishedSid));
+        (async () => {
+          try {
+            const globalUrl = await getGlobalUrl();
+            const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string }>>(globalUrl, `/chat/sessions/${finishedSid}/messages`);
+            if (activeSessionIdRef.current !== finishedSid) return;
+            const formatted = msgs.map((m) => ({
+              id: m.id,
+              role: m.role as 'user' | 'assistant',
+              blocks: [{ type: 'text' as const, text: m.content }],
+              createdAt: new Date(m.timestamp).getTime(),
+            }));
+            sessionMessagesRef.current.set(toSessionKey(finishedSid), formatted);
+            setMessages(formatted);
+            messagesRef.current = formatted;
+          } catch { /* ignore */ }
+        })();
+      }
+    }).then(fn => unlisteners.push(fn));
+    return () => { unlisteners.forEach(fn => fn()); };
+  }, [agentDir, refreshSessions, toSessionKey, getGlobalUrl, registerSseHandlers]);
 
   // ── runningSessions 变化时通知父组件 ──
   useEffect(() => {

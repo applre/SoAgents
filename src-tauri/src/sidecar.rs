@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -8,11 +8,18 @@ pub const GLOBAL_SIDECAR_ID: &str = "__global__";
 const BASE_PORT: u16 = 32415;
 const SIDECAR_MARKER: &str = "--soagents-sidecar";
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SidecarOwner {
+    Session(String),
+    ScheduledTask(String),
+}
+
 pub struct SidecarInstance {
     pub process: Child,
     pub port: u16,
     pub agent_dir: Option<PathBuf>,
     pub healthy: bool,
+    pub owners: HashSet<SidecarOwner>,
 }
 
 pub struct SidecarManager {
@@ -238,15 +245,25 @@ impl SidecarManager {
         agent_dir: Option<PathBuf>,
         bun_path: &PathBuf,
         script_path: &PathBuf,
+        owner: Option<SidecarOwner>,
     ) -> Result<u16, String> {
         ensure_high_file_descriptor_limit();
 
-        // Idempotent: if already running, return existing port
+        // Idempotent: if already running, add owner and return existing port
         if let Some(instance) = self.instances.get_mut(&sidecar_id) {
             if let Ok(None) = instance.process.try_wait() {
+                if let Some(o) = owner {
+                    log::info!("[sidecar] Adding owner {:?} to sidecar '{}'", o, sidecar_id);
+                    instance.owners.insert(o);
+                }
                 return Ok(instance.port);
             }
             self.instances.remove(&sidecar_id);
+        }
+
+        let mut initial_owners = HashSet::new();
+        if let Some(o) = owner {
+            initial_owners.insert(o);
         }
 
         let port = self.port_counter.fetch_add(1, Ordering::SeqCst);
@@ -349,10 +366,29 @@ impl SidecarManager {
                 port,
                 agent_dir,
                 healthy,
+                owners: initial_owners,
             },
         );
 
         Ok(port)
+    }
+
+    /// Release an owner from a sidecar. If no owners remain, stop the sidecar process.
+    /// Returns Ok(true) if sidecar was stopped, Ok(false) if other owners remain.
+    pub fn release_sidecar(&mut self, sidecar_id: &str, owner: &SidecarOwner) -> Result<bool, String> {
+        if let Some(instance) = self.instances.get_mut(sidecar_id) {
+            log::info!("[sidecar] Releasing owner {:?} from sidecar '{}'", owner, sidecar_id);
+            instance.owners.remove(owner);
+            if instance.owners.is_empty() {
+                log::info!("[sidecar] No owners remain for sidecar '{}', stopping", sidecar_id);
+                self.stop_sidecar(sidecar_id)?;
+                return Ok(true);
+            }
+            log::info!("[sidecar] Sidecar '{}' still has {} owner(s)", sidecar_id, instance.owners.len());
+            Ok(false)
+        } else {
+            Ok(true) // Already gone
+        }
     }
 
     pub fn stop_sidecar(&mut self, sidecar_id: &str) -> Result<(), String> {
@@ -396,5 +432,24 @@ impl SidecarManager {
 
     pub fn get_port(&self, sidecar_id: &str) -> Option<u16> {
         self.instances.get(sidecar_id).map(|i| i.port)
+    }
+
+    pub fn list_running(&mut self) -> Vec<(String, Option<String>, u16)> {
+        // 清理已退出的进程
+        self.instances.retain(|_, inst| {
+            matches!(inst.process.try_wait(), Ok(None))
+        });
+        self.instances
+            .iter()
+            .map(|(id, inst)| {
+                (
+                    id.clone(),
+                    inst.agent_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
+                    inst.port,
+                )
+            })
+            .collect()
     }
 }

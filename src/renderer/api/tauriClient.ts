@@ -26,6 +26,18 @@ export async function stopAllSidecars(): Promise<void> {
   return invoke('cmd_stop_all_sidecars');
 }
 
+export interface RunningSidecar {
+  sessionId: string;
+  agentDir: string | null;
+  port: number;
+}
+
+export async function listRunningSidecars(): Promise<RunningSidecar[]> {
+  if (!isTauri()) return [];
+  const raw = await invoke<[string, string | null, number][]>('cmd_list_running_sidecars');
+  return raw.map(([sessionId, agentDir, port]) => ({ sessionId, agentDir, port }));
+}
+
 export async function getDefaultWorkspace(): Promise<string | null> {
   if (!isTauri()) return null;
   return invoke<string>('cmd_get_default_workspace');
