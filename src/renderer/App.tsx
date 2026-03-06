@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2, Folder, Check, Plus, MessageSquare, FileText, X } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2, Folder, Check, Plus, MessageSquare, MessageSquarePlus, Search, Clock, FileText, X } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -19,10 +19,13 @@ import { startWindowDrag, toggleMaximize } from './utils/env';
 import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
+import SearchModal from './components/SearchModal';
 import { startGlobalSidecar, getDefaultWorkspace } from './api/tauriClient';
 import Launcher from './pages/Launcher';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
+import { ScheduledTasksView } from './components/scheduledTasks';
+import { ScheduledTaskProvider } from './context/ScheduledTaskContext';
 import Editor from './pages/Editor';
 import WebViewPanel from './pages/WebViewPanel';
 import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
@@ -93,6 +96,10 @@ function SortableFileTab({ file, isActive, onActivate, onClose }: {
         }}
       >
         <FileText size={14} className="shrink-0" style={{ color: isActive ? 'var(--ink-secondary)' : 'var(--ink-tertiary)' }} />
+        {/* 未保存修改标记圆点 */}
+        {file.isDirty && (
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
+        )}
         <span
           title={file.title}
           className="max-w-[160px] truncate"
@@ -126,6 +133,7 @@ export default function App() {
   const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [showSearch, setShowSearch] = useState(false);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
   const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
   const deleteSessionRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
@@ -138,6 +146,18 @@ export default function App() {
   });
   // 编辑器 action ref：由 Editor 组件通过 onActionRef 暴露
   const editorActionRef = useRef<{ handleAction: (a: ToolbarAction) => void; save: () => void } | null>(null);
+
+  // 文件 dirty 状态回调
+  const handleDirtyChange = useCallback((filePath: string, isDirty: boolean) => {
+    setTabs((prev) =>
+      prev.map((t) => ({
+        ...t,
+        openFiles: t.openFiles.map((f) =>
+          f.filePath === filePath ? { ...f, isDirty } : f
+        ),
+      }))
+    );
+  }, []);
 
   // Auto-updater
   const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
@@ -245,6 +265,19 @@ export default function App() {
     });
   }, []);
 
+  const handleOpenScheduledTasks = useCallback(() => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.view === 'scheduled-tasks');
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const tab = createTab({ title: '定时任务', view: 'scheduled-tasks' });
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+  }, []);
+
   const handleAddWorkspace = useCallback(() => {
     const tab = createTab();
     setTabs((prev) => [...prev, tab]);
@@ -268,6 +301,25 @@ export default function App() {
       return [...prev, tab];
     });
     setActiveSessionId(null);
+  }, []);
+
+  const handleNavigateToSession = useCallback((agentDir: string, sessionId: string) => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.agentDir === agentDir && t.view === 'chat');
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev.map((t) => t.id === existing.id ? { ...t, sessionId } : t);
+      }
+      const tab = createTab({
+        agentDir,
+        view: 'chat',
+        title: agentDir.split('/').pop() ?? agentDir,
+        sessionId,
+      });
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+    setActiveSessionId(sessionId);
   }, []);
 
   const handleCloseTab = useCallback((tabId: string) => {
@@ -424,15 +476,17 @@ export default function App() {
             onRenameSession={handleRenameSession}
             onTogglePin={handleTogglePin}
             onOpenSettings={handleOpenSettings}
+            onOpenScheduledTasks={handleOpenScheduledTasks}
             onCollapse={() => setShowSidebar(false)}
             isSettingsActive={activeTab?.view === 'settings'}
+            isScheduledTasksActive={activeTab?.view === 'scheduled-tasks'}
             updateReady={updateReady}
             updateVersion={updateVersion}
             onRestartAndUpdate={restartAndUpdate}
           />
         ) : (
           <div
-            className="flex shrink-0 flex-col items-center bg-[var(--surface)]"
+            className="relative z-50 flex shrink-0 flex-col items-center bg-[var(--surface)]"
             style={{ width: 72, borderRight: '1px solid var(--border)', paddingTop: 10, paddingBottom: 14 }}
             onMouseDown={startWindowDrag}
           >
@@ -448,10 +502,33 @@ export default function App() {
             {/* 新建对话 */}
             <button
               onClick={handleNewChat}
+              onMouseDown={(e) => e.stopPropagation()}
               title="新建对话"
               className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
             >
-              <SquarePen size={18} />
+              <MessageSquarePlus size={18} />
+            </button>
+            {/* 搜索对话 */}
+            <button
+              onClick={() => setShowSearch(true)}
+              onMouseDown={(e) => e.stopPropagation()}
+              title="搜索对话"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+            >
+              <Search size={18} />
+            </button>
+            {/* 定时任务 */}
+            <button
+              onClick={handleOpenScheduledTasks}
+              onMouseDown={(e) => e.stopPropagation()}
+              title="定时任务"
+              className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                activeTab?.view === 'scheduled-tasks'
+                  ? 'bg-[var(--hover)] text-[var(--ink)]'
+                  : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+              }`}
+            >
+              <Clock size={18} />
             </button>
             {/* 弹性空间 */}
             <div className="flex-1" />
@@ -468,6 +545,14 @@ export default function App() {
               <Settings2 size={18} />
             </button>
           </div>
+        )}
+
+        {/* 搜索弹窗（收缩侧边栏时使用） */}
+        {!showSidebar && showSearch && (
+          <SearchModal
+            onSelectSession={handleSelectSession}
+            onClose={() => setShowSearch(false)}
+          />
         )}
 
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -545,6 +630,7 @@ export default function App() {
               <>
                 <EditorActionBar
                   mode={isPreviewable ? activeOpenFile.mode : 'edit'}
+                  isDirty={activeOpenFile.isDirty}
                   onModeChange={isPreviewable ? handleSetFileMode : undefined}
                   onSave={() => editorActionRef.current?.save()}
                   onGoToChat={() => handleSwitchSubTab('chat', activeOpenFile.filePath)}
@@ -614,6 +700,7 @@ export default function App() {
                         <Editor
                           filePath={f.filePath}
                           mode={f.mode}
+                          onDirtyChange={handleDirtyChange}
                           onActionRef={(ref) => { if (fileVisible) editorActionRef.current = ref; }}
                           onOpenUrl={openUrl}
                         />
@@ -632,11 +719,16 @@ export default function App() {
                 checking={checking}
               />
             )}
+            {activeTab?.view === 'scheduled-tasks' && (
+              <ScheduledTaskProvider>
+                <ScheduledTasksView onNavigateToSession={handleNavigateToSession} />
+              </ScheduledTaskProvider>
+            )}
           </main>
         </div>
 
         {/* 文件面板：与 LeftSidebar 同级，全高列，内部自行管理对齐 */}
-        {showFilesPanel && activeTab?.view !== 'settings' && (
+        {showFilesPanel && activeTab?.view !== 'settings' && activeTab?.view !== 'scheduled-tasks' && (
           <WorkspaceFilesPanel
             agentDir={activeTab?.agentDir ?? null}
             onOpenFile={openEditorFile}
@@ -673,7 +765,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
   return (
     <div
       className="relative flex items-center justify-between px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
-      style={{ height: 48 }}
+      style={{ height: 48, paddingTop: 2 }}
       onMouseDown={startWindowDrag}
       onDoubleClick={toggleMaximize}
     >
@@ -685,7 +777,8 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           const isSettings = tab.view === 'settings';
-          const label = isSettings ? '设置' : (tab.agentDir?.split('/').filter(Boolean).pop() ?? '新工作区');
+          const isScheduledTasks = tab.view === 'scheduled-tasks';
+          const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : (tab.agentDir?.split('/').filter(Boolean).pop() ?? '新工作区');
           const isDropdownOpen = openDropdownTabId === tab.id;
 
           return (
@@ -699,12 +792,12 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                   borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                 }}
               >
-                <span className={`text-[14px] font-semibold ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`}>
+                <span className={`text-[13px] font-semibold ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`}>
                   {label}
                 </span>
                 {isActive && (
                   <>
-                    {!isSettings && (
+                    {!isSettings && !isScheduledTasks && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -715,7 +808,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
                         {isDropdownOpen ? '⌄' : '›'}
                       </button>
                     )}
-                    {(isSettings || tabs.length > 1) && (
+                    {(isSettings || isScheduledTasks || tabs.length > 1) && (
                       <button
                         onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
                         className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 text-center"
@@ -778,8 +871,8 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
         </button>
       </div>
 
-      {/* 右侧：展开工作区文件面板（设置页隐藏） */}
-      {tabs.find((t) => t.id === activeTabId)?.view !== 'settings' && (
+      {/* 右侧：展开工作区文件面板（设置页/定时任务页隐藏） */}
+      {tabs.find((t) => t.id === activeTabId)?.view !== 'settings' && tabs.find((t) => t.id === activeTabId)?.view !== 'scheduled-tasks' && (
         <button
           onClick={onToggleFilesPanel}
           onMouseDown={(e) => e.stopPropagation()}

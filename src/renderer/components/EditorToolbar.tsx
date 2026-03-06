@@ -7,6 +7,7 @@ export type ToolbarAction =
 // ── EditorActionBar：编辑/预览切换 + 右侧操作按钮 ──────────────────
 interface ActionBarProps {
   mode: 'edit' | 'preview';
+  isDirty?: boolean;
   onModeChange?: (mode: 'edit' | 'preview') => void;
   onSave: () => void;
   onGoToChat: () => void;
@@ -14,7 +15,7 @@ interface ActionBarProps {
   onOpenExternal?: () => void;
 }
 
-export function EditorActionBar({ mode, onModeChange, onSave, onGoToChat, onCopy, onOpenExternal }: ActionBarProps) {
+export function EditorActionBar({ mode, isDirty, onModeChange, onSave, onGoToChat, onCopy, onOpenExternal }: ActionBarProps) {
   return (
     <div
       className="flex items-center justify-between shrink-0 bg-[var(--paper)]"
@@ -73,10 +74,14 @@ export function EditorActionBar({ mode, onModeChange, onSave, onGoToChat, onCopy
         </button>
         <button
           onClick={onSave}
-          className="flex items-center gap-1.5 text-[13px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+          className={`flex items-center gap-1.5 text-[13px] transition-colors ${
+            isDirty
+              ? 'text-[var(--accent)] hover:text-[var(--accent)]'
+              : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+          }`}
         >
           <Save size={13} />
-          <span>保存</span>
+          <span>{isDirty ? '保存 ⌘S' : '已保存'}</span>
         </button>
       </div>
     </div>

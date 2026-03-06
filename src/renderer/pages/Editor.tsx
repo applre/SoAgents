@@ -16,6 +16,7 @@ interface Props {
   filePath: string;
   mode: 'edit' | 'preview';
   onSave?: (filePath: string) => void;
+  onDirtyChange?: (filePath: string, isDirty: boolean) => void;
   onActionRef?: (ref: { handleAction: (action: ToolbarAction) => void; save: () => void }) => void;
   onOpenUrl?: (url: string) => void;
 }
@@ -49,8 +50,9 @@ function isHtmlFile(filePath: string) {
   return /\.(html|htm)$/i.test(filePath);
 }
 
-export default function Editor({ filePath, mode, onSave, onActionRef, onOpenUrl }: Props) {
+export default function Editor({ filePath, mode, onSave, onDirtyChange, onActionRef, onOpenUrl }: Props) {
   const [content, setContent] = useState('');
+  const savedContentRef = useRef(''); // 上次保存/加载的内容，用于比对 dirty 状态
   const editorViewRef = useRef<EditorView | null>(null);
   const langExtension = useMemo(() => getLangExtension(filePath), [filePath]);
   const isMarkdown = useMemo(() => isMarkdownFile(filePath), [filePath]);
@@ -64,19 +66,32 @@ export default function Editor({ filePath, mode, onSave, onActionRef, onOpenUrl 
   useEffect(() => {
     if (!filePath || isImage || isBinary) return;
     globalApiGetJson<{ content: string }>(`/api/file-read?path=${encodeURIComponent(filePath)}`)
-      .then((res) => setContent(res.content))
+      .then((res) => {
+        setContent(res.content);
+        savedContentRef.current = res.content;
+        onDirtyChange?.(filePath, false);
+      })
       .catch(console.error);
-  }, [filePath, isImage, isBinary]);
+  }, [filePath, isImage, isBinary]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 内容变化时通知 dirty 状态
+  useEffect(() => {
+    if (isImage || isBinary) return;
+    const dirty = content !== savedContentRef.current;
+    onDirtyChange?.(filePath, dirty);
+  }, [content, filePath, isImage, isBinary]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = useCallback(async () => {
     if (!filePath) return;
     try {
       await globalApiPostJson('/api/file-write', { path: filePath, content });
+      savedContentRef.current = content;
+      onDirtyChange?.(filePath, false);
       onSave?.(filePath);
     } catch (e) {
       console.error(e);
     }
-  }, [filePath, content, onSave]);
+  }, [filePath, content, onSave, onDirtyChange]);
 
   // Cmd+S 保存
   useEffect(() => {

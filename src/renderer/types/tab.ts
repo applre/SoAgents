@@ -1,10 +1,11 @@
-export type TabView = 'launcher' | 'chat' | 'settings';
+export type TabView = 'launcher' | 'chat' | 'settings' | 'scheduled-tasks';
 
 export interface OpenFile {
   filePath: string;       // 文件路径 或 URL
   title: string;
   mode: 'edit' | 'preview';
   isUrl?: boolean;        // true = URL，用 Tauri WebView 渲染
+  isDirty?: boolean;      // true = 有未保存的修改
 }
 
 export interface Tab {

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Clock, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
@@ -16,8 +16,10 @@ interface Props {
   onRenameSession: (sessionId: string, title: string) => void;
   onTogglePin: (sessionId: string) => void;
   onOpenSettings: () => void;
+  onOpenScheduledTasks: () => void;
   onCollapse: () => void;
   isSettingsActive?: boolean;
+  isScheduledTasksActive?: boolean;
   updateReady?: boolean;
   updateVersion?: string | null;
   onRestartAndUpdate?: () => void;
@@ -34,8 +36,10 @@ export default function LeftSidebar({
   onRenameSession,
   onTogglePin,
   onOpenSettings,
+  onOpenScheduledTasks,
   onCollapse,
   isSettingsActive = false,
+  isScheduledTasksActive = false,
   updateReady = false,
   updateVersion,
   onRestartAndUpdate,
@@ -120,13 +124,26 @@ export default function LeftSidebar({
             onClick={onNewChat}
             className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
           >
+            <MessageSquarePlus size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
             新建对话
           </button>
           <button
             onClick={() => setShowSearch(true)}
             className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
           >
+            <Search size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
             搜索对话
+          </button>
+          <button
+            onClick={onOpenScheduledTasks}
+            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium transition-colors text-left ${
+              isScheduledTasksActive
+                ? 'bg-[var(--hover)] text-[var(--ink)]'
+                : 'text-[var(--ink)] hover:bg-[var(--hover)]'
+            }`}
+          >
+            <Clock size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
+            定时任务
           </button>
         </div>
       </div>
