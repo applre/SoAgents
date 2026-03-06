@@ -4,10 +4,12 @@ import { open } from '@tauri-apps/plugin-dialog';
 import type { ScheduledTask, ScheduledTaskInput } from '../../../shared/types/scheduledTask';
 import { useScheduledTasks } from '../../context/ScheduledTaskContext';
 import { useConfig } from '../../context/ConfigContext';
+import CustomSelect from '../CustomSelect';
 import {
   defaultScheduleUI,
   parseScheduleToUI,
   scheduleUIToSchedule,
+  TIMEZONE_OPTIONS,
   type ScheduleUI,
   type ScheduleMode,
 } from './scheduleUtils';
@@ -18,9 +20,20 @@ interface Props {
 
 const SCHEDULE_MODES: { value: ScheduleMode; label: string }[] = [
   { value: 'once', label: '单次执行' },
+  { value: 'every', label: '固定间隔' },
   { value: 'daily', label: '每天' },
   { value: 'weekly', label: '每周' },
   { value: 'monthly', label: '每月' },
+];
+
+const INTERVAL_PRESETS = [
+  { value: 5, label: '5 分钟' },
+  { value: 15, label: '15 分钟' },
+  { value: 30, label: '30 分钟' },
+  { value: 60, label: '1 小时' },
+  { value: 120, label: '2 小时' },
+  { value: 480, label: '8 小时' },
+  { value: 1440, label: '24 小时' },
 ];
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -49,6 +62,11 @@ export default function TaskForm({ editingTask }: Props) {
         errs.datetime = '请选择执行时间';
       } else if (new Date(scheduleUI.datetime).getTime() <= Date.now()) {
         errs.datetime = '执行时间需在未来';
+      }
+    }
+    if (scheduleUI.mode === 'every') {
+      if (!scheduleUI.minutes || scheduleUI.minutes < 1) {
+        errs.minutes = '间隔至少 1 分钟';
       }
     }
     setErrors(errs);
@@ -187,6 +205,40 @@ export default function TaskForm({ editingTask }: Props) {
               </div>
             )}
 
+            {scheduleUI.mode === 'every' && (
+              <div className="flex flex-wrap gap-2">
+                {INTERVAL_PRESETS.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => updateSchedule({ minutes: value })}
+                    className="px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors"
+                    style={{
+                      background: scheduleUI.minutes === value ? 'var(--accent)' : 'var(--surface)',
+                      color: scheduleUI.minutes === value ? 'white' : 'var(--ink)',
+                      border: `1px solid ${scheduleUI.minutes === value ? 'var(--accent)' : 'var(--border)'}`,
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={1}
+                    value={INTERVAL_PRESETS.some(p => p.value === scheduleUI.minutes) ? '' : scheduleUI.minutes}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      if (v > 0) updateSchedule({ minutes: v });
+                    }}
+                    placeholder="自定义"
+                    className={inputStyle}
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink)', width: 90 }}
+                  />
+                  <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>分钟</span>
+                </div>
+              </div>
+            )}
+
             {scheduleUI.mode === 'weekly' && (
               <select
                 value={scheduleUI.weekday}
@@ -213,7 +265,7 @@ export default function TaskForm({ editingTask }: Props) {
               </select>
             )}
 
-            {scheduleUI.mode !== 'once' && (
+            {scheduleUI.mode !== 'once' && scheduleUI.mode !== 'every' && (
               <input
                 type="time"
                 value={scheduleUI.time}
@@ -223,6 +275,24 @@ export default function TaskForm({ editingTask }: Props) {
               />
             )}
           </div>
+
+          {/* 时区选择 (仅 cron 模式，every 不需要) */}
+          {scheduleUI.mode !== 'once' && scheduleUI.mode !== 'every' && (
+            <div className="mt-3">
+              <label className="block text-[12px] mb-1" style={{ color: 'var(--ink-tertiary)' }}>
+                时区
+              </label>
+              <CustomSelect
+                value={scheduleUI.timezone}
+                onChange={(value) => updateSchedule({ timezone: value })}
+                options={
+                  TIMEZONE_OPTIONS.some(o => o.value === scheduleUI.timezone)
+                    ? TIMEZONE_OPTIONS
+                    : [...TIMEZONE_OPTIONS, { value: scheduleUI.timezone, label: scheduleUI.timezone }]
+                }
+              />
+            </div>
+          )}
         </div>
 
         {/* 工作目录 */}

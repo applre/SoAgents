@@ -1,9 +1,11 @@
 import type { ProviderEnv } from './config';
 
 export interface Schedule {
-  type: 'at' | 'cron';
+  type: 'at' | 'every' | 'cron';
   datetime?: string;   // ISO 8601, when type = 'at'
+  minutes?: number;    // interval in minutes, when type = 'every'
   expression?: string; // 5-field cron, when type = 'cron'
+  timezone?: string;   // IANA timezone, e.g. 'Asia/Shanghai', when type = 'cron'
 }
 
 export interface TaskState {

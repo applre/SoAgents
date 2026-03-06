@@ -21,8 +21,14 @@ pub type SchedulerState = Arc<RwLock<SchedulerManager>>;
 pub enum Schedule {
     #[serde(rename = "at")]
     At { datetime: String },
+    #[serde(rename = "every")]
+    Every { minutes: u32 },
     #[serde(rename = "cron")]
-    Cron { expression: String },
+    Cron {
+        expression: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timezone: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +176,7 @@ impl SchedulerManager {
         let id = uuid::Uuid::new_v4().to_string();
 
         let next_run = if input.enabled {
-            calculate_next_run_time(&input.schedule)?
+            calculate_next_run_time(&input.schedule, None)?
         } else {
             None
         };
@@ -218,7 +224,7 @@ impl SchedulerManager {
         task.updated_at_ms = now;
 
         if input.enabled {
-            task.state.next_run_at_ms = calculate_next_run_time(&input.schedule)?;
+            task.state.next_run_at_ms = calculate_next_run_time(&input.schedule, task.state.last_run_at_ms)?;
             task.state.consecutive_errors = 0;
         } else {
             task.state.next_run_at_ms = None;
@@ -252,7 +258,7 @@ impl SchedulerManager {
         task.updated_at_ms = Utc::now().timestamp_millis();
 
         if task.enabled {
-            task.state.next_run_at_ms = calculate_next_run_time(&task.schedule)?;
+            task.state.next_run_at_ms = calculate_next_run_time(&task.schedule, task.state.last_run_at_ms)?;
             task.state.consecutive_errors = 0;
         } else {
             task.state.next_run_at_ms = None;
@@ -527,7 +533,7 @@ impl SchedulerManager {
 
 // ── Cron Helpers ──
 
-fn calculate_next_run_time(schedule: &Schedule) -> Result<Option<i64>, String> {
+fn calculate_next_run_time(schedule: &Schedule, last_run_at_ms: Option<i64>) -> Result<Option<i64>, String> {
     match schedule {
         Schedule::At { datetime } => {
             let dt = chrono::DateTime::parse_from_rfc3339(datetime)
@@ -539,15 +545,36 @@ fn calculate_next_run_time(schedule: &Schedule) -> Result<Option<i64>, String> {
                 Ok(None) // Already passed
             }
         }
-        Schedule::Cron { expression } => {
+        Schedule::Every { minutes } => {
+            let now = Utc::now().timestamp_millis();
+            let interval_ms = (*minutes as i64) * 60 * 1000;
+            let base = last_run_at_ms.unwrap_or(now);
+            let mut next = base + interval_ms;
+            // If next is in the past (e.g. app was offline), schedule from now
+            if next <= now {
+                next = now + interval_ms;
+            }
+            Ok(Some(next))
+        }
+        Schedule::Cron { expression, timezone } => {
             // 5-field cron -> 7-field: prepend "0" (seconds) and append "*" (year)
             let seven_field = format!("0 {} *", expression.trim());
             let cron_schedule = seven_field
                 .parse::<cron::Schedule>()
                 .map_err(|e| format!("Invalid cron expression '{}': {}", expression, e))?;
 
-            let next = cron_schedule.upcoming(Utc).next();
-            Ok(next.map(|dt| dt.timestamp_millis()))
+            // Use specified timezone or fall back to UTC
+            if let Some(tz_str) = timezone {
+                let tz: chrono_tz::Tz = tz_str
+                    .parse()
+                    .map_err(|_| format!("Invalid timezone '{}'", tz_str))?;
+                let now_in_tz = Utc::now().with_timezone(&tz);
+                let next = cron_schedule.after(&now_in_tz).next();
+                Ok(next.map(|dt| dt.with_timezone(&Utc).timestamp_millis()))
+            } else {
+                let next = cron_schedule.upcoming(Utc).next();
+                Ok(next.map(|dt| dt.timestamp_millis()))
+            }
         }
     }
 }
@@ -766,7 +793,7 @@ async fn execute_task(state: SchedulerState, task_id: String, trigger: String) {
                 task.state.next_run_at_ms = None;
             } else if task.enabled {
                 // Calculate next run for cron
-                match calculate_next_run_time(&task.schedule) {
+                match calculate_next_run_time(&task.schedule, task.state.last_run_at_ms) {
                     Ok(next) => task.state.next_run_at_ms = next,
                     Err(e) => log::error!("[scheduler] Failed to calculate next run: {}", e),
                 }
