@@ -11,7 +11,7 @@ export interface TabState {
   messages: Message[];
   isLoading: boolean;
   sessionState: 'idle' | 'running' | 'error';
-  sendMessage: (text: string, permissionMode?: string, skill?: { name: string; content: string }, images?: ChatImage[]) => Promise<void>;
+  sendMessage: (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[]) => Promise<void>;
   stopResponse: () => Promise<void>;
   resetSession: () => Promise<void>;
   apiGet: <T>(path: string) => Promise<T>;

@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, Square, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap } from 'lucide-react';
+import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, Square, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap, Search } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
+import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
 import { useTabState } from '../context/TabContext';
@@ -26,7 +27,7 @@ interface SkillPayload {
 }
 
 interface Props {
-  onSend: (text: string, permissionMode?: string, skill?: SkillPayload, images?: ChatImage[]) => void;
+  onSend: (text: string, permissionMode?: string, skills?: SkillPayload[], images?: ChatImage[]) => void;
   onStop: () => void;
   isLoading: boolean;
   agentDir?: string;
@@ -34,10 +35,11 @@ interface Props {
   onInjectConsumed?: () => void;
 }
 
-interface MCPServer {
+interface MCPServerItem {
+  id: string;
+  name: string;
   type: string;
-  command?: string;
-  url?: string;
+  isBuiltin: boolean;
 }
 
 interface AttachedFile {
@@ -64,7 +66,20 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
 
   const [text, setText] = useState('');
   const [showSlash, setShowSlash] = useState(false);
-  const [selectedSkill, setSelectedSkill] = useState<{ name: string; content: string } | null>(null);
+  const [slashPosition, setSlashPosition] = useState<number | null>(null);
+  const [slashSearchQuery, setSlashSearchQuery] = useState('');
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  // @ 文件搜索
+  const [showFileSearch, setShowFileSearch] = useState(false);
+  const [fileSearchQuery, setFileSearchQuery] = useState('');
+  const [fileSearchResults, setFileSearchResults] = useState<FileSearchResult[]>([]);
+  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  const [atPosition, setAtPosition] = useState<number | null>(null);
+  const [isFileSearching, setIsFileSearching] = useState(false);
+  const fileSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [selectedSkills, setSelectedSkills] = useState<{ name: string; content: string }[]>([]);
+  const [skillPanelTab, setSkillPanelTab] = useState<'all' | 'selected'>('all');
+  const [skillSearchQuery, setSkillSearchQuery] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(wsEntry?.permissionMode ?? 'acceptEdits');
   // Sync permissionMode when workspace entry changes (e.g. workspace switch)
   useEffect(() => {
@@ -76,7 +91,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const [showModelPopover, setShowModelPopover] = useState(false);
   const [showProviderSubmenu, setShowProviderSubmenu] = useState(false);
   const [showModePopover, setShowModePopover] = useState(false);
-  const [mcpServers, setMcpServers] = useState<Record<string, MCPServer>>({});
+  const [mcpServers, setMcpServers] = useState<MCPServerItem[]>([]);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -105,7 +120,6 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     return effectiveProvider.models[0];
   }, [effectiveProvider, wsEntry?.modelId]);
   const isCurrentProviderAvailable = useMemo(() => isProviderAvailable(effectiveProvider), [isProviderAvailable, effectiveProvider]);
-  const slashQuery = showSlash && text.startsWith('/') ? text.slice(1) : '';
 
   // 文件注入：从编辑器「去对话」时以附件卡片形式带入文件，同步获取真实文件大小
   useEffect(() => {
@@ -151,10 +165,34 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     loadSkills();
   }, [agentDir]);
 
+  // @ 文件搜索 API
+  const searchFiles = useCallback(async (query: string) => {
+    if (!agentDir || query.length < 1) {
+      setFileSearchResults([]);
+      setIsFileSearching(false);
+      return;
+    }
+    setIsFileSearching(true);
+    try {
+      const results = await globalApiGetJson<FileSearchResult[]>(
+        `/api/search-files?agentDir=${encodeURIComponent(agentDir)}&q=${encodeURIComponent(query)}`
+      );
+      setFileSearchResults(results.slice(0, 10));
+      setSelectedFileIndex(0);
+    } catch {
+      setFileSearchResults([]);
+    } finally {
+      setIsFileSearching(false);
+    }
+  }, [agentDir]);
+
   // 加载 MCP servers
   useEffect(() => {
-    globalApiGetJson<Record<string, MCPServer>>('/api/mcp')
-      .then(setMcpServers)
+    globalApiGetJson<{ servers: Array<{ id: string; name: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
+      .then((data) => {
+        const enabledSet = new Set(data.enabledIds);
+        setMcpServers(data.servers.filter((s) => enabledSet.has(s.id)));
+      })
       .catch(() => {});
   }, []);
 
@@ -182,13 +220,92 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   }, []);
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
-    setText(val);
-    setShowSlash(val.startsWith('/'));
+    const newValue = e.target.value;
+    const cursorPos = e.target.selectionStart ?? newValue.length;
+    setText(newValue);
+
+    // 检测新输入的字符（简单比较：长度+1 且光标在末尾附近）
+    const addedChar = newValue.length === text.length + 1 ? newValue[cursorPos - 1] : null;
+
+    let nextShowFileSearch = showFileSearch;
+    let nextAtPosition = atPosition;
+    let nextShowSlash = showSlash;
+    let nextSlashPosition = slashPosition;
+
+    // 检测 @ 触发
+    if (addedChar === '@') {
+      nextShowFileSearch = true;
+      nextAtPosition = cursorPos - 1;
+      setShowFileSearch(true);
+      setAtPosition(cursorPos - 1);
+      setFileSearchQuery('');
+      setFileSearchResults([]);
+      setSelectedFileIndex(0);
+      // 关闭 / 菜单
+      nextShowSlash = false;
+      nextSlashPosition = null;
+      setShowSlash(false);
+      setSlashPosition(null);
+    }
+
+    // 检测 / 触发
+    if (addedChar === '/') {
+      nextShowSlash = true;
+      nextSlashPosition = cursorPos - 1;
+      setShowSlash(true);
+      setSlashPosition(cursorPos - 1);
+      setSlashSearchQuery('');
+      setSelectedSlashIndex(0);
+      // 关闭 @ 浮层
+      nextShowFileSearch = false;
+      nextAtPosition = null;
+      setShowFileSearch(false);
+      setAtPosition(null);
+    }
+
+    // 更新 @ 文件搜索查询
+    if (nextShowFileSearch && nextAtPosition !== null) {
+      if (nextAtPosition >= newValue.length || newValue[nextAtPosition] !== '@') {
+        setShowFileSearch(false);
+        setAtPosition(null);
+      } else {
+        const textAfterAt = newValue.slice(nextAtPosition + 1, cursorPos);
+        if (textAfterAt.includes(' ') || textAfterAt.includes('\n')) {
+          setShowFileSearch(false);
+          setAtPosition(null);
+        } else {
+          setFileSearchQuery(textAfterAt);
+          // 防抖搜索
+          if (fileSearchTimerRef.current) clearTimeout(fileSearchTimerRef.current);
+          fileSearchTimerRef.current = setTimeout(() => {
+            searchFiles(textAfterAt);
+          }, 200);
+        }
+      }
+    }
+
+    // 更新 / 技能查询
+    if (nextShowSlash && nextSlashPosition !== null) {
+      if (nextSlashPosition >= newValue.length || newValue[nextSlashPosition] !== '/') {
+        setShowSlash(false);
+        setSlashPosition(null);
+      } else {
+        const textAfterSlash = newValue.slice(nextSlashPosition + 1, cursorPos);
+        if (textAfterSlash.includes(' ') || textAfterSlash.includes('\n')) {
+          setShowSlash(false);
+          setSlashPosition(null);
+        } else {
+          setSlashSearchQuery(textAfterSlash);
+          setSelectedSlashIndex(0);
+        }
+      }
+    }
+
+    // 自适应高度
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-  }, []);
+  }, [text, showFileSearch, atPosition, showSlash, slashPosition, searchFiles]);
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
@@ -198,9 +315,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     const filePaths = regularFiles.map((f) => f.path).join(' ');
     // 用户可见文本（用户 Prompt 在前，文件路径在后）
     const userText = [trimmed, filePaths].filter(Boolean).join('\n');
-    // skill 信息单独传递
-    const skill = selectedSkill ? { name: selectedSkill.name, content: selectedSkill.content } : undefined;
-    if (!userText && !skill && imageFiles.length === 0) return;
+    // skills 信息单独传递
+    const skills = selectedSkills.length > 0 ? selectedSkills : undefined;
+    if (!userText && !skills && imageFiles.length === 0) return;
     if (isLoading) return;
     // 提取图片的 mimeType 和纯 base64 数据
     const images: ChatImage[] = imageFiles.map((f) => {
@@ -212,59 +329,132 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         data: parts[1] ?? '',
       };
     });
-    onSend(userText, permissionMode, skill, images.length > 0 ? images : undefined);
+    onSend(userText, permissionMode, skills, images.length > 0 ? images : undefined);
     setText('');
     setAttachedFiles([]);
-    setSelectedSkill(null);
+    setSelectedSkills([]);
     setShowSlash(false);
+    setSlashPosition(null);
+    setShowFileSearch(false);
+    setAtPosition(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [text, attachedFiles, selectedSkill, isLoading, onSend, permissionMode]);
+  }, [text, attachedFiles, selectedSkills, isLoading, onSend, permissionMode]);
+
+  const handleFileSelect = useCallback((file: FileSearchResult) => {
+    if (atPosition === null) return;
+    const before = text.slice(0, atPosition);
+    const cursorEnd = textareaRef.current?.selectionStart ?? (atPosition + fileSearchQuery.length + 1);
+    const after = text.slice(cursorEnd);
+    setText(`${before}@${file.path} ${after}`);
+    setShowFileSearch(false);
+    setAtPosition(null);
+    setFileSearchQuery('');
+    setFileSearchResults([]);
+    textareaRef.current?.focus();
+  }, [atPosition, text, fileSearchQuery]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // @ 文件搜索键盘导航
+      if (showFileSearch) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setSelectedFileIndex((i) => Math.min(i + 1, fileSearchResults.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setSelectedFileIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if ((e.key === 'Enter' || e.key === 'Tab') && fileSearchResults.length > 0) {
+          e.preventDefault();
+          handleFileSelect(fileSearchResults[selectedFileIndex]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowFileSearch(false);
+          setAtPosition(null);
+          return;
+        }
+      }
+      // / 技能键盘导航（由 SlashCommandMenu 内部处理，这里仅阻止 Enter 发送）
+      if (showSlash) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowSlash(false);
+          setSlashPosition(null);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'ArrowDown' || e.key === 'ArrowUp') return; // 交给 SlashCommandMenu
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
-        if (showSlash) return;
         e.preventDefault();
         handleSend();
       }
     },
-    [handleSend, showSlash]
+    [handleSend, showSlash, showFileSearch, fileSearchResults, selectedFileIndex, handleFileSelect]
   );
 
-  const handleSlashSelect = useCallback(async (cmd: string) => {
-    if (cmd === 'clear' || cmd === 'reset') {
-      setText(`/${cmd}`);
-      setShowSlash(false);
-      textareaRef.current?.focus();
-      return;
-    }
-    try {
-      const path = agentDir
-        ? `/api/skills/${cmd}?agentDir=${encodeURIComponent(agentDir)}`
-        : `/api/skills/${cmd}`;
-      const skill = await globalApiGetJson<{ content: string }>(path);
-      setSelectedSkill({ name: cmd, content: skill.content || `/${cmd}` });
-    } catch {
-      setSelectedSkill({ name: cmd, content: `/${cmd}` });
-    }
-    setText('');
-    setShowSlash(false);
-    textareaRef.current?.focus();
-  }, [agentDir]);
-
-  const handleSkillSelect = useCallback(async (name: string) => {
-    setShowSkillPopover(false);
+  // 追加 skill 到 selectedSkills（不重复）
+  const addSkill = useCallback(async (name: string) => {
+    if (selectedSkills.some((s) => s.name === name)) return;
     try {
       const path = agentDir
         ? `/api/skills/${name}?agentDir=${encodeURIComponent(agentDir)}`
         : `/api/skills/${name}`;
       const skill = await globalApiGetJson<{ content: string }>(path);
-      setSelectedSkill({ name, content: skill.content || '' });
+      setSelectedSkills((prev) => prev.some((s) => s.name === name) ? prev : [...prev, { name, content: skill.content || `/${name}` }]);
     } catch {
-      setSelectedSkill({ name, content: '' });
+      setSelectedSkills((prev) => prev.some((s) => s.name === name) ? prev : [...prev, { name, content: `/${name}` }]);
     }
+  }, [agentDir, selectedSkills]);
+
+  const removeSkill = useCallback((name: string) => {
+    setSelectedSkills((prev) => prev.filter((s) => s.name !== name));
+  }, []);
+
+  const handleSlashSelect = useCallback(async (cmd: string) => {
+    const removeTriggerText = () => {
+      if (slashPosition !== null) {
+        const before = text.slice(0, slashPosition);
+        const cursorEnd = textareaRef.current?.selectionStart ?? (slashPosition + slashSearchQuery.length + 1);
+        const after = text.slice(cursorEnd);
+        return `${before}${after}`.trim();
+      }
+      return '';
+    };
+
+    if (cmd === 'clear' || cmd === 'reset') {
+      if (slashPosition !== null) {
+        const before = text.slice(0, slashPosition);
+        const cursorEnd = textareaRef.current?.selectionStart ?? (slashPosition + slashSearchQuery.length + 1);
+        const after = text.slice(cursorEnd);
+        setText(`${before}/${cmd} ${after}`.trim());
+      } else {
+        setText(`/${cmd}`);
+      }
+      setShowSlash(false);
+      setSlashPosition(null);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    await addSkill(cmd);
+    setText(removeTriggerText());
+    setShowSlash(false);
+    setSlashPosition(null);
     textareaRef.current?.focus();
-  }, [agentDir]);
+  }, [agentDir, slashPosition, text, slashSearchQuery, addSkill]);
+
+  const handleSkillToggle = useCallback(async (name: string) => {
+    if (selectedSkills.some((s) => s.name === name)) {
+      removeSkill(name);
+    } else {
+      await addSkill(name);
+    }
+  }, [selectedSkills, addSkill, removeSkill]);
 
   const handleAttach = useCallback(async () => {
     if (!isTauri()) return;
@@ -438,8 +628,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     }
   }, [processFiles]);
 
-  const canSend = text.trim().length > 0 || attachedFiles.length > 0 || selectedSkill !== null;
-  const mcpList = Object.entries(mcpServers);
+  const canSend = text.trim().length > 0 || attachedFiles.length > 0 || selectedSkills.length > 0;
+  const mcpList = mcpServers;
 
   return (
     <div className="px-4 pb-4 pt-2">
@@ -460,54 +650,144 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             </div>
           </div>
         )}
+        {/* @ 文件搜索浮层 */}
+        {showFileSearch && (
+          <FileSearchMenu
+            query={fileSearchQuery}
+            results={fileSearchResults}
+            selectedIndex={selectedFileIndex}
+            isSearching={isFileSearching}
+            onSelect={handleFileSelect}
+          />
+        )}
         {/* Slash 命令菜单 */}
         {showSlash && (
           <SlashCommandMenu
-            query={slashQuery}
+            query={slashSearchQuery}
             onSelect={handleSlashSelect}
-            onClose={() => setShowSlash(false)}
+            onClose={() => { setShowSlash(false); setSlashPosition(null); }}
             skillCommands={skillCommands}
           />
         )}
 
-        {/* Skill Popover */}
+        {/* Skill 多选面板 */}
         {showSkillPopover && (
-          <div ref={skillPopoverRef} className="absolute bottom-full mb-2 left-0 z-50 w-72 max-h-64 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-lg">
-            <div className="px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">技能列表</div>
-            {skillCommands.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">暂无技能</div>
-            ) : (
-              skillCommands.map((s) => (
+          <div ref={skillPopoverRef} className="absolute bottom-full mb-2 left-0 z-50 w-80 max-h-[360px] flex flex-col rounded-xl border border-[var(--border)] bg-white shadow-lg">
+            {/* 标题栏 */}
+            <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)]">
+              <span className="text-xs font-medium text-[var(--ink-secondary)]">技能列表</span>
+              <div className="flex items-center gap-2 text-xs">
                 <button
-                  key={s.name}
-                  onClick={() => handleSkillSelect(s.name)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--hover)] transition-colors"
+                  onClick={async () => {
+                    for (const s of skillCommands) {
+                      if (!selectedSkills.some((ss) => ss.name === s.name)) await addSkill(s.name);
+                    }
+                  }}
+                  className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
                 >
-                  <span className="font-medium text-[var(--ink)] truncate">{s.name}</span>
-                  {s.source && (
-                    <span className={`ml-auto shrink-0 text-xs px-1.5 py-0.5 rounded ${
-                      s.source === 'project' ? 'bg-green-100 text-green-700' : 'bg-blue-50 text-blue-600'
-                    }`}>
-                      {s.source === 'project' ? '项目' : '全局'}
-                    </span>
-                  )}
+                  全选
                 </button>
-              ))
-            )}
+                <span className="text-[var(--border)]">|</span>
+                <button
+                  onClick={() => setSelectedSkills([])}
+                  className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+                >
+                  清除
+                </button>
+              </div>
+            </div>
+            {/* Tab 切换 */}
+            <div className="flex items-center gap-1 px-3 py-1.5 border-b border-[var(--border)]">
+              <button
+                onClick={() => setSkillPanelTab('selected')}
+                className={`px-2 py-1 text-xs rounded-md transition-colors ${
+                  skillPanelTab === 'selected' ? 'bg-[var(--accent)]/10 text-[var(--accent)] font-medium' : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+                }`}
+              >
+                已启用 ({selectedSkills.length})
+              </button>
+              <button
+                onClick={() => setSkillPanelTab('all')}
+                className={`px-2 py-1 text-xs rounded-md transition-colors ${
+                  skillPanelTab === 'all' ? 'bg-[var(--accent)]/10 text-[var(--accent)] font-medium' : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+                }`}
+              >
+                全部
+              </button>
+            </div>
+            {/* 搜索框 */}
+            <div className="px-3 py-1.5 border-b border-[var(--border)]">
+              <div className="flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1">
+                <Search size={12} className="text-[var(--ink-tertiary)] shrink-0" />
+                <input
+                  type="text"
+                  value={skillSearchQuery}
+                  onChange={(e) => setSkillSearchQuery(e.target.value)}
+                  placeholder="搜索技能..."
+                  className="w-full text-xs bg-transparent outline-none text-[var(--ink)] placeholder:text-[var(--ink-tertiary)]"
+                />
+              </div>
+            </div>
+            {/* 列表 */}
+            <div className="flex-1 overflow-y-auto">
+              {(() => {
+                const baseList = skillPanelTab === 'selected'
+                  ? skillCommands.filter((s) => selectedSkills.some((ss) => ss.name === s.name))
+                  : skillCommands;
+                const filtered = skillSearchQuery
+                  ? baseList.filter((s) =>
+                      s.name.toLowerCase().includes(skillSearchQuery.toLowerCase()) ||
+                      s.description?.toLowerCase().includes(skillSearchQuery.toLowerCase())
+                    )
+                  : baseList;
+                if (filtered.length === 0) {
+                  return <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">{skillPanelTab === 'selected' ? '暂无已启用技能' : '暂无技能'}</div>;
+                }
+                return filtered.map((s) => {
+                  const isSelected = selectedSkills.some((ss) => ss.name === s.name);
+                  return (
+                    <button
+                      key={s.name}
+                      onClick={() => handleSkillToggle(s.name)}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                        isSelected ? 'bg-[var(--accent)]/5' : 'hover:bg-[var(--hover)]'
+                      }`}
+                    >
+                      <span className={`shrink-0 w-4 ${isSelected ? 'text-[var(--accent)]' : 'text-transparent'}`}>
+                        <Check size={14} />
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <span className={`font-medium truncate block ${isSelected ? 'text-[var(--ink)]' : 'text-[var(--ink)]'}`}>{s.name}</span>
+                        {s.description && (
+                          <span className="text-xs text-[var(--ink-tertiary)] truncate block">{s.description}</span>
+                        )}
+                      </div>
+                      {s.source && (
+                        <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
+                          s.source === 'project' ? 'bg-green-100 text-green-700' : 'bg-blue-50 text-blue-600'
+                        }`}>
+                          {s.source === 'project' ? '项目' : '全局'}
+                        </span>
+                      )}
+                    </button>
+                  );
+                });
+              })()}
+            </div>
           </div>
         )}
 
         {/* MCP Popover */}
         {showMCPPopover && (
           <div className="absolute bottom-full mb-2 left-12 z-50 w-72 max-h-64 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-lg">
-            <div className="px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">MCP Servers</div>
+            <div className="px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">MCP Servers（已启用）</div>
             {mcpList.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">暂无 MCP Server，前往设置添加</div>
+              <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">暂无已启用的 MCP Server，前往设置添加</div>
             ) : (
-              mcpList.map(([id, cfg]) => (
-                <div key={id} className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <span className="font-medium text-[var(--ink)] truncate">{id}</span>
-                  <span className="ml-auto shrink-0 text-xs text-[var(--ink-tertiary)]">{cfg.type}</span>
+              mcpList.map((s) => (
+                <div key={s.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+                  <span className="font-medium text-[var(--ink)] truncate">{s.name || s.id}</span>
+                  <span className="ml-auto shrink-0 text-xs text-[var(--ink-tertiary)]">{s.type}</span>
                 </div>
               ))
             )}
@@ -628,19 +908,21 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
           </div>
         )}
 
-        {/* Skill 标签卡片 */}
-        {selectedSkill && (
-          <div className="flex items-center gap-2 px-4 pt-3">
-            <div className="flex items-center gap-1.5 rounded-full bg-[var(--surface)] border border-[var(--border)] px-3 py-1.5">
-              <Puzzle size={13} className="text-[var(--ink-secondary)] shrink-0" />
-              <span className="text-sm font-medium text-[var(--ink)]">{selectedSkill.name}</span>
-              <button
-                onClick={() => setSelectedSkill(null)}
-                className="ml-0.5 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
-              >
-                <X size={13} />
-              </button>
-            </div>
+        {/* Skill 标签卡片（多选） */}
+        {selectedSkills.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3">
+            {selectedSkills.map((s) => (
+              <div key={s.name} className="flex items-center gap-1.5 rounded-full bg-[var(--surface)] border border-[var(--border)] px-2.5 py-1">
+                <Puzzle size={11} className="text-[var(--ink-secondary)] shrink-0" />
+                <span className="text-xs font-medium text-[var(--ink)]">{s.name}</span>
+                <button
+                  onClick={() => removeSkill(s.name)}
+                  className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -690,7 +972,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={selectedSkill ? "输入消息... (输入 / 召唤牛马)" : "帮我写一份项目计划书  tab"}
+          placeholder={selectedSkills.length > 0 || attachedFiles.length > 0 || text.includes('@') ? "输入消息..." : "输入消息，使用 @ 引用文件，/ 使用技能..."}
           rows={1}
           className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-[15px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none"
           style={{ minHeight: 44, maxHeight: 160 }}
@@ -711,12 +993,17 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             <button
               ref={skillBtnRef}
               onClick={() => { setShowSkillPopover((v) => !v); setShowMCPPopover(false); setShowModelPopover(false); }}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                showSkillPopover ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+              className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+                showSkillPopover || selectedSkills.length > 0 ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
               }`}
               title="选择技能"
             >
               <Puzzle size={16} />
+              {selectedSkills.length > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[9px] font-bold leading-none">
+                  {selectedSkills.length}
+                </span>
+              )}
             </button>
 
             <button
