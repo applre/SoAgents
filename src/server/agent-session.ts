@@ -403,6 +403,8 @@ class SessionRunner {
 
   /** 处理单个 SDK 流事件 */
   private handleStreamEvent(msg: SDKMessage, activeSessionId: string): void {
+    const logTag = `[SessionRunner:${activeSessionId.slice(0, 8)}]`;
+
     if (msg.type === 'stream_event') {
       const streamEvent = msg.event as {
         type: string;
@@ -412,7 +414,7 @@ class SessionRunner {
       };
 
       if (streamEvent.type === 'message_start' && streamEvent.message) {
-        console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] API responded with model: ${streamEvent.message.model}, msg_id: ${streamEvent.message.id}`);
+        console.log(`${logTag} API responded with model: ${streamEvent.message.model}, msg_id: ${streamEvent.message.id}`);
       }
 
       if (streamEvent.type === 'content_block_delta') {
@@ -428,23 +430,33 @@ class SessionRunner {
         }
       } else if (streamEvent.type === 'content_block_start') {
         const block = streamEvent.content_block;
+        console.log(`${logTag} content_block_start: type=${block?.type}, name=${block?.name ?? '-'}, id=${block?.id ?? '-'}`);
         if (block?.type === 'tool_use') {
           this.currentToolId = block.id ?? '';
           broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
         }
+      } else if (streamEvent.type === 'content_block_stop') {
+        console.log(`${logTag} content_block_stop`);
+      } else if (streamEvent.type === 'message_stop') {
+        console.log(`${logTag} message_stop`);
       }
     } else if (msg.type === 'assistant') {
       const betaMsg = msg.message as { content: Array<{ type: string; text?: string }> };
+      const blockTypes = betaMsg.content.map(b => b.type).join(',');
+      console.log(`${logTag} assistant message: blocks=[${blockTypes}], streamed=${this.turnHasStreamedContent}`);
       for (const block of betaMsg.content) {
         if (block.type === 'text' && block.text) {
           if (!this.turnHasStreamedContent) {
             this.turnAssistantContent += block.text;
             broadcast('chat:message-chunk', { sessionId: activeSessionId, text: block.text });
+            console.log(`${logTag} assistant fallback broadcast: ${block.text.length} chars`);
           }
         }
       }
     } else if (msg.type === 'user') {
       const userMsg = msg.message as { content: Array<{ type: string; tool_use_id?: string; content?: string; is_error?: boolean }> };
+      const blockTypes = (userMsg.content ?? []).map(b => b.type).join(',');
+      console.log(`${logTag} user message (tool results): blocks=[${blockTypes}]`);
       for (const block of userMsg.content ?? []) {
         if (block.type === 'tool_result') {
           broadcast('chat:tool-result', {
@@ -456,9 +468,11 @@ class SessionRunner {
         }
       }
     } else if (msg.type === 'result') {
-      // 提取 sdkSessionId 用于恢复
+      console.log(`${logTag} result event received, turnContent=${this.turnAssistantContent.length} chars`);
+      // 提取 sdkSessionId 用于恢复，并持久化到 SessionStore
       if ((msg as SDKMessage & { session_id?: string }).session_id) {
         this.sdkSessionId = (msg as SDKMessage & { session_id?: string }).session_id!;
+        SessionStore.saveSdkSessionId(activeSessionId, this.sdkSessionId);
       }
 
       // 保存助手消息并通知前端
@@ -468,6 +482,8 @@ class SessionRunner {
       // 标记流式结束，解锁 generator 进入下一轮
       this.isStreaming = false;
       this.signalTurnComplete();
+    } else {
+      console.log(`${logTag} unhandled event type: ${msg.type}`);
     }
   }
 
@@ -555,6 +571,10 @@ class SessionRunner {
 
     // 构建 SDK 用户消息
     // generator 模式下 message 必须是 MessageParam 对象（不能是裸字符串）
+    // 如果内存中没有 sdkSessionId，尝试从 SessionStore 恢复（跨 sidecar resume）
+    if (!this.sdkSessionId) {
+      this.sdkSessionId = SessionStore.getSdkSessionId(activeSessionId) ?? null;
+    }
     const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let messageContent: { role: 'user'; content: any };

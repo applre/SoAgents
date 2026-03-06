@@ -69,6 +69,10 @@ export function createSseHandler(): (req: Request) => Response {
 
 export function broadcast(event: string, data: unknown): void {
   const payload = data === null ? 'null' : JSON.stringify(data);
+  // 关键事件记录 SSE 客户端数和事件类型（排除高频 delta 和 log）
+  if (event !== 'chat:thinking-chunk' && event !== 'chat:tool-input-delta' && event !== 'chat:log') {
+    console.log(`[SSE] broadcast ${event} → ${clients.size} client(s)`);
+  }
   for (const client of clients.values()) {
     client.send(event, payload);
   }

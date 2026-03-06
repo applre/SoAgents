@@ -210,6 +210,23 @@ export function updateTitle(sessionId: string, title: string): void {
   });
 }
 
+export function saveSdkSessionId(sessionId: string, sdkSessionId: string): void {
+  if (!isValidId(sessionId)) return;
+  withLock(() => {
+    const sessions = readIndex();
+    const idx = sessions.findIndex(s => s.id === sessionId);
+    if (idx === -1) return;
+    sessions[idx].sdkSessionId = sdkSessionId;
+    writeIndex(sessions);
+  });
+}
+
+export function getSdkSessionId(sessionId: string): string | undefined {
+  if (!isValidId(sessionId)) return undefined;
+  const sessions = readIndex();
+  return sessions.find(s => s.id === sessionId)?.sdkSessionId;
+}
+
 export function deleteSession(sessionId: string): void {
   if (!isValidId(sessionId)) throw new Error('Invalid session ID');
   const filePath = join(SESSIONS_DIR, `${sessionId}.jsonl`);
