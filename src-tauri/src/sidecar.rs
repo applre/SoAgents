@@ -11,14 +11,12 @@ const SIDECAR_MARKER: &str = "--soagents-sidecar";
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SidecarOwner {
     Session(String),
-    ScheduledTask(String),
 }
 
 pub struct SidecarInstance {
     pub process: Child,
     pub port: u16,
     pub agent_dir: Option<PathBuf>,
-    pub healthy: bool,
     pub owners: HashSet<SidecarOwner>,
 }
 
@@ -365,7 +363,6 @@ impl SidecarManager {
                 process: child,
                 port,
                 agent_dir,
-                healthy,
                 owners: initial_owners,
             },
         );
