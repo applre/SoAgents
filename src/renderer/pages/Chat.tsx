@@ -7,6 +7,7 @@ import ChatInput from '../components/ChatInput';
 import PermissionPrompt from '../components/PermissionPrompt';
 import AskUserQuestionPrompt from '../components/AskUserQuestionPrompt';
 import UnifiedLogsPanel from '../components/UnifiedLogsPanel';
+import QueuedMessagesPanel from '../components/QueuedMessagesPanel';
 import type { Tab } from '../types/tab';
 import type { SessionMetadata } from '../../shared/types/session';
 
@@ -37,7 +38,7 @@ interface ChatContentProps {
 }
 
 function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: ChatContentProps) {
-  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady, unifiedLogs, clearUnifiedLogs } = useTabState();
+  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
   const { config } = useConfig();
   const [showLogs, setShowLogs] = useState(false);
 
@@ -54,9 +55,11 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
   }, [sessions, sessionsFetched, onSessionsChange, tabId]);
 
   // 同步当前 session id 给 App
+  // 守卫：当 tab 指定了目标 session 但尚未加载完成时，跳过同步，避免用旧值覆盖 activeSessionId
   useEffect(() => {
+    if (sessionId && currentSessionId !== sessionId) return;
     onActiveSessionChange?.(currentSessionId);
-  }, [currentSessionId, onActiveSessionChange]);
+  }, [currentSessionId, onActiveSessionChange, sessionId]);
 
   // 暴露 resetSession 给 App
   useEffect(() => {
@@ -120,6 +123,11 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
           onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
         />
       )}
+      <QueuedMessagesPanel
+        queuedMessages={queuedMessages}
+        onCancel={(queueId) => cancelQueuedMessage(queueId)}
+        onForceExecute={(queueId) => forceExecuteQueuedMessage(queueId)}
+      />
       <div className="relative">
         <ChatInput
           onSend={sendMessage}

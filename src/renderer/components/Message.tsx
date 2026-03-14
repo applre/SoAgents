@@ -8,10 +8,11 @@ import CodeBlock from './markdown/CodeBlock';
 
 interface Props {
   message: Message;
+  isStreaming?: boolean;
   onOpenUrl?: (url: string) => void;
 }
 
-export default function MessageItem({ message, onOpenUrl }: Props) {
+export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -140,7 +141,10 @@ export default function MessageItem({ message, onOpenUrl }: Props) {
       >
         {message.blocks.map((block, i) => {
           if (block.type === 'thinking') {
-            return <ThinkingBlock key={i} text={block.thinking} />;
+            // 流式阶段且该消息只有 thinking block（text 还没来）→ 默认展开
+            const hasTextBlock = message.blocks.some((b) => b.type === 'text');
+            const isActiveThinking = isStreaming && !hasTextBlock;
+            return <ThinkingBlock key={i} text={block.thinking} defaultOpen={isActiveThinking} isActive={isActiveThinking} />;
           }
           if (block.type === 'tool_use') {
             return <ToolUse key={i} block={block} />;
@@ -205,18 +209,37 @@ export default function MessageItem({ message, onOpenUrl }: Props) {
   );
 }
 
-function ThinkingBlock({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+function ThinkingBlock({ text, defaultOpen, isActive }: { text: string; defaultOpen?: boolean; isActive?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const wasActiveRef = useRef(isActive);
+
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current) {
+      // 思考开始 → 自动展开
+      setOpen(true);
+    } else if (!isActive && wasActiveRef.current) {
+      // 思考结束（text 开始输出）→ 自动折叠
+      setOpen(false);
+    }
+    wasActiveRef.current = isActive;
+  }, [isActive]);
+
   return (
     <div className="mb-2 text-xs">
       <button
         className="text-[var(--ink-tertiary)] italic hover:text-[var(--ink-secondary)] flex items-center gap-1"
         onClick={() => setOpen((v) => !v)}
       >
-        {open ? '▾' : '▸'} 思考过程
+        {isActive && <span className="text-[var(--accent)] animate-pulse">●</span>}
+        {open ? '▾' : '▸'} {isActive ? '正在思考…' : '思考过程'}
       </button>
       {open && (
-        <div className="mt-1 pl-3 border-l border-[var(--border)] text-[var(--ink-tertiary)] italic whitespace-pre-wrap">
+        <div
+          ref={contentRef}
+          className="mt-1 pl-3 border-l border-[var(--border)] text-[var(--ink-tertiary)] italic whitespace-pre-wrap max-h-48 overflow-y-auto"
+        >
           {text}
         </div>
       )}

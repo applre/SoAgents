@@ -14,11 +14,31 @@ interface ChatImage {
   data: string; // 纯 base64
 }
 
+/** OpenAI Bridge 上游配置（当 apiProtocol === 'openai' 时存储） */
+export interface OpenAiBridgeConfig {
+  baseUrl: string;
+  apiKey: string;
+  maxOutputTokens?: number;
+  upstreamFormat?: 'chat_completions' | 'responses';
+}
+
+/** 当前 OpenAI bridge 配置（模块级，供 bridge handler 读取） */
+let currentOpenAiBridgeConfig: OpenAiBridgeConfig | null = null;
+
+/** 获取当前 OpenAI bridge 配置 */
+export function getOpenAiBridgeConfig(): OpenAiBridgeConfig | null {
+  return currentOpenAiBridgeConfig;
+}
+
 /** 消息队列项 */
 interface QueueItem {
   sdkMessage: SDKUserMessage;
   text: string; // 用于日志和持久化
+  queueId: string;
+  wasQueued: boolean; // 区分直接发送和排队消息
 }
+
+const MAX_QUEUE_SIZE = 10;
 
 /** 会话启动所需的配置快照 */
 interface SessionConfig {
@@ -83,11 +103,40 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string,
     delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
   }
 
-  // 6. OpenAI 协议桥接 — TODO: 需要移植 openai-bridge 模块实现回环翻译
-  // 目前仅记录日志，实际 bridge 功能待后续实现
+  // 6. OpenAI 协议桥接
   if (providerEnv?.apiProtocol === 'openai') {
-    console.warn('[env] apiProtocol=openai detected but bridge not yet implemented');
+    const sidecarPort = parseInt(process.env.PORT || '3000', 10);
+    if (sidecarPort > 0) {
+      // SDK 请求转发到 sidecar 的 loopback 路由，由 sidecar 翻译为 OpenAI 格式
+      env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${sidecarPort}`;
+      env.ANTHROPIC_API_KEY = providerEnv.apiKey ?? '';
+      delete env.ANTHROPIC_AUTH_TOKEN;
+
+      // 清除代理变量，防止 loopback 请求被路由到系统代理
+      for (const proxyVar of [
+        'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY',
+        'ALL_PROXY', 'all_proxy', 'no_proxy', 'NO_PROXY',
+      ]) {
+        delete env[proxyVar];
+      }
+
+      // 存储 upstream 配置供 OpenAI bridge handler 读取
+      currentOpenAiBridgeConfig = {
+        baseUrl: providerEnv.baseUrl ?? '',
+        apiKey: providerEnv.apiKey ?? '',
+        maxOutputTokens: providerEnv.maxOutputTokens,
+        upstreamFormat: providerEnv.upstreamFormat,
+      };
+      console.log(`[env] OpenAI bridge: ANTHROPIC_BASE_URL → loopback :${sidecarPort}, upstream → ${providerEnv.baseUrl}, proxy vars stripped`);
+    } else {
+      console.warn('[env] apiProtocol=openai but sidecar port unavailable');
+      currentOpenAiBridgeConfig = null;
+    }
+    return env;
   }
+
+  // 非 OpenAI 协议时清除 bridge 配置
+  currentOpenAiBridgeConfig = null;
 
   return env;
 }
@@ -173,6 +222,16 @@ class SessionRunner {
     return new Promise(resolve => { this.resolveTurnComplete = resolve; });
   }
 
+  /** session 异常死亡时逐条广播 queue:cancelled */
+  private drainMessageQueue(): void {
+    for (const item of this.messageQueue) {
+      if (item.wasQueued) {
+        broadcast('queue:cancelled', { sessionId: this.sessionId, queueId: item.queueId });
+      }
+    }
+    this.messageQueue.length = 0;
+  }
+
   /** 中止持久 session：唤醒所有被阻塞的 Promise + 中断 subprocess */
   private abortSession(): void {
     this.shouldAbort = true;
@@ -202,13 +261,28 @@ class SessionRunner {
         return;
       }
 
+      // 排队消息：在 yield 前保存用户消息到 SessionStore 并广播 queue:started
+      if (item.wasQueued) {
+        SessionStore.saveMessage(this.sessionId, {
+          id: crypto.randomUUID(),
+          role: 'user',
+          content: item.text,
+          timestamp: new Date().toISOString(),
+        });
+        broadcast('queue:started', {
+          sessionId: this.sessionId,
+          queueId: item.queueId,
+          text: item.text,
+        });
+      }
+
       // 重置每轮状态
       this.turnAssistantContent = '';
       this.turnHasStreamedContent = false;
       this.currentToolId = '';
       this.isStreaming = true;
 
-      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}"`);
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued})`);
       yield item.sdkMessage;
 
       // 等待本轮 AI 回复完成（result 消息到达后解锁）
@@ -261,12 +335,23 @@ class SessionRunner {
       if (mcpFiltered.length > 0) {
         mcpServers = {};
         for (const cfg of mcpFiltered) {
+          // Skip MCP servers that require config but aren't configured yet
+          if (cfg.requiresConfig?.length) {
+            const serverEnv = MCPConfigStore.getServerEnv(cfg.id);
+            const missing = cfg.requiresConfig.some((key) => !serverEnv[key]);
+            if (missing) continue;
+          }
+
           if (cfg.type === 'stdio') {
             mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env };
-          } else if (cfg.type === 'sse') {
-            mcpServers[cfg.id] = { type: 'sse', url: cfg.url };
-          } else {
-            mcpServers[cfg.id] = { type: 'http', url: cfg.url };
+          } else if (cfg.type === 'sse' || cfg.type === 'http') {
+            // Expand URL templates like {{TAVILY_API_KEY}}
+            let url = cfg.url ?? '';
+            if (url.includes('{{')) {
+              const serverEnv = MCPConfigStore.getServerEnv(cfg.id);
+              url = url.replace(/\{\{(\w+)\}\}/g, (_, key) => serverEnv[key] ?? '');
+            }
+            mcpServers[cfg.id] = { type: cfg.type, url };
           }
         }
       }
@@ -393,8 +478,8 @@ class SessionRunner {
       }
       this.signalTurnComplete();
 
-      // 清空队列中未处理的消息
-      this.messageQueue.length = 0;
+      // Drain：逐条广播 queue:cancelled
+      this.drainMessageQueue();
 
       console.log(`${logPrefix} Subprocess terminated`);
       resolveTermination();
@@ -537,11 +622,36 @@ class SessionRunner {
 
   // ── 公共 API ──
 
-  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<void> {
-    // 如果正在 streaming，拒绝新消息（保持当前语义）
-    if (this.isStreaming) return;
-
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<{ ok: boolean; queued?: boolean; queueId?: string; error?: string }> {
     const activeSessionId = this.sessionId;
+    const queueId = crypto.randomUUID();
+
+    // 如果正在 streaming，排队而不是拒绝
+    if (this.isStreaming) {
+      if (this.messageQueue.length >= MAX_QUEUE_SIZE) {
+        return { ok: false, error: 'queue_full' };
+      }
+
+      // 构建 SDK 用户消息用于排队
+      const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
+      const messageContent = this.buildMessageContent(text, images);
+      const queueItem: QueueItem = {
+        sdkMessage: {
+          type: 'user' as const,
+          message: messageContent,
+          parent_tool_use_id: null,
+          session_id: sdkSid,
+        } as SDKUserMessage,
+        text,
+        queueId,
+        wasQueued: true,
+      };
+
+      this.messageQueue.push(queueItem);
+      broadcast('queue:added', { sessionId: activeSessionId, queueId, text });
+      console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] Message queued (${this.messageQueue.length}/${MAX_QUEUE_SIZE}): "${text.slice(0, 50)}"`);
+      return { ok: true, queued: true, queueId };
+    }
 
     // 保存用户消息到 SessionStore
     SessionStore.saveMessage(activeSessionId, {
@@ -570,31 +680,11 @@ class SessionRunner {
     console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] sendMessage: "${text.slice(0, 50)}" in ${agentDir}, mode: ${resolvedMode}, model: ${model ?? 'default'}, provider: ${providerEnv?.baseUrl ?? 'default(subscription)'}, authType: ${providerEnv?.authType ?? 'N/A'}, apiKey: ${providerEnv?.apiKey ? '***' + providerEnv.apiKey.slice(-4) : 'none'}, images: ${images?.length ?? 0}, sessionActive: ${this.sessionActive}`);
 
     // 构建 SDK 用户消息
-    // generator 模式下 message 必须是 MessageParam 对象（不能是裸字符串）
-    // 如果内存中没有 sdkSessionId，尝试从 SessionStore 恢复（跨 sidecar resume）
     if (!this.sdkSessionId) {
       this.sdkSessionId = SessionStore.getSdkSessionId(activeSessionId) ?? null;
     }
     const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let messageContent: { role: 'user'; content: any };
-
-    if (images && images.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const contentBlocks: any[] = [];
-      if (text) {
-        contentBlocks.push({ type: 'text', text });
-      }
-      for (const img of images) {
-        contentBlocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: img.mimeType, data: img.data },
-        });
-      }
-      messageContent = { role: 'user' as const, content: contentBlocks };
-    } else {
-      messageContent = { role: 'user' as const, content: text };
-    }
+    const messageContent = this.buildMessageContent(text, images);
 
     const queueItem: QueueItem = {
       sdkMessage: {
@@ -604,6 +694,8 @@ class SessionRunner {
         session_id: sdkSid,
       } as SDKUserMessage,
       text,
+      queueId,
+      wasQueued: false,
     };
 
     // 启动会话（如果未运行）
@@ -622,6 +714,56 @@ class SessionRunner {
       // 会话已运行，直接投递
       this.wakeGenerator(queueItem);
     }
+
+    return { ok: true, queued: false };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private buildMessageContent(text: string, images?: ChatImage[]): { role: 'user'; content: any } {
+    if (images && images.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contentBlocks: any[] = [];
+      if (text) {
+        contentBlocks.push({ type: 'text', text });
+      }
+      for (const img of images) {
+        contentBlocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mimeType, data: img.data },
+        });
+      }
+      return { role: 'user' as const, content: contentBlocks };
+    }
+    return { role: 'user' as const, content: text };
+  }
+
+  cancelQueueItem(queueId: string): { ok: boolean; text?: string } {
+    const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
+    if (idx === -1) return { ok: false };
+    const [removed] = this.messageQueue.splice(idx, 1);
+    broadcast('queue:cancelled', { sessionId: this.sessionId, queueId });
+    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Queue item cancelled: "${removed.text.slice(0, 50)}"`);
+    return { ok: true, text: removed.text };
+  }
+
+  forceExecuteQueueItem(queueId: string): boolean {
+    const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
+    if (idx === -1) return false;
+    // 移到队首
+    const [item] = this.messageQueue.splice(idx, 1);
+    this.messageQueue.unshift(item);
+    // 中断当前回复
+    if (this.querySession) {
+      this.querySession.interrupt().catch(() => {});
+    }
+    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Force executing queue item: "${item.text.slice(0, 50)}"`);
+    return true;
+  }
+
+  getQueueStatus(): { queueId: string; text: string }[] {
+    return this.messageQueue
+      .filter((item) => item.wasQueued)
+      .map((item) => ({ queueId: item.queueId, text: item.text }));
   }
 
   stop(): void {

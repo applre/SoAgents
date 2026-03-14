@@ -104,6 +104,14 @@ export default function TaskDetail({ onNavigateToSession }: Props) {
                 {formatScheduleLabel(selectedTask.schedule)}
               </span>
             </div>
+            {selectedTask.schedule.type === 'cron' && selectedTask.schedule.timezone && (
+              <div className="flex justify-between">
+                <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>时区</span>
+                <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+                  {selectedTask.schedule.timezone}
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>工作目录</span>
               <span className="text-[13px] font-medium truncate ml-4" style={{ color: 'var(--ink)' }}>

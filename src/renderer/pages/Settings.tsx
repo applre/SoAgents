@@ -33,6 +33,10 @@ interface McpServerDefinition {
   url?: string;
   headers?: Record<string, string>;
   isBuiltin: boolean;
+  isFree?: boolean;
+  requiresConfig?: string[];
+  configHint?: string;
+  websiteUrl?: string;
 }
 
 interface MCPServerConfig {
@@ -82,6 +86,12 @@ const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucidePro
   { id: 'general',         label: '通用',           Icon: Settings2 },
   { id: 'about',           label: '关于',           Icon: Info },
 ];
+
+/** Parse a string as a positive integer, returning undefined for invalid/non-positive values */
+function parsePositiveInt(value: string): number | undefined {
+  const n = parseInt(value, 10);
+  return Number.isNaN(n) || n <= 0 ? undefined : n;
+}
 
 // ── 输入框公共样式 ────────────────────────────────────────────
 
@@ -323,6 +333,8 @@ function ProviderEditModal({
         isBuiltin: false,
         authType: form.authType,
         apiProtocol: form.apiProtocol === 'openai' ? 'openai' : undefined,
+        ...(form.apiProtocol === 'openai' && form.maxOutputTokens ? { maxOutputTokens: parsePositiveInt(form.maxOutputTokens) } : {}),
+        ...(form.apiProtocol === 'openai' && form.upstreamFormat !== 'chat_completions' ? { upstreamFormat: form.upstreamFormat } : {}),
         config: {
           baseUrl: form.baseUrl.trim() || undefined,
         },
@@ -466,36 +478,82 @@ function ProviderEditModal({
             />
           </div>
 
-          <div>
-            <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">认证方式</label>
-            <p className="mb-1 text-[11px] text-[var(--ink-tertiary)]">请根据供应商认证参数进行选择</p>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2 cursor-pointer">
+          {/* OpenAI Bridge 特有字段 — 仅当 apiProtocol === 'openai' 时显示 */}
+          {!isBuiltin && form.apiProtocol === 'openai' && (
+            <>
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">最大输出 Token</label>
                 <input
-                  type="radio"
-                  name="authType"
-                  value="auth_token"
-                  checked={form.authType === 'auth_token'}
-                  onChange={() => setForm((f) => ({ ...f, authType: 'auth_token' }))}
-                  disabled={isBuiltin}
-                  className="accent-[var(--accent)]"
+                  type="number"
+                  placeholder="8192"
+                  value={form.maxOutputTokens}
+                  onChange={(e) => setForm((f) => ({ ...f, maxOutputTokens: e.target.value }))}
+                  className={inputCls}
                 />
-                <span className="text-[13px] text-[var(--ink)]">AUTH_TOKEN</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="authType"
-                  value="api_key"
-                  checked={form.authType === 'api_key'}
-                  onChange={() => setForm((f) => ({ ...f, authType: 'api_key' }))}
-                  disabled={isBuiltin}
-                  className="accent-[var(--accent)]"
-                />
-                <span className="text-[13px] text-[var(--ink)]">API_KEY</span>
-              </label>
+              </div>
+              <div>
+                <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">接口格式</label>
+                <div className="flex gap-4 mt-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="upstreamFormat"
+                      value="chat_completions"
+                      checked={form.upstreamFormat === 'chat_completions'}
+                      onChange={() => setForm((f) => ({ ...f, upstreamFormat: 'chat_completions' }))}
+                      className="accent-[var(--accent)]"
+                    />
+                    <span className="text-[13px] text-[var(--ink)]">Chat Completions</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="upstreamFormat"
+                      value="responses"
+                      checked={form.upstreamFormat === 'responses'}
+                      onChange={() => setForm((f) => ({ ...f, upstreamFormat: 'responses' }))}
+                      className="accent-[var(--accent)]"
+                    />
+                    <span className="text-[13px] text-[var(--ink)]">Responses API</span>
+                  </label>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* 认证方式 — 仅 Anthropic 协议时显示（OpenAI 协议强制 api_key） */}
+          {form.apiProtocol !== 'openai' && (
+            <div>
+              <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">认证方式</label>
+              <p className="mb-1 text-[11px] text-[var(--ink-tertiary)]">请根据供应商认证参数进行选择</p>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="authType"
+                    value="auth_token"
+                    checked={form.authType === 'auth_token'}
+                    onChange={() => setForm((f) => ({ ...f, authType: 'auth_token' }))}
+                    disabled={isBuiltin}
+                    className="accent-[var(--accent)]"
+                  />
+                  <span className="text-[13px] text-[var(--ink)]">AUTH_TOKEN</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="authType"
+                    value="api_key"
+                    checked={form.authType === 'api_key'}
+                    onChange={() => setForm((f) => ({ ...f, authType: 'api_key' }))}
+                    disabled={isBuiltin}
+                    className="accent-[var(--accent)]"
+                  />
+                  <span className="text-[13px] text-[var(--ink)]">API_KEY</span>
+                </label>
+              </div>
             </div>
-          </div>
+          )}
 
           <div>
             <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">
@@ -712,6 +770,8 @@ function ProviderConfigModal({
         model: provider.primaryModel,
         authType: provider.authType,
         apiProtocol: provider.apiProtocol,
+        maxOutputTokens: provider.maxOutputTokens,
+        upstreamFormat: provider.upstreamFormat,
       });
       setValidResult(resp.result);
       if (resp.error) setValidError(resp.error);
@@ -922,6 +982,12 @@ function ProviderTab() {
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusData | null>(null);
   const verifyStatusCacheRef = useRef<Record<string, ProviderVerifyStatus>>({});
 
+  // ── API Key 验证状态（非订阅供应商） ──
+  const [verifyLoading, setVerifyLoading] = useState<Record<string, boolean>>({});
+  const [verifyError, setVerifyError] = useState<Record<string, string>>({});
+  const verifyGenRef = useRef<Record<string, number>>({});
+  const verifyTimeoutRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
   const SUBSCRIPTION_PROVIDER_ID = 'anthropic-sub';
 
   // 保存验证状态到后端持久化
@@ -1042,12 +1108,89 @@ function ProviderTab() {
     }
   }, [subscriptionStatus, saveVerifyStatus]);
 
+  // ── API Key 验证（防抖 + generation counter 防竞态） ──
+  const verifyProvider = useCallback(async (provider: Provider, apiKey: string) => {
+    if (!apiKey || !provider.config?.baseUrl) return;
+
+    const gen = (verifyGenRef.current[provider.id] ?? 0) + 1;
+    verifyGenRef.current[provider.id] = gen;
+
+    setVerifyLoading((prev) => ({ ...prev, [provider.id]: true }));
+    setVerifyError((prev) => ({ ...prev, [provider.id]: '' }));
+
+    try {
+      const resp = await globalApiPostJson<{ result: 'ok' | 'fail'; error?: string }>('/api/verify-provider-key', {
+        baseUrl: provider.config.baseUrl,
+        apiKey,
+        model: provider.primaryModel,
+        authType: provider.authType,
+        apiProtocol: provider.apiProtocol,
+        maxOutputTokens: provider.maxOutputTokens,
+        upstreamFormat: provider.upstreamFormat,
+      });
+
+      // 竞态守卫：只接受最新一次验证的结果
+      if (verifyGenRef.current[provider.id] !== gen) return;
+
+      const newStatus = resp.result === 'ok' ? 'valid' : 'invalid';
+      await saveVerifyStatus(provider.id, newStatus as 'valid' | 'invalid');
+      if (resp.error) setVerifyError((prev) => ({ ...prev, [provider.id]: resp.error! }));
+    } catch {
+      if (verifyGenRef.current[provider.id] !== gen) return;
+    } finally {
+      if (verifyGenRef.current[provider.id] === gen) {
+        setVerifyLoading((prev) => ({ ...prev, [provider.id]: false }));
+      }
+    }
+  }, [saveVerifyStatus]);
+
+  // 清理 debounce timeouts
+  useEffect(() => {
+    const timeouts = verifyTimeoutRef.current;
+    return () => { Object.values(timeouts).forEach(clearTimeout); };
+  }, []);
+
+  // ── mount 时检查所有 API 供应商的验证是否过期 ──
+  const allProvidersRef = useRef(allProviders);
+  allProvidersRef.current = allProviders;
+  const verifyProviderRef = useRef(verifyProvider);
+  verifyProviderRef.current = verifyProvider;
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      allProvidersRef.current.forEach((provider) => {
+        if (provider.type === 'subscription') return;
+        const apiKey = config.apiKeys[provider.id];
+        const cached = verifyStatusCacheRef.current[provider.id];
+        if (apiKey && cached?.verifiedAt && isVerifyExpired(cached.verifiedAt)) {
+          console.log(`[Settings] Provider ${provider.id} verification expired, re-verifying...`);
+          verifyProviderRef.current(provider, apiKey);
+        }
+      });
+    }, 1000);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSetActive = async (providerId: string) => {
     await updateConfig({ currentProviderId: providerId });
   };
 
   const handleSaveKey = async (providerId: string, key: string) => {
     await updateConfig({ apiKeys: { ...config.apiKeys, [providerId]: key } });
+
+    // 防抖自动验证
+    if (verifyTimeoutRef.current[providerId]) {
+      clearTimeout(verifyTimeoutRef.current[providerId]);
+    }
+    if (key) {
+      const provider = allProviders.find((p) => p.id === providerId);
+      if (provider) {
+        verifyTimeoutRef.current[providerId] = setTimeout(() => {
+          verifyProvider(provider, key);
+        }, 500);
+      }
+    }
   };
 
   const handleAddProvider = async (data: Partial<Provider>) => {
@@ -1417,19 +1560,32 @@ function MCPTab() {
   const [loading, setLoading] = useState(true);
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
   const [editMCP, setEditMCP] = useState<(MCPServerConfig & { id: string }) | 'new' | null>(null);
+  const [needsConfig, setNeedsConfig] = useState<Record<string, boolean>>({});
+  const [configDialog, setConfigDialog] = useState<McpServerDefinition | null>(null);
+  const [configEnvValues, setConfigEnvValues] = useState<Record<string, string>>({});
+  const [configSaving, setConfigSaving] = useState(false);
 
   const loadServers = async () => {
     try {
       const data = await globalApiGetJson<{ servers: McpServerDefinition[]; enabledIds: string[] }>('/api/mcp');
       setServers(data.servers);
       setEnabledIds(new Set(data.enabledIds));
+      // Load needs-config status
+      const ncData = await globalApiGetJson<Record<string, boolean>>('/api/mcp/needs-config');
+      setNeedsConfig(ncData);
     } catch { /* ignore */ }
     finally { setLoading(false); }
   };
 
   useEffect(() => { void loadServers(); }, []);
 
-  const handleToggle = async (id: string, enabled: boolean) => {
+  const handleToggle = async (srv: McpServerDefinition, enabled: boolean) => {
+    // If enabling and needs config, open config dialog first
+    if (enabled && srv.requiresConfig?.length && needsConfig[srv.id]) {
+      await openConfigDialog(srv);
+      return;
+    }
+    const id = srv.id;
     setTogglingIds((prev) => new Set([...prev, id]));
     try {
       await globalApiPostJson('/api/mcp/toggle', { id, enabled });
@@ -1446,6 +1602,30 @@ function MCPTab() {
         return next;
       });
     }
+  };
+
+  const openConfigDialog = async (srv: McpServerDefinition) => {
+    try {
+      const allEnv = await globalApiGetJson<Record<string, Record<string, string>>>('/api/mcp/env');
+      setConfigEnvValues(allEnv[srv.id] ?? {});
+    } catch {
+      setConfigEnvValues({});
+    }
+    setConfigDialog(srv);
+  };
+
+  const handleConfigSave = async () => {
+    if (!configDialog) return;
+    setConfigSaving(true);
+    try {
+      await globalApiPutJson('/api/mcp/env', { id: configDialog.id, env: configEnvValues });
+      // Auto-enable after config
+      await globalApiPostJson('/api/mcp/toggle', { id: configDialog.id, enabled: true });
+      setEnabledIds((prev) => new Set([...prev, configDialog.id]));
+      setNeedsConfig((prev) => ({ ...prev, [configDialog.id]: false }));
+      setConfigDialog(null);
+    } catch { /* ignore */ }
+    finally { setConfigSaving(false); }
   };
 
   const handleSave = async (id: string, cfg: Omit<MCPServerConfig, 'id'>) => {
@@ -1488,21 +1668,31 @@ function MCPTab() {
           {servers.map((srv) => {
             const isEnabled = enabledIds.has(srv.id);
             const isToggling = togglingIds.has(srv.id);
+            const showNeedsConfig = srv.requiresConfig?.length && needsConfig[srv.id];
             return (
               <div key={srv.id} className="flex items-center justify-between rounded-[14px] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-sm text-[var(--ink)]">{srv.name}</span>
-                    <span className="text-xs rounded px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)]">{srv.type}</span>
                     {srv.isBuiltin && (
                       <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
-                        内置
+                        预设
+                      </span>
+                    )}
+                    {srv.isFree && (
+                      <span className="text-[10px] rounded px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 font-semibold">
+                        免费
                       </span>
                     )}
                   </div>
                   <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">
-                    {srv.description ?? ''}{srv.description && (srv.command || srv.url) ? ' · ' : ''}{srv.command ?? srv.url ?? ''}
+                    {srv.description ?? ''}
                   </p>
+                  {showNeedsConfig && (
+                    <p className="mt-0.5 text-xs text-amber-600">
+                      ⚠️ 需要配置 API Key
+                    </p>
+                  )}
                 </div>
                 <div className="ml-4 flex items-center gap-3 shrink-0">
                   {isToggling ? (
@@ -1510,17 +1700,27 @@ function MCPTab() {
                   ) : (
                     <ToggleSwitch
                       checked={isEnabled}
-                      onChange={(v) => handleToggle(srv.id, v)}
+                      onChange={(v) => handleToggle(srv, v)}
                     />
                   )}
                   {srv.isBuiltin ? (
-                    <button
-                      onClick={() => setEditMCP({ id: srv.id, name: srv.name, type: srv.type, command: srv.command, args: srv.args, env: srv.env, url: srv.url, headers: srv.headers })}
-                      className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
-                      title="查看"
-                    >
-                      <Eye size={14} />
-                    </button>
+                    srv.requiresConfig?.length ? (
+                      <button
+                        onClick={() => openConfigDialog(srv)}
+                        className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+                        title="配置"
+                      >
+                        <SettingsIcon size={14} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setEditMCP({ id: srv.id, name: srv.name, type: srv.type, command: srv.command, args: srv.args, env: srv.env, url: srv.url, headers: srv.headers })}
+                        className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+                        title="查看"
+                      >
+                        <Eye size={14} />
+                      </button>
+                    )
                   ) : (
                     <>
                       <button
@@ -1569,6 +1769,64 @@ function MCPTab() {
           />
         );
       })()}
+
+      {/* Config Dialog for MCP servers that require API keys */}
+      {configDialog && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => setConfigDialog(null)}>
+          <div className="w-[420px] rounded-2xl bg-[var(--paper)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+              <div>
+                <h3 className="text-[16px] font-semibold text-[var(--ink)]">配置 {configDialog.name}</h3>
+                {configDialog.configHint && (
+                  <p className="mt-1 text-[12px] text-[var(--ink-tertiary)]">{configDialog.configHint}</p>
+                )}
+              </div>
+              <button onClick={() => setConfigDialog(null)} className="text-[var(--ink-tertiary)] hover:text-[var(--ink)]">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              {configDialog.requiresConfig?.map((key) => (
+                <div key={key}>
+                  <label className="block text-[13px] font-medium text-[var(--ink-secondary)] mb-1.5">{key}</label>
+                  <input
+                    type="password"
+                    value={configEnvValues[key] ?? ''}
+                    onChange={(e) => setConfigEnvValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                    placeholder={`输入 ${key}`}
+                    className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[14px] text-[var(--ink)] outline-none focus:border-[var(--accent)]"
+                  />
+                </div>
+              ))}
+              {configDialog.websiteUrl && (
+                <a
+                  href={configDialog.websiteUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline"
+                >
+                  获取 API Key <ExternalLink size={10} />
+                </a>
+              )}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
+              <button
+                onClick={() => setConfigDialog(null)}
+                className="rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)]"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleConfigSave}
+                disabled={configSaving || !configDialog.requiresConfig?.every((k) => configEnvValues[k])}
+                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {configSaving ? '保存中...' : '保存并启用'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

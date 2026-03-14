@@ -468,6 +468,7 @@ export default function App() {
           <LeftSidebar
             sessions={tabSessions[activeTabId] ?? []}
             activeSessionId={activeSessionId}
+            agentDir={activeTab?.agentDir ?? undefined}
             pinnedSessionIds={pinnedSessionIds}
             runningSessions={runningSessions}
             onNewChat={handleNewChat}
@@ -550,6 +551,7 @@ export default function App() {
         {/* 搜索弹窗（收缩侧边栏时使用） */}
         {!showSidebar && showSearch && (
           <SearchModal
+            agentDir={activeTab?.agentDir ?? undefined}
             onSelectSession={handleSelectSession}
             onClose={() => setShowSearch(false)}
           />

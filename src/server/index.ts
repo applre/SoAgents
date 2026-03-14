@@ -76,8 +76,11 @@ const server = Bun.serve({
               baseUrl: provider.config?.baseUrl as string | undefined,
               apiKey,
               authType: provider.authType as ProviderAuthType | undefined,
+              apiProtocol: provider.apiProtocol,
               timeout: provider.config?.timeout as number | undefined,
               disableNonessential: provider.config?.disableNonessential as boolean | undefined,
+              maxOutputTokens: provider.maxOutputTokens,
+              upstreamFormat: provider.upstreamFormat,
             };
           }
         }
@@ -98,8 +101,33 @@ const server = Bun.serve({
         sessionId = session.id;
       }
       const runner = getOrCreateRunner(sessionId);
-      runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images).catch(console.error);
-      return Response.json({ ok: true, sessionId });
+      const sendResult = await runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images);
+      if (!sendResult.ok) {
+        return Response.json({ ok: false, error: sendResult.error }, { status: 429 });
+      }
+      return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/chat/queue/cancel') {
+      const body = await req.json() as { queueId: string };
+      const r = getRunner();
+      if (!r) return Response.json({ ok: false, error: 'no_session' });
+      const result = r.cancelQueueItem(body.queueId);
+      return Response.json(result);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/chat/queue/force') {
+      const body = await req.json() as { queueId: string };
+      const r = getRunner();
+      if (!r) return Response.json({ ok: false });
+      const ok = r.forceExecuteQueueItem(body.queueId);
+      return Response.json({ ok });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/chat/queue/status') {
+      const r = getRunner();
+      if (!r) return Response.json([]);
+      return Response.json(r.getQueueStatus());
     }
 
     if (req.method === "POST" && url.pathname === "/chat/stop") {
@@ -151,13 +179,17 @@ const server = Bun.serve({
     }
 
     if (req.method === 'GET' && url.pathname === '/chat/sessions') {
-      return Response.json(SessionStore.listSessions());
+      const agentDir = url.searchParams.get('agentDir');
+      const all = SessionStore.listSessions();
+      return Response.json(agentDir ? all.filter(s => s.agentDir === agentDir) : all);
     }
 
     if (req.method === 'GET' && url.pathname === '/chat/search') {
       const q = url.searchParams.get('q')?.trim().toLowerCase() ?? '';
       if (!q) return Response.json([]);
-      const sessions = SessionStore.listSessions();
+      const agentDir = url.searchParams.get('agentDir');
+      const allSessions = SessionStore.listSessions();
+      const sessions = agentDir ? allSessions.filter(s => s.agentDir === agentDir) : allSessions;
       const results: { sessionId: string; sessionTitle: string; matches: { id: string; role: string; preview: string }[] }[] = [];
       for (const s of sessions) {
         try {
@@ -350,6 +382,29 @@ const server = Bun.serve({
       const body = await req.json() as { id: string; enabled: boolean };
       MCPConfigStore.setEnabled(body.id, body.enabled);
       return Response.json({ ok: true });
+    }
+
+    // MCP per-server env (API keys)
+    if (req.method === 'GET' && url.pathname === '/api/mcp/env') {
+      return Response.json(MCPConfigStore.getAllServerEnv());
+    }
+
+    if (req.method === 'PUT' && url.pathname === '/api/mcp/env') {
+      const body = await req.json() as { id: string; env: Record<string, string> };
+      MCPConfigStore.setServerEnv(body.id, body.env);
+      return Response.json({ ok: true });
+    }
+
+    // MCP config check (needs-config status for all servers)
+    if (req.method === 'GET' && url.pathname === '/api/mcp/needs-config') {
+      const all = MCPConfigStore.getAll();
+      const result: Record<string, boolean> = {};
+      for (const s of all) {
+        if (s.requiresConfig?.length) {
+          result[s.id] = MCPConfigStore.checkNeedsConfig(s.id);
+        }
+      }
+      return Response.json(result);
     }
 
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/mcp/')) {
@@ -612,7 +667,7 @@ const server = Bun.serve({
       }
 
       const statusResult = Bun.spawnSync(['git', '-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all'], { cwd: agentDir });
-      const output = new TextDecoder().decode(statusResult.stdout).trim();
+      const output = new TextDecoder().decode(statusResult.stdout).trimEnd();
       if (!output) {
         return Response.json({ isGitRepo: true, files: [] });
       }

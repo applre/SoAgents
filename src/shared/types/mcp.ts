@@ -9,4 +9,8 @@ export interface McpServerDefinition {
   url?: string;
   headers?: Record<string, string>;
   isBuiltin: boolean;
+  isFree?: boolean;
+  requiresConfig?: string[];   // e.g. ['GEMINI_API_KEY']
+  configHint?: string;         // UI hint for config
+  websiteUrl?: string;         // where to get API key
 }

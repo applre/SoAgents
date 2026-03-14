@@ -28,11 +28,12 @@ interface SearchResult {
 }
 
 interface Props {
+  agentDir?: string;
   onSelectSession: (sessionId: string) => void;
   onClose: () => void;
 }
 
-export default function SearchModal({ onSelectSession, onClose }: Props) {
+export default function SearchModal({ agentDir, onSelectSession, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [recentSessions, setRecentSessions] = useState<SessionMetadata[]>([]);
@@ -43,11 +44,12 @@ export default function SearchModal({ onSelectSession, onClose }: Props) {
 
   useEffect(() => {
     inputRef.current?.focus();
-    // 加载最近对话
-    globalApiGetJson<SessionMetadata[]>('/chat/sessions')
+    // 加载最近对话（按工作区过滤）
+    const params = agentDir ? `?agentDir=${encodeURIComponent(agentDir)}` : '';
+    globalApiGetJson<SessionMetadata[]>(`/chat/sessions${params}`)
       .then((data) => setRecentSessions(data.slice(0, 10)))
       .catch(() => {});
-  }, []);
+  }, [agentDir]);
 
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -60,7 +62,8 @@ export default function SearchModal({ onSelectSession, onClose }: Props) {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        const data = await globalApiGetJson<SearchResult[]>(`/chat/search?q=${encodeURIComponent(q)}`);
+        const agentParam = agentDir ? `&agentDir=${encodeURIComponent(agentDir)}` : '';
+        const data = await globalApiGetJson<SearchResult[]>(`/chat/search?q=${encodeURIComponent(q)}${agentParam}`);
         if (!controller.signal.aborted) setResults(data);
       } catch {
         if (!controller.signal.aborted) setResults([]);
@@ -72,7 +75,7 @@ export default function SearchModal({ onSelectSession, onClose }: Props) {
       if (timerRef.current) clearTimeout(timerRef.current);
       abortRef.current?.abort();
     };
-  }, [query]);
+  }, [query, agentDir]);
 
   const handleSelect = useCallback((sessionId: string) => {
     onSelectSession(sessionId);

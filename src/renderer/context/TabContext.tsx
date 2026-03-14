@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import type { Message, ChatImage } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
 import type { LogEntry } from '../../shared/types/log';
+import type { QueuedMessageInfo } from '../../shared/types/queue';
 
 export interface TabState {
   tabId: string;
@@ -37,6 +38,9 @@ export interface TabState {
   runningSessions: Set<string>;
   unifiedLogs: LogEntry[];
   clearUnifiedLogs: () => void;
+  queuedMessages: QueuedMessageInfo[];
+  cancelQueuedMessage: (queueId: string) => Promise<string | null>;
+  forceExecuteQueuedMessage: (queueId: string) => Promise<boolean>;
 }
 
 export const TabContext = createContext<TabState | null>(null);

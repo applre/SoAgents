@@ -10,6 +10,7 @@ import { isTauri } from '../utils/env';
 import type { Message, ContentBlock, ChatImage } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
 import type { LogEntry } from '../../shared/types/log';
+import type { QueuedMessageInfo } from '../../shared/types/queue';
 import { REACT_LOG_EVENT } from '../utils/frontendLogger';
 import { useContext } from 'react';
 
@@ -49,6 +50,8 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
   const [sidecarReady, setSidecarReady] = useState(false);
   const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
   const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
+  const queuedMessagesRef = useRef<QueuedMessageInfo[]>([]);
 
   // Refs for stable access in sendMessage callback (avoid stale closure)
   const currentProviderRef = useRef(configCtx?.currentProvider);
@@ -338,6 +341,46 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
       }
     });
 
+    // ── 队列事件 ──
+    sse.on('queue:added', (data) => {
+      const evt = data as { queueId: string; text: string };
+      if (!evt.queueId) return;
+      // 去重（sendMessage 响应可能已添加）
+      const exists = queuedMessagesRef.current.some((q) => q.queueId === evt.queueId);
+      if (!exists) {
+        const info: QueuedMessageInfo = { queueId: evt.queueId, text: evt.text, timestamp: Date.now() };
+        queuedMessagesRef.current = [...queuedMessagesRef.current, info];
+        setQueuedMessages(queuedMessagesRef.current);
+      }
+    });
+
+    sse.on('queue:started', (data) => {
+      const evt = data as { queueId: string; text: string };
+      if (!evt.queueId) return;
+      // 从排队列表移除
+      queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== evt.queueId);
+      setQueuedMessages(queuedMessagesRef.current);
+      // 将用户消息加入 messages 列表
+      const targetSessionId = resolveEventSessionId(data) ?? forSessionId;
+      adoptDraftSession(targetSessionId);
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        blocks: [{ type: 'text', text: evt.text }],
+        createdAt: Date.now(),
+      };
+      updateMessagesForSession(targetSessionId, (prev) => [...prev, userMsg]);
+      setIsLoading(true);
+      setSessionState('running');
+    });
+
+    sse.on('queue:cancelled', (data) => {
+      const evt = data as { queueId: string };
+      if (!evt.queueId) return;
+      queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== evt.queueId);
+      setQueuedMessages(queuedMessagesRef.current);
+    });
+
     // ── 统一日志: 接收 Bun/Rust 层日志 ──
     sse.on('chat:log', (data) => {
       const entry = data as LogEntry;
@@ -570,10 +613,7 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
 
   const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[]) => {
     let currentSessionId = activeSessionIdRef.current;
-    // 同一 session 不能同时发两条消息
-    if (currentSessionId && runningSessionsRef.current.has(currentSessionId)) {
-      return;
-    }
+    const isCurrentlyRunning = currentSessionId && runningSessionsRef.current.has(currentSessionId);
 
     // ── 前端展示用 blocks（用户 Prompt 优先，skill/图片在后） ──
     const blocks: Message['blocks'] = [];
@@ -600,9 +640,13 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
       blocks,
       createdAt: Date.now(),
     };
-    updateMessagesForSession(currentSessionId, (prev) => [...prev, userMsg]);
-    setIsLoading(true);
-    setSessionState('running');
+
+    // 非排队时立即显示用户消息；排队时延迟到 queue:started
+    if (!isCurrentlyRunning) {
+      updateMessagesForSession(currentSessionId, (prev) => [...prev, userMsg]);
+      setIsLoading(true);
+      setSessionState('running');
+    }
 
     // ── 后端实际发送的消息（用户文本优先，skill 内容在后） ──
     const skillContents = skills?.map(s => s.content).filter(Boolean) ?? [];
@@ -646,13 +690,15 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         refreshSessions().catch(console.error);
       }
 
-      runningSessionsRef.current.add(currentSessionId);
-      setRunningSessions(new Set(runningSessionsRef.current));
+      if (!isCurrentlyRunning) {
+        runningSessionsRef.current.add(currentSessionId);
+        setRunningSessions(new Set(runningSessionsRef.current));
+      }
 
       // 确保 session sidecar 运行
       const url = await ensureSessionSidecar(currentSessionId);
 
-      const resp = await apiPostJson<{ ok: boolean; sessionId: string | null }>(url, '/chat/send', {
+      const resp = await apiPostJson<{ ok: boolean; sessionId: string | null; queued?: boolean; queueId?: string }>(url, '/chat/send', {
         sessionId: currentSessionId,
         message: backendMessage,
         agentDir,
@@ -662,19 +708,32 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         mcpEnabledServerIds: ws?.mcpEnabledServers,
         images,
       });
+
+      // 如果消息被排队，加入 queuedMessages 状态
+      if (resp.queued && resp.queueId) {
+        const queuedInfo: QueuedMessageInfo = {
+          queueId: resp.queueId,
+          text: text,
+          timestamp: Date.now(),
+        };
+        queuedMessagesRef.current = [...queuedMessagesRef.current, queuedInfo];
+        setQueuedMessages(queuedMessagesRef.current);
+      }
+
       const assignedSessionId = resp.sessionId;
       if (assignedSessionId && assignedSessionId !== currentSessionId) {
-        // Server assigned a different session ID (shouldn't happen normally)
         runningSessionsRef.current.add(assignedSessionId);
         setRunningSessions(new Set(runningSessionsRef.current));
       }
     } catch {
-      if (currentSessionId) {
+      if (currentSessionId && !isCurrentlyRunning) {
         runningSessionsRef.current.delete(currentSessionId);
         setRunningSessions(new Set(runningSessionsRef.current));
       }
-      setIsLoading(false);
-      setSessionState('error');
+      if (!isCurrentlyRunning) {
+        setIsLoading(false);
+        setSessionState('error');
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- provider/config refs are stable
   }, [agentDir, refreshSessions, updateMessagesForSession, ensureSessionSidecar, getGlobalUrl]);
@@ -702,6 +761,8 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     setSessionId(null);
     setPendingPermission(null);
     setPendingQuestion(null);
+    queuedMessagesRef.current = [];
+    setQueuedMessages([]);
     await refreshSessions().catch(() => {});
   }, [refreshSessions, toSessionKey]);
 
@@ -830,6 +891,29 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     [getGlobalUrl]
   );
 
+  const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
+    const sid = activeSessionIdRef.current;
+    if (!sid) return null;
+    const url = serverUrlMapRef.current.get(sid);
+    if (!url) return null;
+    const resp = await apiPostJson<{ ok: boolean; text?: string }>(url, '/chat/queue/cancel', { queueId });
+    if (resp.ok) {
+      queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== queueId);
+      setQueuedMessages(queuedMessagesRef.current);
+      return resp.text ?? null;
+    }
+    return null;
+  }, []);
+
+  const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
+    const sid = activeSessionIdRef.current;
+    if (!sid) return false;
+    const url = serverUrlMapRef.current.get(sid);
+    if (!url) return false;
+    const resp = await apiPostJson<{ ok: boolean }>(url, '/chat/queue/force', { queueId });
+    return resp.ok;
+  }, []);
+
   const respondPermission = useCallback(async (toolUseId: string, allow: boolean) => {
     const sid = activeSessionIdRef.current;
     if (!sid) return;
@@ -875,8 +959,11 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
       runningSessions,
       unifiedLogs,
       clearUnifiedLogs,
+      queuedMessages,
+      cancelQueuedMessage,
+      forceExecuteQueuedMessage,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, refreshSessions, runningSessions, unifiedLogs, clearUnifiedLogs]
+    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, refreshSessions, runningSessions, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage]
   );
 
   return <TabContext.Provider value={value}>{children}</TabContext.Provider>;

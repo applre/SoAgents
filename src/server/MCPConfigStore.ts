@@ -6,6 +6,7 @@ import { PRESET_MCP_SERVERS } from '../shared/mcp-presets';
 
 const MCP_CONFIG_PATH = join(homedir(), '.soagents', 'mcp.json');
 const MCP_STATE_PATH = join(homedir(), '.soagents', 'mcp-state.json');
+const MCP_ENV_PATH = join(homedir(), '.soagents', 'mcp-env.json');
 
 // 保留旧接口用于文件读写（向后兼容 mcp.json 格式）
 export interface MCPServerConfig {
@@ -155,4 +156,53 @@ export function remove(id: string): boolean {
  */
 export function isBuiltin(id: string): boolean {
   return PRESET_MCP_SERVERS.some((p) => p.id === id);
+}
+
+// ── Per-server environment variables (API keys etc.) ──
+
+function readMcpEnv(): Record<string, Record<string, string>> {
+  if (!existsSync(MCP_ENV_PATH)) return {};
+  try {
+    return JSON.parse(readFileSync(MCP_ENV_PATH, 'utf-8')) as Record<string, Record<string, string>>;
+  } catch {
+    return {};
+  }
+}
+
+function writeMcpEnv(data: Record<string, Record<string, string>>): void {
+  ensureDir(MCP_ENV_PATH);
+  writeFileSync(MCP_ENV_PATH, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+/**
+ * 获取指定 MCP 的环境变量
+ */
+export function getServerEnv(id: string): Record<string, string> {
+  return readMcpEnv()[id] ?? {};
+}
+
+/**
+ * 获取所有 MCP 的环境变量
+ */
+export function getAllServerEnv(): Record<string, Record<string, string>> {
+  return readMcpEnv();
+}
+
+/**
+ * 保存指定 MCP 的环境变量
+ */
+export function setServerEnv(id: string, env: Record<string, string>): void {
+  const all = readMcpEnv();
+  all[id] = env;
+  writeMcpEnv(all);
+}
+
+/**
+ * 检查需要配置的 MCP 是否已配置完成
+ */
+export function checkNeedsConfig(id: string): boolean {
+  const preset = PRESET_MCP_SERVERS.find((p) => p.id === id);
+  if (!preset?.requiresConfig?.length) return false;
+  const env = getServerEnv(id);
+  return preset.requiresConfig.some((key) => !env[key]);
 }
