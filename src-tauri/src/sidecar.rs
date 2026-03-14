@@ -321,8 +321,7 @@ impl SidecarManager {
         }
 
         // Health check
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
+        let client = crate::local_http::blocking_builder()
             .build()
             .unwrap_or_default();
         let health_url = format!("http://127.0.0.1:{}/health", port);

@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmdirSync, statSync, copyFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const GLOBAL_SKILLS_DIR = join(homedir(), '.soagents', 'skills');
 const SKILLS_CONFIG_PATH = join(homedir(), '.soagents', 'skills-config.json');
@@ -31,22 +32,11 @@ interface SkillsConfig {
 }
 
 function readSkillsConfig(): SkillsConfig {
-  if (!existsSync(SKILLS_CONFIG_PATH)) {
-    return { seeded: [], disabled: [] };
-  }
-  try {
-    return JSON.parse(readFileSync(SKILLS_CONFIG_PATH, 'utf-8')) as SkillsConfig;
-  } catch {
-    return { seeded: [], disabled: [] };
-  }
+  return safeLoadJsonSync<SkillsConfig>(SKILLS_CONFIG_PATH, { seeded: [], disabled: [] });
 }
 
 function writeSkillsConfig(config: SkillsConfig): void {
-  const dir = dirname(SKILLS_CONFIG_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(SKILLS_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  safeWriteJsonSync(SKILLS_CONFIG_PATH, config);
 }
 
 function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {

@@ -1,8 +1,9 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, statSync, rmdirSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, appendFileSync, readFileSync, statSync, rmdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import crypto from 'node:crypto';
 import type { SessionMetadata, SessionMessage, SessionStats } from '../shared/types/session';
+import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const SOAGENTS_DIR = join(homedir(), '.soagents');
 const SESSIONS_DIR = join(SOAGENTS_DIR, 'sessions');
@@ -71,18 +72,12 @@ function withLock<T>(fn: () => T): T {
 }
 
 function readIndex(): SessionMetadata[] {
-  if (!existsSync(SESSIONS_INDEX)) return [];
-  try {
-    const content = readFileSync(SESSIONS_INDEX, 'utf8');
-    return JSON.parse(content) as SessionMetadata[];
-  } catch {
-    return [];
-  }
+  return safeLoadJsonSync<SessionMetadata[]>(SESSIONS_INDEX, []);
 }
 
 function writeIndex(sessions: SessionMetadata[]): void {
   ensureDirs();
-  writeFileSync(SESSIONS_INDEX, JSON.stringify(sessions, null, 2), 'utf8');
+  safeWriteJsonSync(SESSIONS_INDEX, sessions);
 }
 
 function isValidId(id: string): boolean {
