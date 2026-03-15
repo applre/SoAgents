@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Brain, Settings2,
+  Brain, Settings2, BarChart2,
   KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Puzzle, Wrench, X,
-  Info, FolderOpen, ExternalLink, Eye, Loader2, AlertCircle,
+  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
@@ -16,9 +16,12 @@ import {
   globalApiPutJson,
 } from '../api/apiFetch';
 import CustomSelect from '../components/CustomSelect';
+import { ExternalLink } from '../components/ExternalLink';
+import { openExternal } from '../utils/openExternal';
 import { useAutostart } from '../hooks/useAutostart';
 import { isTauri } from '../utils/env';
 import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
+import UsageStatsPanel from '../components/UsageStatsPanel';
 
 // ── 类型定义 ──────────────────────────────────────────────────
 
@@ -77,12 +80,13 @@ interface SubscriptionStatusData {
   verifyError?: string;
 }
 
-type NavId = 'provider' | 'mcp' | 'skills' | 'general' | 'about';
+type NavId = 'provider' | 'mcp' | 'skills' | 'usage' | 'general' | 'about';
 
 const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucideProps> }[] = [
   { id: 'provider',        label: '模型供应商',     Icon: Brain },
   { id: 'skills',          label: 'Skills',         Icon: Puzzle },
   { id: 'mcp',             label: 'MCP',            Icon: Wrench },
+  { id: 'usage',           label: '使用统计',       Icon: BarChart2 },
   { id: 'general',         label: '通用',           Icon: Settings2 },
   { id: 'about',           label: '关于',           Icon: Info },
 ];
@@ -105,62 +109,122 @@ function ProviderCard({
   apiKey,
   isActive,
   subscriptionStatus,
-  onOpenDetail,
   onOpenEdit,
+  onSaveKey,
   onReVerifySubscription,
+  isVerifyLoading,
+  verifyStatus,
+  verifyError,
+  onVerify,
 }: {
   provider: Provider;
   apiKey: string;
   isActive: boolean;
   subscriptionStatus?: SubscriptionStatusData | null;
-  onOpenDetail: () => void;
   onOpenEdit: () => void;
+  onSaveKey: (id: string, key: string) => void;
   onReVerifySubscription?: () => void;
+  isVerifyLoading?: boolean;
+  verifyStatus?: 'valid' | 'invalid';
+  verifyError?: string;
+  onVerify?: () => void;
 }) {
-  const hasKey = !!apiKey;
-
   return (
     <div
-      onClick={onOpenDetail}
-      className={`rounded-[14px] border bg-[var(--surface)] p-5 flex flex-col gap-3 transition-all cursor-pointer ${
+      className={`rounded-[14px] border bg-[var(--surface)] p-5 flex flex-col gap-3 transition-all ${
         isActive
           ? 'border-[var(--accent)]/60 shadow-sm'
-          : 'border-[var(--border)] hover:border-[var(--accent)]/30 hover:shadow-sm'
+          : 'border-[var(--border)]'
       }`}
     >
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-[15px] font-semibold text-[var(--ink)]">{provider.name}</span>
-          {isActive ? (
-            <span className="rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--accent)] text-white">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-[15px] font-semibold text-[var(--ink)] truncate">{provider.name}</span>
+          {isActive && (
+            <span className="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--accent)] text-white">
               使用中
             </span>
-          ) : provider.cloudProvider === '官方' ? (
-            <span className="rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--accent-light)] text-[var(--accent)]">
-              官方
-            </span>
-          ) : hasKey ? (
-            <span className="rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--success)]/10 text-[var(--success)]">
-              已配置
-            </span>
-          ) : (
-            <span className="rounded px-2 py-0.5 text-[11px] font-medium bg-[var(--hover)] text-[var(--ink-tertiary)]">
-              未配置
-            </span>
+          )}
+          <span className="shrink-0 rounded bg-[var(--hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-tertiary)]">{provider.cloudProvider}</span>
+          {provider.apiProtocol === 'openai' && (
+            <span className="shrink-0 rounded bg-[var(--hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-tertiary)]">OpenAI 协议</span>
           )}
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenEdit();
-          }}
-          className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
-        >
-          <SettingsIcon size={15} />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {provider.websiteUrl && (
+            <ExternalLink
+              href={provider.websiteUrl}
+              className="rounded p-1.5 text-[11px] text-[var(--ink-tertiary)] hover:text-[var(--accent)] transition-colors"
+            >
+              去官网
+            </ExternalLink>
+          )}
+          <button
+            onClick={onOpenEdit}
+            className="rounded p-1.5 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+            title="管理"
+          >
+            <Settings2 size={15} />
+          </button>
+        </div>
       </div>
       {provider.models?.length > 0 && (
         <p className="text-[13px] text-[var(--ink-secondary)]">{getModelsDisplay(provider)}</p>
+      )}
+      {/* API Provider: 内联 API Key 输入 */}
+      {provider.type !== 'subscription' && (
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--ink-tertiary)]" />
+            <input
+              type="password"
+              placeholder="输入 API Key"
+              value={apiKey}
+              onChange={(e) => onSaveKey(provider.id, e.target.value)}
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--paper)] py-2.5 pl-9 pr-3 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none transition-colors focus:border-[var(--accent)]"
+            />
+          </div>
+          {/* 验证状态 */}
+          {apiKey && (
+            <div className="flex items-center gap-1 shrink-0">
+              {isVerifyLoading && (
+                <div className="flex h-[38px] w-[38px] items-center justify-center rounded-lg bg-[var(--hover)]">
+                  <Loader2 size={14} className="animate-spin text-[var(--ink-tertiary)]" />
+                </div>
+              )}
+              {!isVerifyLoading && verifyStatus === 'valid' && (
+                <div className="flex h-[38px] w-[38px] items-center justify-center rounded-lg bg-[var(--success)]/10">
+                  <CircleCheck size={14} className="text-[var(--success)]" />
+                </div>
+              )}
+              {!isVerifyLoading && verifyStatus === 'invalid' && (
+                <div
+                  className="flex h-[38px] w-[38px] items-center justify-center rounded-lg bg-red-50"
+                  title={verifyError || '验证失败'}
+                >
+                  <AlertCircle size={14} className="text-red-400" />
+                </div>
+              )}
+              {!isVerifyLoading && !verifyStatus && (
+                <div className="flex h-[38px] w-[38px] items-center justify-center rounded-lg bg-[var(--hover)]" title="待验证">
+                  <AlertCircle size={14} className="text-[var(--ink-tertiary)]" />
+                </div>
+              )}
+              {verifyStatus !== 'valid' && onVerify && (
+                <button
+                  type="button"
+                  onClick={onVerify}
+                  disabled={isVerifyLoading}
+                  className="flex h-[38px] w-[38px] items-center justify-center rounded-lg text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)] disabled:opacity-50"
+                  title="重新验证"
+                >
+                  <RefreshCw size={14} className={isVerifyLoading ? 'animate-spin' : ''} />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       )}
       {/* 订阅 Provider: 显示账户信息和验证状态 */}
       {provider.type === 'subscription' && (
@@ -184,7 +248,7 @@ function ProviderCard({
                     {onReVerifySubscription && (
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); onReVerifySubscription(); }}
+                        onClick={onReVerifySubscription}
                         className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
                         title="重新验证"
                       >
@@ -200,7 +264,7 @@ function ProviderCard({
                     {onReVerifySubscription && (
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); onReVerifySubscription(); }}
+                        onClick={onReVerifySubscription}
                         className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
                         title="重新验证"
                       >
@@ -219,15 +283,6 @@ function ProviderCard({
               </span>
             ) : null}
           </div>
-        </div>
-      )}
-      {/* API Provider: 显示 cloudProvider 标签 */}
-      {provider.type !== 'subscription' && (
-        <div className="flex items-center gap-1.5">
-          <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-tertiary)]">{provider.cloudProvider}</span>
-          {provider.apiProtocol === 'openai' && (
-            <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-tertiary)]">OpenAI 协议</span>
-          )}
         </div>
       )}
     </div>
@@ -381,10 +436,10 @@ function ProviderEditModal({
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
             <h3 className="text-[17px] font-bold text-[var(--ink)]">
-              {isNew ? '添加自定义供应商' : isBuiltin ? '管理供应商模型' : '编辑供应商'}
+              {isNew ? '添加自定义供应商' : isBuiltin ? '管理供应商' : '编辑供应商'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">
-              {isBuiltin ? '预设供应商可追加自定义模型' : '配置供应商基本信息'}
+              {isBuiltin ? '查看供应商信息，追加自定义模型' : '配置供应商基本信息'}
             </p>
           </div>
           <button
@@ -403,82 +458,99 @@ function ProviderEditModal({
             </div>
           )}
 
+          {/* 供应商名称 */}
           <div>
             <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">
               供应商名称 {!isBuiltin && <span className="text-red-400">*</span>}
             </label>
-            <input
-              type="text"
-              placeholder="例如: My Custom Provider"
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              disabled={isBuiltin}
-              className={inputCls}
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">服务商标签</label>
-            <input
-              type="text"
-              placeholder="例如: 云服务商"
-              value={form.vendor}
-              onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
-              disabled={isBuiltin}
-              className={inputCls}
-            />
-          </div>
-
-          <div>
-            <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">API 协议</label>
-            {form.apiProtocol === 'openai' && (
-              <p className="mb-1 text-[11px] text-[var(--ink-tertiary)]">
-                通过内置桥接自动转换为 Anthropic 协议，存在稳定性风险
-              </p>
+            {isBuiltin ? (
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-[13px] text-[var(--ink-tertiary)]">
+                {form.name}
+              </div>
+            ) : (
+              <input
+                type="text"
+                placeholder="例如: My Custom Provider"
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                className={inputCls}
+              />
             )}
-            <div className={`flex gap-4${form.apiProtocol !== 'openai' ? ' mt-1' : ''}`}>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="apiProtocol"
-                  value="anthropic"
-                  checked={form.apiProtocol !== 'openai'}
-                  onChange={() => setForm((f) => ({ ...f, apiProtocol: 'anthropic' as ApiProtocol, authType: 'auth_token' as const }))}
-                  disabled={isBuiltin}
-                  className="accent-[var(--accent)]"
-                />
-                <span className="text-[13px] text-[var(--ink)]">Anthropic 兼容</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="apiProtocol"
-                  value="openai"
-                  checked={form.apiProtocol === 'openai'}
-                  onChange={() => setForm((f) => ({ ...f, apiProtocol: 'openai' as ApiProtocol, authType: 'api_key' as const }))}
-                  disabled={isBuiltin}
-                  className="accent-[var(--accent)]"
-                />
-                <span className="text-[13px] text-[var(--ink)]">OpenAI 兼容</span>
-              </label>
-            </div>
           </div>
 
+          {/* 服务商标签 — 仅自定义供应商 */}
+          {!isBuiltin && (
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">服务商标签</label>
+              <input
+                type="text"
+                placeholder="例如: 云服务商"
+                value={form.vendor}
+                onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
+                className={inputCls}
+              />
+            </div>
+          )}
+
+          {/* API 协议 — 仅自定义供应商 */}
+          {!isBuiltin && (
+            <div>
+              <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">API 协议</label>
+              {form.apiProtocol === 'openai' && (
+                <p className="mb-1 text-[11px] text-[var(--ink-tertiary)]">
+                  通过内置桥接自动转换为 Anthropic 协议，存在稳定性风险
+                </p>
+              )}
+              <div className={`flex gap-4${form.apiProtocol !== 'openai' ? ' mt-1' : ''}`}>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="apiProtocol"
+                    value="anthropic"
+                    checked={form.apiProtocol !== 'openai'}
+                    onChange={() => setForm((f) => ({ ...f, apiProtocol: 'anthropic' as ApiProtocol, authType: 'auth_token' as const }))}
+                    className="accent-[var(--accent)]"
+                  />
+                  <span className="text-[13px] text-[var(--ink)]">Anthropic 兼容</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="apiProtocol"
+                    value="openai"
+                    checked={form.apiProtocol === 'openai'}
+                    onChange={() => setForm((f) => ({ ...f, apiProtocol: 'openai' as ApiProtocol, authType: 'api_key' as const }))}
+                    className="accent-[var(--accent)]"
+                  />
+                  <span className="text-[13px] text-[var(--ink)]">OpenAI 兼容</span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* API Base URL */}
           <div>
             <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">
               API Base URL {!isBuiltin && <span className="text-red-400">*</span>}
             </label>
-            <input
-              type="url"
-              placeholder={form.apiProtocol === 'openai' ? 'https://api.openai.com/v1' : 'https://api.example.com/anthropic'}
-              value={form.baseUrl}
-              onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))}
-              disabled={isBuiltin}
-              className={inputCls}
-            />
+            {isBuiltin ? (
+              form.baseUrl && (
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-[13px] text-[var(--ink-tertiary)] font-mono break-all">
+                  {form.baseUrl}
+                </div>
+              )
+            ) : (
+              <input
+                type="url"
+                placeholder={form.apiProtocol === 'openai' ? 'https://api.openai.com/v1' : 'https://api.example.com/anthropic'}
+                value={form.baseUrl}
+                onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))}
+                className={inputCls}
+              />
+            )}
           </div>
 
-          {/* OpenAI Bridge 特有字段 — 仅当 apiProtocol === 'openai' 时显示 */}
+          {/* OpenAI Bridge 特有字段 — 仅自定义 + openai 协议 */}
           {!isBuiltin && form.apiProtocol === 'openai' && (
             <>
               <div>
@@ -521,8 +593,8 @@ function ProviderEditModal({
             </>
           )}
 
-          {/* 认证方式 — 仅 Anthropic 协议时显示（OpenAI 协议强制 api_key） */}
-          {form.apiProtocol !== 'openai' && (
+          {/* 认证方式 — 仅自定义 + Anthropic 协议 */}
+          {!isBuiltin && form.apiProtocol !== 'openai' && (
             <div>
               <label className="mb-0.5 block text-[12px] font-medium text-[var(--ink-secondary)]">认证方式</label>
               <p className="mb-1 text-[11px] text-[var(--ink-tertiary)]">请根据供应商认证参数进行选择</p>
@@ -534,7 +606,6 @@ function ProviderEditModal({
                     value="auth_token"
                     checked={form.authType === 'auth_token'}
                     onChange={() => setForm((f) => ({ ...f, authType: 'auth_token' }))}
-                    disabled={isBuiltin}
                     className="accent-[var(--accent)]"
                   />
                   <span className="text-[13px] text-[var(--ink)]">AUTH_TOKEN</span>
@@ -546,7 +617,6 @@ function ProviderEditModal({
                     value="api_key"
                     checked={form.authType === 'api_key'}
                     onChange={() => setForm((f) => ({ ...f, authType: 'api_key' }))}
-                    disabled={isBuiltin}
                     className="accent-[var(--accent)]"
                   />
                   <span className="text-[13px] text-[var(--ink)]">API_KEY</span>
@@ -555,9 +625,36 @@ function ProviderEditModal({
             </div>
           )}
 
+          {/* 模型列表 */}
+          {isBuiltin && form.models.length > 0 && (
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">模型列表</label>
+              <div className="flex flex-wrap gap-1.5">
+                {form.models.map((model) => {
+                  const isPresetModel = provider?.models?.some((m) => m.model === model);
+                  const displayName = provider?.models?.find((m) => m.model === model)?.modelName ?? model;
+                  return (
+                    <div key={model} className="flex items-center gap-1 rounded-md bg-[var(--hover)] px-2 py-1 text-[12px] font-medium text-[var(--ink)]">
+                      <span>{displayName}</span>
+                      {isPresetModel && (
+                        <span className="text-[10px] text-[var(--ink-tertiary)] ml-0.5">预设</span>
+                      )}
+                      {!isPresetModel && (
+                        <button type="button" onClick={() => removeModel(model)} className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] hover:text-red-400">
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 添加自定义模型 ID */}
           <div>
             <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">
-              模型 ID {!isBuiltin && <span className="text-red-400">*</span>}
+              {isBuiltin ? '添加自定义模型 ID' : '模型 ID'} {!isBuiltin && <span className="text-red-400">*</span>}
             </label>
             <div className="flex gap-2">
               <input
@@ -577,25 +674,18 @@ function ProviderEditModal({
                 <Plus size={16} />
               </button>
             </div>
-            {form.models.length > 0 && (
+            {/* 自定义供应商: 模型列表在输入框下方 */}
+            {!isBuiltin && form.models.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {form.models.map((model, index) => {
-                  const isPresetModel = isBuiltin && provider?.models?.some((m) => m.model === model);
-                  return (
-                    <div key={model} className="flex items-center gap-1 rounded-md bg-[var(--hover)] px-2 py-1 text-[12px] font-medium text-[var(--ink)]">
-                      <span className="text-[10px] text-[var(--ink-tertiary)]">{index + 1}.</span>
-                      <span>{model}</span>
-                      {isPresetModel && (
-                        <span className="text-[10px] text-[var(--ink-tertiary)] ml-0.5">预设</span>
-                      )}
-                      {!isPresetModel && (
-                        <button type="button" onClick={() => removeModel(model)} className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] hover:text-red-400">
-                          <X size={12} />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
+                {form.models.map((model, index) => (
+                  <div key={model} className="flex items-center gap-1 rounded-md bg-[var(--hover)] px-2 py-1 text-[12px] font-medium text-[var(--ink)]">
+                    <span className="text-[10px] text-[var(--ink-tertiary)]">{index + 1}.</span>
+                    <span>{model}</span>
+                    <button type="button" onClick={() => removeModel(model)} className="ml-0.5 rounded p-0.5 text-[var(--ink-tertiary)] hover:text-red-400">
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -974,13 +1064,11 @@ function ProviderConfigModal({
 // ── Provider Tab ──────────────────────────────────────────────
 
 function ProviderTab() {
-  const { config, currentProvider, allProviders, isLoading, updateConfig, refreshConfig } = useConfig();
-  const [openId, setOpenId] = useState<string | null>(null);
+  const { config, currentProvider, allProviders, isLoading, updateConfig, refreshConfig, providerVerifyStatus, saveProviderVerifyStatus } = useConfig();
   const [editProvider, setEditProvider] = useState<Provider | null | 'new'>(null);
 
-  // ── Subscription 状态 + 30 天验证缓存 ──
+  // ── Subscription 状态 ──
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusData | null>(null);
-  const verifyStatusCacheRef = useRef<Record<string, ProviderVerifyStatus>>({});
 
   // ── API Key 验证状态（非订阅供应商） ──
   const [verifyLoading, setVerifyLoading] = useState<Record<string, boolean>>({});
@@ -990,19 +1078,12 @@ function ProviderTab() {
 
   const SUBSCRIPTION_PROVIDER_ID = 'anthropic-sub';
 
-  // 保存验证状态到后端持久化
-  const saveVerifyStatus = useCallback(async (providerId: string, status: 'valid' | 'invalid', accountEmail?: string) => {
-    try {
-      await globalApiPutJson('/api/provider-verify-status', { providerId, status, accountEmail });
-      verifyStatusCacheRef.current[providerId] = {
-        status,
-        verifiedAt: new Date().toISOString(),
-        ...(accountEmail ? { accountEmail } : {}),
-      };
-    } catch (err) {
-      console.error('[Settings] Failed to save verify status:', err);
-    }
-  }, []);
+  // providerVerifyStatus is now in ConfigContext (loaded at app startup)
+  // Use a ref to access latest value inside async callbacks
+  const providerVerifyStatusRef = useRef(providerVerifyStatus);
+  providerVerifyStatusRef.current = providerVerifyStatus;
+  const saveProviderVerifyStatusRef = useRef(saveProviderVerifyStatus);
+  saveProviderVerifyStatusRef.current = saveProviderVerifyStatus;
 
   useEffect(() => {
     let isMounted = true;
@@ -1014,7 +1095,7 @@ function ProviderTab() {
       if (!status.available || !status.info) return;
 
       const currentEmail = status.info.email;
-      const cached = verifyStatusCacheRef.current[SUBSCRIPTION_PROVIDER_ID];
+      const cached = providerVerifyStatusRef.current[SUBSCRIPTION_PROVIDER_ID];
 
       // 只缓存成功验证；失败的每次重试
       if (!forceVerify && cached && cached.status === 'valid') {
@@ -1035,7 +1116,7 @@ function ProviderTab() {
       try {
         const result = await globalApiPostJson<{ success: boolean; error?: string }>('/api/subscription/verify', {});
         if (result.success) {
-          await saveVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
+          await saveProviderVerifyStatusRef.current(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
         }
         if (isMounted) {
           setSubscriptionStatus((prev) => prev ? {
@@ -1055,35 +1136,29 @@ function ProviderTab() {
       }
     };
 
-    const checkSubscription = () => {
-      // 先加载缓存的验证状态
-      globalApiGetJson<Record<string, ProviderVerifyStatus>>('/api/provider-verify-status')
-        .then((cache) => { verifyStatusCacheRef.current = cache; })
-        .catch(() => { /* ignore */ });
-
-      globalApiGetJson<SubscriptionStatusData>('/api/subscription/status')
-        .then((status) => {
-          if (!isMounted) return;
-          setSubscriptionStatus({ ...status, verifyStatus: 'idle' });
-          if (status.available && status.info) {
-            verifySubscriptionCredentials(status);
-          }
-        })
-        .catch((err) => {
-          if (!isMounted) return;
-          if (retryCount < maxRetries) {
-            retryCount++;
-            setTimeout(checkSubscription, retryDelay);
-          } else {
-            console.error('[Settings] Failed to check subscription:', err);
-            setSubscriptionStatus({ available: false });
-          }
-        });
+    const checkSubscription = async () => {
+      try {
+        const status = await globalApiGetJson<SubscriptionStatusData>('/api/subscription/status');
+        if (!isMounted) return;
+        setSubscriptionStatus({ ...status, verifyStatus: 'idle' });
+        if (status.available && status.info) {
+          verifySubscriptionCredentials(status);
+        }
+      } catch (err) {
+        if (!isMounted) return;
+        if (retryCount < maxRetries) {
+          retryCount++;
+          setTimeout(checkSubscription, retryDelay);
+        } else {
+          console.error('[Settings] Failed to check subscription:', err);
+          setSubscriptionStatus({ available: false });
+        }
+      }
     };
 
     const timer = setTimeout(checkSubscription, 500);
     return () => { isMounted = false; clearTimeout(timer); };
-  }, [saveVerifyStatus]);
+  }, []);
 
   const handleReVerifySubscription = useCallback(async () => {
     if (!subscriptionStatus?.available || !subscriptionStatus?.info) return;
@@ -1092,7 +1167,7 @@ function ProviderTab() {
     try {
       const result = await globalApiPostJson<{ success: boolean; error?: string }>('/api/subscription/verify', {});
       if (result.success) {
-        await saveVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
+        await saveProviderVerifyStatusRef.current(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
       }
       setSubscriptionStatus((prev) => prev ? {
         ...prev,
@@ -1106,7 +1181,7 @@ function ProviderTab() {
         verifyError: err instanceof Error ? err.message : '验证失败',
       } : prev);
     }
-  }, [subscriptionStatus, saveVerifyStatus]);
+  }, [subscriptionStatus]);
 
   // ── API Key 验证（防抖 + generation counter 防竞态） ──
   const verifyProvider = useCallback(async (provider: Provider, apiKey: string) => {
@@ -1133,7 +1208,7 @@ function ProviderTab() {
       if (verifyGenRef.current[provider.id] !== gen) return;
 
       const newStatus = resp.result === 'ok' ? 'valid' : 'invalid';
-      await saveVerifyStatus(provider.id, newStatus as 'valid' | 'invalid');
+      await saveProviderVerifyStatusRef.current(provider.id, newStatus as 'valid' | 'invalid');
       if (resp.error) setVerifyError((prev) => ({ ...prev, [provider.id]: resp.error! }));
     } catch {
       if (verifyGenRef.current[provider.id] !== gen) return;
@@ -1142,7 +1217,7 @@ function ProviderTab() {
         setVerifyLoading((prev) => ({ ...prev, [provider.id]: false }));
       }
     }
-  }, [saveVerifyStatus]);
+  }, []);
 
   // 清理 debounce timeouts
   useEffect(() => {
@@ -1161,7 +1236,7 @@ function ProviderTab() {
       allProvidersRef.current.forEach((provider) => {
         if (provider.type === 'subscription') return;
         const apiKey = config.apiKeys[provider.id];
-        const cached = verifyStatusCacheRef.current[provider.id];
+        const cached = providerVerifyStatusRef.current[provider.id];
         if (apiKey && cached?.verifiedAt && isVerifyExpired(cached.verifiedAt)) {
           console.log(`[Settings] Provider ${provider.id} verification expired, re-verifying...`);
           verifyProviderRef.current(provider, apiKey);
@@ -1251,20 +1326,14 @@ function ProviderTab() {
     await refreshConfig();
   };
 
-  const openProvider = openId ? allProviders.find((p) => p.id === openId) : null;
-
-  // 按行分组（每行 2 列）
-  const rows: Provider[][] = [];
-  for (let i = 0; i < allProviders.length; i += 2) {
-    rows.push(allProviders.slice(i, i + 2));
-  }
+  // 一行一个 Provider
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-[22px] font-bold text-[var(--ink)]">模型供应商</h2>
-          <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">选择并配置 AI 供应商，点击卡片进行配置</p>
+          <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">配置 API 密钥以使用不同的模型供应商</p>
         </div>
         <button
           onClick={() => setEditProvider('new')}
@@ -1279,37 +1348,26 @@ function ProviderTab() {
         <p className="text-sm text-[var(--ink-tertiary)]">加载中...</p>
       ) : (
         <div className="flex flex-col gap-4">
-          {rows.map((row, ri) => (
-            <div key={ri} className="grid grid-cols-2 gap-4">
-              {row.map((provider) => (
-                <ProviderCard
-                  key={provider.id}
-                  provider={provider}
-                  apiKey={config.apiKeys[provider.id] ?? ''}
-                  isActive={currentProvider.id === provider.id}
-                  subscriptionStatus={provider.type === 'subscription' ? subscriptionStatus : undefined}
-                  onOpenDetail={() => setOpenId(provider.id)}
-                  onOpenEdit={() => setEditProvider(provider)}
-                  onReVerifySubscription={provider.type === 'subscription' ? handleReVerifySubscription : undefined}
-                />
-              ))}
-              {row.length === 1 && <div />}
-            </div>
-          ))}
+          {allProviders.map((provider) => {
+            const cached = providerVerifyStatus[provider.id];
+            return (
+              <ProviderCard
+                key={provider.id}
+                provider={provider}
+                apiKey={config.apiKeys[provider.id] ?? ''}
+                isActive={currentProvider.id === provider.id}
+                subscriptionStatus={provider.type === 'subscription' ? subscriptionStatus : undefined}
+                onOpenEdit={() => setEditProvider(provider)}
+                onSaveKey={handleSaveKey}
+                onReVerifySubscription={provider.type === 'subscription' ? handleReVerifySubscription : undefined}
+                isVerifyLoading={verifyLoading[provider.id]}
+                verifyStatus={cached?.status as 'valid' | 'invalid' | undefined}
+                verifyError={verifyError[provider.id]}
+                onVerify={() => verifyProvider(provider, config.apiKeys[provider.id] ?? '')}
+              />
+            );
+          })}
         </div>
-      )}
-
-      {openProvider && (
-        <ProviderConfigModal
-          provider={openProvider}
-          apiKey={config.apiKeys[openProvider.id] ?? ''}
-          isActive={currentProvider.id === openProvider.id}
-          subscriptionStatus={openProvider.type === 'subscription' ? subscriptionStatus : null}
-          onSetActive={() => handleSetActive(openProvider.id)}
-          onSaveKey={handleSaveKey}
-          onReVerifySubscription={openProvider.type === 'subscription' ? handleReVerifySubscription : undefined}
-          onClose={() => setOpenId(null)}
-        />
       )}
 
       {editProvider && (
@@ -1564,6 +1622,10 @@ function MCPTab() {
   const [configDialog, setConfigDialog] = useState<McpServerDefinition | null>(null);
   const [configEnvValues, setConfigEnvValues] = useState<Record<string, string>>({});
   const [configSaving, setConfigSaving] = useState(false);
+  const [showJsonImport, setShowJsonImport] = useState(false);
+  const [jsonInput, setJsonInput] = useState('');
+  const [jsonError, setJsonError] = useState('');
+  const [toggleErrors, setToggleErrors] = useState<Record<string, { type: string; message: string; runtimeName?: string; downloadUrl?: string }>>({});
 
   const loadServers = async () => {
     try {
@@ -1587,13 +1649,18 @@ function MCPTab() {
     }
     const id = srv.id;
     setTogglingIds((prev) => new Set([...prev, id]));
+    setToggleErrors((prev) => { const next = { ...prev }; delete next[id]; return next; });
     try {
-      await globalApiPostJson('/api/mcp/toggle', { id, enabled });
-      setEnabledIds((prev) => {
-        const next = new Set(prev);
-        if (enabled) next.add(id); else next.delete(id);
-        return next;
-      });
+      const resp = await globalApiPostJson<{ ok: boolean; error?: { type: string; message: string; runtimeName?: string; downloadUrl?: string } }>('/api/mcp/toggle', { id, enabled });
+      if (resp.ok) {
+        setEnabledIds((prev) => {
+          const next = new Set(prev);
+          if (enabled) next.add(id); else next.delete(id);
+          return next;
+        });
+      } else if (resp.error) {
+        setToggleErrors((prev) => ({ ...prev, [id]: resp.error! }));
+      }
     } catch { /* ignore */ }
     finally {
       setTogglingIds((prev) => {
@@ -1643,6 +1710,63 @@ function MCPTab() {
     await loadServers();
   };
 
+  const handleJsonImport = async () => {
+    setJsonError('');
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(jsonInput);
+    } catch {
+      setJsonError('JSON 格式错误，请检查语法');
+      return;
+    }
+    const serversObj = (parsed.mcpServers ?? parsed) as Record<string, unknown>;
+    const entries = Object.entries(serversObj).filter(([, v]) => v && typeof v === 'object' && !Array.isArray(v));
+    if (entries.length === 0) {
+      setJsonError('未找到有效的 MCP 服务器配置');
+      return;
+    }
+    const added: string[] = [];
+    const skipped: string[] = [];
+    const existingIds = new Set(servers.map(s => s.id));
+    for (const [name, rawConfig] of entries) {
+      const config = rawConfig as Record<string, unknown>;
+      const id = name.toLowerCase().replace(/\s+/g, '-');
+      if (existingIds.has(id)) { skipped.push(id); continue; }
+      const hasCommand = typeof config.command === 'string';
+      const hasUrl = typeof config.url === 'string';
+      let type: 'stdio' | 'http' | 'sse' = 'stdio';
+      if (!hasCommand && hasUrl) {
+        type = (config.transportType === 'sse' || config.type === 'sse') ? 'sse' : 'http';
+      }
+      try {
+        await globalApiPostJson('/api/mcp', {
+          id, name, type,
+          ...(type === 'stdio' && {
+            command: config.command,
+            args: Array.isArray(config.args) ? config.args : undefined,
+            env: config.env && typeof config.env === 'object' ? config.env : undefined,
+          }),
+          ...((type === 'http' || type === 'sse') && {
+            url: config.url,
+            headers: config.headers && typeof config.headers === 'object' ? config.headers : undefined,
+          }),
+        });
+        added.push(id);
+        existingIds.add(id);
+      } catch { /* single failure doesn't block rest */ }
+    }
+    if (added.length > 0) {
+      await loadServers();
+      setJsonInput('');
+      setShowJsonImport(false);
+      if (skipped.length > 0) {
+        setJsonError(`已添加 ${added.length} 个，跳过 ${skipped.length} 个已存在的（${skipped.join(', ')}）`);
+      }
+    } else if (skipped.length > 0) {
+      setJsonError(`所有服务器均已存在：${skipped.join(', ')}`);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -1650,13 +1774,21 @@ function MCPTab() {
           <h2 className="text-[22px] font-bold text-[var(--ink)]">MCP Servers</h2>
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理 MCP Server 配置，开关控制全局启用</p>
         </div>
-        <button
-          onClick={() => setEditMCP('new')}
-          className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity"
-        >
-          <Plus size={16} />
-          添加 MCP Server
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { setShowJsonImport(true); setJsonError(''); }}
+            className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-[13px] font-semibold text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors"
+          >
+            JSON 导入
+          </button>
+          <button
+            onClick={() => setEditMCP('new')}
+            className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity"
+          >
+            <Plus size={16} />
+            添加
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -1690,8 +1822,21 @@ function MCPTab() {
                   </p>
                   {showNeedsConfig && (
                     <p className="mt-0.5 text-xs text-amber-600">
-                      ⚠️ 需要配置 API Key
+                      需要配置 API Key
                     </p>
+                  )}
+                  {toggleErrors[srv.id] && (
+                    <div className="mt-1 text-xs text-red-600">
+                      <span>{toggleErrors[srv.id].message}</span>
+                      {toggleErrors[srv.id].downloadUrl && (
+                        <ExternalLink
+                          href={toggleErrors[srv.id].downloadUrl!}
+                          className="ml-2 text-[var(--accent)] hover:underline inline-flex items-center gap-0.5"
+                        >
+                          安装 {toggleErrors[srv.id].runtimeName ?? srv.command} <ExternalLinkIcon size={10} />
+                        </ExternalLink>
+                      )}
+                    </div>
                   )}
                 </div>
                 <div className="ml-4 flex items-center gap-3 shrink-0">
@@ -1749,12 +1894,12 @@ function MCPTab() {
       {/* MCP 发现链接 */}
       <div className="flex items-center gap-4 text-[12px] text-[var(--ink-tertiary)]">
         <span>发现更多 MCP:</span>
-        <a href="https://mcp.so" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline flex items-center gap-1">
-          mcp.so <ExternalLink size={10} />
-        </a>
-        <a href="https://smithery.ai" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline flex items-center gap-1">
-          smithery.ai <ExternalLink size={10} />
-        </a>
+        <ExternalLink href="https://mcp.so" className="text-[var(--accent)] hover:underline flex items-center gap-1">
+          mcp.so <ExternalLinkIcon size={10} />
+        </ExternalLink>
+        <ExternalLink href="https://smithery.ai" className="text-[var(--accent)] hover:underline flex items-center gap-1">
+          smithery.ai <ExternalLinkIcon size={10} />
+        </ExternalLink>
       </div>
 
       {editMCP && (() => {
@@ -1769,6 +1914,35 @@ function MCPTab() {
           />
         );
       })()}
+
+      {/* JSON Import Modal */}
+      {showJsonImport && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => setShowJsonImport(false)}>
+          <div className="w-[520px] rounded-2xl bg-[var(--paper)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+              <div>
+                <h3 className="text-[16px] font-semibold text-[var(--ink)]">JSON 批量导入</h3>
+                <p className="mt-0.5 text-[12px] text-[var(--ink-tertiary)]">粘贴 Claude Desktop 或标准 MCP 配置 JSON</p>
+              </div>
+              <button onClick={() => setShowJsonImport(false)} className="text-[var(--ink-tertiary)] hover:text-[var(--ink)]"><X size={18} /></button>
+            </div>
+            <div className="px-6 py-4 space-y-3">
+              <textarea
+                rows={12}
+                value={jsonInput}
+                onChange={(e) => setJsonInput(e.target.value)}
+                placeholder={'{\n  "mcpServers": {\n    "server-name": {\n      "command": "npx",\n      "args": ["-y", "some-mcp@latest"]\n    }\n  }\n}'}
+                className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-quaternary)] font-mono resize-none focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+              />
+              {jsonError && <p className="text-xs text-red-600">{jsonError}</p>}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
+              <button onClick={() => setShowJsonImport(false)} className="rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] text-[var(--ink-secondary)] hover:bg-[var(--surface)]">取消</button>
+              <button onClick={handleJsonImport} disabled={!jsonInput.trim()} className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-50">导入</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Config Dialog for MCP servers that require API keys */}
       {configDialog && (
@@ -1799,14 +1973,12 @@ function MCPTab() {
                 </div>
               ))}
               {configDialog.websiteUrl && (
-                <a
+                <ExternalLink
                   href={configDialog.websiteUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline"
                 >
-                  获取 API Key <ExternalLink size={10} />
-                </a>
+                  获取 API Key <ExternalLinkIcon size={10} />
+                </ExternalLink>
               )}
             </div>
             <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
@@ -2306,6 +2478,61 @@ function GeneralTab() {
           </>
         )}
       </div>
+
+      {/* 运行日志 */}
+      <LogExportSection />
+    </div>
+  );
+}
+
+function LogExportSection() {
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleExport = useCallback(async () => {
+    setExporting(true);
+    setExportResult(null);
+    try {
+      const result = await globalApiGetJson<{ success: boolean; path?: string; error?: string }>('/api/logs/export');
+      if (result.success && result.path) {
+        setExportResult({ success: true, message: `已导出至 ${result.path}` });
+      } else {
+        setExportResult({ success: false, message: result.error || '导出失败' });
+      }
+    } catch {
+      setExportResult({ success: false, message: '导出失败，请重试' });
+    } finally {
+      setExporting(false);
+    }
+  }, []);
+
+  return (
+    <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
+      <p className="text-[15px] font-semibold text-[var(--ink)]">运行日志</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-[13px] font-medium text-[var(--ink)]">导出日志</p>
+          <p className="text-[12px] text-[var(--ink-tertiary)]">导出近 3 天运行日志为 zip 保存到桌面</p>
+        </div>
+        <button
+          type="button"
+          onClick={handleExport}
+          disabled={exporting}
+          className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-1.5 text-[13px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+        >
+          {exporting ? (
+            <span className="flex items-center gap-1.5">
+              <RefreshCw size={14} className="animate-spin" />
+              导出中...
+            </span>
+          ) : '导出'}
+        </button>
+      </div>
+      {exportResult && (
+        <p className={`text-[12px] ${exportResult.success ? 'text-[var(--success)]' : 'text-[var(--error)]'}`}>
+          {exportResult.message}
+        </p>
+      )}
     </div>
   );
 }
@@ -2359,17 +2586,8 @@ function AboutTab({
     }
   }, [updateConfig]);
 
-  const handleOpenLink = useCallback(async (url: string) => {
-    if (isTauri()) {
-      try {
-        const { open } = await import('@tauri-apps/plugin-shell');
-        await open(url);
-      } catch {
-        window.open(url, '_blank');
-      }
-    } else {
-      window.open(url, '_blank');
-    }
+  const handleOpenLink = useCallback((url: string) => {
+    openExternal(url);
   }, []);
 
   return (
@@ -2439,21 +2657,21 @@ function AboutTab({
             className="w-full flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-[var(--hover)] transition-colors"
           >
             <span className="text-[13px] text-[var(--ink)]">GitHub 仓库</span>
-            <ExternalLink size={14} className="text-[var(--ink-tertiary)]" />
+            <ExternalLinkIcon size={14} className="text-[var(--ink-tertiary)]" />
           </button>
           <button
             onClick={() => handleOpenLink('https://github.com/applre/SoAgents/issues')}
             className="w-full flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-[var(--hover)] transition-colors"
           >
             <span className="text-[13px] text-[var(--ink)]">反馈问题</span>
-            <ExternalLink size={14} className="text-[var(--ink-tertiary)]" />
+            <ExternalLinkIcon size={14} className="text-[var(--ink-tertiary)]" />
           </button>
           <button
             onClick={() => handleOpenLink('https://github.com/applre')}
             className="w-full flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-[var(--hover)] transition-colors"
           >
             <span className="text-[13px] text-[var(--ink)]">Developer</span>
-            <ExternalLink size={14} className="text-[var(--ink-tertiary)]" />
+            <ExternalLinkIcon size={14} className="text-[var(--ink-tertiary)]" />
           </button>
         </div>
       </div>
@@ -2527,6 +2745,7 @@ export default function Settings({ checkForUpdate, checking }: SettingsProps) {
         {activeNav === 'provider'        && <ProviderTab />}
         {activeNav === 'mcp'             && <MCPTab />}
         {activeNav === 'skills'          && <SkillsTab />}
+        {activeNav === 'usage'           && <UsageStatsPanel />}
         {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'about'           && <AboutTab checkForUpdate={checkForUpdate} checking={checking} />}
       </div>

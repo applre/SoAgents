@@ -27,6 +27,8 @@ export function readConfig(): AppConfig {
     customProviders: parsed.customProviders ?? [],
     presetCustomModels: parsed.presetCustomModels,
     providerVerifyStatus: parsed.providerVerifyStatus,
+    providerModelAliases: parsed.providerModelAliases,
+    mcpServerArgs: parsed.mcpServerArgs,
   };
 }
 

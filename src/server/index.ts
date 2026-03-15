@@ -7,16 +7,34 @@ import * as SkillsStore from './SkillsStore';
 import { verifyProviderViaSdk, checkAnthropicSubscription, verifySubscription } from './provider-verify';
 import { initLogger, getLogHistory } from './logger';
 import { appendUnifiedLogBatch } from './UnifiedLogger';
+import { isAnalyticsEnabled, trackServer } from './analytics';
 import type { PermissionMode } from '../shared/types/permission';
 import type { AppConfig, ProviderEnv, Provider, ProviderAuthType } from '../shared/types/config';
-import { PROVIDERS } from '../shared/providers';
+import { PROVIDERS, getEffectiveModelAliases } from '../shared/providers';
 import type { LogEntry } from '../shared/types/log';
-import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, copyFileSync } from 'fs';
+import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, copyFileSync, renameSync, rmSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
+
+/** Runtime download URLs for common MCP commands */
+const RUNTIME_DOWNLOAD_URLS: Record<string, { name: string; url: string }> = {
+  'node':    { name: 'Node.js', url: 'https://nodejs.org/' },
+  'npx':     { name: 'Node.js', url: 'https://nodejs.org/' },
+  'npm':     { name: 'Node.js', url: 'https://nodejs.org/' },
+  'python':  { name: 'Python', url: 'https://www.python.org/downloads/' },
+  'python3': { name: 'Python', url: 'https://www.python.org/downloads/' },
+  'deno':    { name: 'Deno', url: 'https://deno.land/' },
+  'uv':      { name: 'uv (Python 包管理器)', url: 'https://docs.astral.sh/uv/' },
+  'uvx':     { name: 'uv (Python 包管理器)', url: 'https://docs.astral.sh/uv/' },
+};
+
+function getCommandDownloadInfo(command: string): { runtimeName?: string; downloadUrl?: string } {
+  const info = RUNTIME_DOWNLOAD_URLS[command];
+  return info ? { runtimeName: info.name, downloadUrl: info.url } : {};
+}
 
 // 初始化统一日志系统（拦截 console 方法）
 initLogger();
@@ -81,6 +99,7 @@ const server = Bun.serve({
               disableNonessential: provider.config?.disableNonessential as boolean | undefined,
               maxOutputTokens: provider.maxOutputTokens,
               upstreamFormat: provider.upstreamFormat,
+              modelAliases: getEffectiveModelAliases(provider, config.providerModelAliases),
             };
           }
         }
@@ -363,6 +382,88 @@ const server = Bun.serve({
       }
     }
 
+    // 文件重命名
+    if (req.method === 'POST' && url.pathname === '/api/file-rename') {
+      const body = await req.json() as { oldPath: string; newName: string };
+      if (!body.oldPath || !body.newName) return Response.json({ error: 'missing oldPath or newName' }, { status: 400 });
+      if (body.newName.includes('/') || body.newName.includes('\\')) {
+        return Response.json({ error: 'invalid name' }, { status: 400 });
+      }
+      try {
+        const newPath = join(dirname(body.oldPath), body.newName);
+        if (existsSync(newPath)) {
+          return Response.json({ error: '同名文件已存在' }, { status: 409 });
+        }
+        renameSync(body.oldPath, newPath);
+        return Response.json({ ok: true, newPath });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 500 });
+      }
+    }
+
+    // 文件/文件夹删除
+    if (req.method === 'POST' && url.pathname === '/api/file-delete') {
+      const body = await req.json() as { path: string };
+      if (!body.path) return Response.json({ error: 'missing path' }, { status: 400 });
+      try {
+        const st = statSync(body.path);
+        if (st.isDirectory()) {
+          rmSync(body.path, { recursive: true, force: true });
+        } else {
+          unlinkSync(body.path);
+        }
+        return Response.json({ ok: true });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 500 });
+      }
+    }
+
+    // 文件复制（支持冲突自动重命名）
+    if (req.method === 'POST' && url.pathname === '/api/file-copy') {
+      const body = await req.json() as { sourcePaths: string[]; targetDir: string };
+      if (!body.sourcePaths?.length || !body.targetDir) {
+        return Response.json({ error: 'missing sourcePaths or targetDir' }, { status: 400 });
+      }
+      const results: { name: string; finalName: string; renamed: boolean }[] = [];
+      try {
+        mkdirSync(body.targetDir, { recursive: true });
+        for (const src of body.sourcePaths) {
+          const name = src.split('/').pop() || src;
+          const ext = name.includes('.') ? '.' + name.split('.').pop()! : '';
+          const base = ext ? name.slice(0, -ext.length) : name;
+          let finalName = name;
+          let counter = 1;
+          let renamed = false;
+          while (existsSync(join(body.targetDir, finalName))) {
+            finalName = `${base} (${counter})${ext}`;
+            counter++;
+            renamed = true;
+          }
+          const destPath = join(body.targetDir, finalName);
+          const srcStat = statSync(src);
+          if (srcStat.isDirectory()) {
+            const copyDir = (s: string, d: string) => {
+              mkdirSync(d, { recursive: true });
+              for (const entry of readdirSync(s, { withFileTypes: true })) {
+                if (entry.isSymbolicLink()) continue;
+                const sp = join(s, entry.name);
+                const dp = join(d, entry.name);
+                if (entry.isDirectory()) copyDir(sp, dp);
+                else copyFileSync(sp, dp);
+              }
+            };
+            copyDir(src, destPath);
+          } else {
+            copyFileSync(src, destPath);
+          }
+          results.push({ name, finalName, renamed });
+        }
+        return Response.json({ ok: true, results });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 500 });
+      }
+    }
+
     // MCP 路由
     if (req.method === 'GET' && url.pathname === '/api/mcp') {
       return Response.json({
@@ -380,7 +481,108 @@ const server = Bun.serve({
 
     if (req.method === 'POST' && url.pathname === '/api/mcp/toggle') {
       const body = await req.json() as { id: string; enabled: boolean };
-      MCPConfigStore.setEnabled(body.id, body.enabled);
+
+      // Disabling always succeeds immediately
+      if (!body.enabled) {
+        MCPConfigStore.setEnabled(body.id, false);
+        return Response.json({ ok: true });
+      }
+
+      // Enabling: validate before toggling on
+      const allServers = MCPConfigStore.getAll();
+      const server = allServers.find(s => s.id === body.id);
+      if (!server) {
+        return Response.json({ ok: false, error: { type: 'unknown', message: 'MCP 服务器不存在' } });
+      }
+
+      // stdio: check command exists
+      if (server.type === 'stdio' && server.command) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const { spawn } = require('child_process') as typeof import('child_process');
+            const proc = spawn(server.command!, ['--version'], {
+              timeout: 5000,
+              stdio: 'ignore',
+              env: { ...process.env },
+            });
+            proc.on('error', (err: NodeJS.ErrnoException) => {
+              if (err.code === 'ENOENT') {
+                reject({ type: 'command_not_found', command: server.command, ...getCommandDownloadInfo(server.command!) });
+              } else {
+                reject({ type: 'runtime_error', message: err.message });
+              }
+            });
+            proc.on('close', () => resolve());
+          });
+        } catch (err: unknown) {
+          const error = err as Record<string, unknown>;
+          if (error.type === 'command_not_found') {
+            return Response.json({
+              ok: false,
+              error: {
+                type: 'command_not_found',
+                command: error.command,
+                message: `命令 "${error.command}" 未找到`,
+                runtimeName: error.runtimeName,
+                downloadUrl: error.downloadUrl,
+              },
+            });
+          }
+        }
+      }
+
+      // http/sse: validate remote URL is reachable
+      if ((server.type === 'http' || server.type === 'sse') && server.url) {
+        let targetUrl = server.url;
+        if (targetUrl.includes('{{')) {
+          const serverEnv = MCPConfigStore.getServerEnv(server.id);
+          targetUrl = targetUrl.replace(/\{\{(\w+)\}\}/g, (_, key) => serverEnv[key] ?? '');
+        }
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 15000);
+          const method = server.type === 'sse' ? 'GET' : 'POST';
+          const fetchOpts: RequestInit = { method, signal: controller.signal };
+          if (method === 'POST') {
+            fetchOpts.headers = { 'Content-Type': 'application/json' };
+            fetchOpts.body = JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} });
+          }
+          const response = await fetch(targetUrl, fetchOpts);
+          clearTimeout(timeout);
+
+          if (response.status === 401 || response.status === 403) {
+            return Response.json({ ok: false, error: { type: 'connection_failed', message: `认证失败 (HTTP ${response.status})，请检查 Headers 配置` } });
+          }
+          if (response.status === 404) {
+            return Response.json({ ok: false, error: { type: 'connection_failed', message: `端点不存在 (HTTP 404)，请检查 URL 是否正确` } });
+          }
+          if (response.status === 405) {
+            const hint = server.type === 'sse'
+              ? '。请尝试切换传输协议为 Streamable HTTP'
+              : '。请尝试切换传输协议为 SSE';
+            return Response.json({ ok: false, error: { type: 'connection_failed', message: `请求方法不被允许 (HTTP 405)${hint}` } });
+          }
+          if (!response.ok) {
+            return Response.json({ ok: false, error: { type: 'connection_failed', message: `服务器返回错误 (HTTP ${response.status})` } });
+          }
+        } catch (err: unknown) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          let message: string;
+          if (error.name === 'AbortError') {
+            message = '连接超时（15秒），请检查 URL 是否正确或服务器是否可达';
+          } else if (error.message.includes('ENOTFOUND') || error.message.includes('getaddrinfo')) {
+            message = '域名无法解析，请检查 URL 是否正确';
+          } else if (error.message.includes('ECONNREFUSED')) {
+            message = '连接被拒绝，请检查服务是否已启动';
+          } else {
+            message = `连接失败：${error.message}`;
+          }
+          return Response.json({ ok: false, error: { type: 'connection_failed', message } });
+        }
+      }
+
+      // Validation passed — enable
+      MCPConfigStore.setEnabled(body.id, true);
       return Response.json({ ok: true });
     }
 
@@ -413,6 +615,20 @@ const server = Bun.serve({
         return Response.json({ error: '不允许删除内置 MCP' }, { status: 403 });
       }
       MCPConfigStore.remove(id);
+      return Response.json({ ok: true });
+    }
+
+    // MCP server args (extra args appended to preset)
+    if (req.method === 'PUT' && url.pathname === '/api/config/mcp-args') {
+      const body = await req.json() as { serverId: string; args: string[] };
+      const config = ConfigStore.readConfig();
+      if (!config.mcpServerArgs) config.mcpServerArgs = {};
+      if (body.args.length === 0) {
+        delete config.mcpServerArgs[body.serverId];
+      } else {
+        config.mcpServerArgs[body.serverId] = body.args;
+      }
+      ConfigStore.writeConfig(config);
       return Response.json({ ok: true });
     }
 
@@ -731,6 +947,22 @@ const server = Bun.serve({
       return Response.json({ before, after });
     }
 
+    // ── 统计 API ──
+
+    if (req.method === 'GET' && url.pathname.match(/^\/sessions\/[^/]+\/stats$/)) {
+      const statsSessionId = url.pathname.split('/')[2];
+      const result = SessionStore.getSessionDetailedStats(statsSessionId);
+      if (!result) return Response.json({ error: 'not found' }, { status: 404 });
+      return Response.json(result);
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/global-stats') {
+      const range = (url.searchParams.get('range') ?? '30d') as '7d' | '30d' | '60d';
+      const validRanges = ['7d', '30d', '60d'];
+      const safeRange = validRanges.includes(range) ? range : '30d';
+      return Response.json(SessionStore.getGlobalStats(safeRange));
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/search-files') {
       const agentDir = url.searchParams.get('agentDir');
       const q = url.searchParams.get('q') ?? '';
@@ -749,6 +981,68 @@ const server = Bun.serve({
         }
       } catch { /* 目录不存在等 */ }
       return Response.json(results);
+    }
+
+    // ── Analytics API ──
+
+    if (req.method === 'GET' && url.pathname === '/api/analytics/status') {
+      return Response.json({ enabled: isAnalyticsEnabled() });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/analytics/track') {
+      const body = await req.json() as { event: string; params?: Record<string, string | number | boolean | null | undefined> };
+      if (body.event) trackServer(body.event, body.params ?? {});
+      return Response.json({ ok: true });
+    }
+
+    // ── 日志导出 API ──
+
+    if (req.method === 'GET' && url.pathname === '/api/logs/export') {
+      try {
+        const logsDir = join(homedir(), '.soagents', 'logs');
+        if (!existsSync(logsDir)) {
+          return Response.json({ success: false, error: '没有找到日志目录' }, { status: 404 });
+        }
+
+        const now = Date.now();
+        const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+        const files = readdirSync(logsDir)
+          .filter(f => f.startsWith('unified-') && f.endsWith('.log'))
+          .filter(f => {
+            try { return now - statSync(join(logsDir, f)).mtimeMs < threeDaysMs; }
+            catch { return false; }
+          })
+          .sort();
+
+        if (files.length === 0) {
+          return Response.json({ success: false, error: '没有找到近3天的运行日志' }, { status: 404 });
+        }
+
+        const desktopDir = join(homedir(), 'Desktop');
+        const timestamp = new Date().toISOString().slice(0, 10);
+        const zipName = `SoAgents-logs-${timestamp}.zip`;
+        const zipPath = join(desktopDir, zipName);
+
+        const filePaths = files.map(f => join(logsDir, f));
+        const isWin = process.platform === 'win32';
+
+        if (isWin) {
+          const proc = Bun.spawn(['powershell', '-Command',
+            `Compress-Archive -Path '${filePaths.join("','")}' -DestinationPath '${zipPath}' -Force`
+          ]);
+          await proc.exited;
+        } else {
+          const proc = Bun.spawn(['zip', '-j', zipPath, ...filePaths]);
+          await proc.exited;
+        }
+
+        return Response.json({ success: true, path: zipPath });
+      } catch (error) {
+        return Response.json({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to export logs'
+        }, { status: 500 });
+      }
     }
 
     return new Response("Not Found", { status: 404 });

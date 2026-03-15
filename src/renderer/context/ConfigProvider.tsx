@@ -1,9 +1,9 @@
 import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
-import { ConfigContext } from './ConfigContext';
-import type { AppConfig, Provider, ModelEntity } from '../../shared/types/config';
+import { ConfigDataContext, ConfigActionsContext } from './ConfigContext';
+import type { AppConfig, Provider, ModelEntity, ProviderVerifyStatus } from '../../shared/types/config';
 import type { WorkspaceEntry } from '../../shared/types/workspace';
 import { DEFAULT_CONFIG, PROVIDERS } from '../../shared/providers';
-import { globalApiGetJson } from '../api/apiFetch';
+import { globalApiGetJson, globalApiPutJson } from '../api/apiFetch';
 import { loadAppConfig, atomicModifyConfig } from '../config/configService';
 import { loadWorkspaces, atomicModifyWorkspaces } from '../config/workspaceService';
 
@@ -12,6 +12,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [allProviders, setAllProviders] = useState<Provider[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([]);
+  const [providerVerifyStatus, setProviderVerifyStatus] = useState<Record<string, ProviderVerifyStatus>>({});
 
   const loadProviders = useCallback(async () => {
     // Global sidecar 可能还没启动完毕（App.tsx useEffect 在 ConfigProvider 之后执行），
@@ -39,7 +40,11 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   // 启动时从 Tauri FS（或 localStorage）加载配置
   useEffect(() => {
     loadAppConfig()
-      .then((loaded) => setConfig(loaded))
+      .then((loaded) => {
+        setConfig(loaded);
+        // providerVerifyStatus 存在 AppConfig 内，直接提取
+        setProviderVerifyStatus(loaded.providerVerifyStatus ?? {});
+      })
       .catch((err) => console.error('[ConfigProvider] Failed to load config:', err));
     loadWorkspaces()
       .then((ws) => setWorkspaces(ws))
@@ -83,6 +88,24 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const refreshConfig = useCallback(async () => {
     await loadProviders();
   }, [loadProviders]);
+
+  // ── Provider Verify Status ──
+
+  const saveProviderVerifyStatus = useCallback(async (
+    providerId: string,
+    status: 'valid' | 'invalid',
+    accountEmail?: string,
+  ) => {
+    await globalApiPutJson('/api/provider-verify-status', { providerId, status, accountEmail });
+    setProviderVerifyStatus((prev) => ({
+      ...prev,
+      [providerId]: {
+        status,
+        verifiedAt: new Date().toISOString(),
+        ...(accountEmail ? { accountEmail } : {}),
+      },
+    }));
+  }, []);
 
   // ── Workspace methods ──
 
@@ -129,14 +152,31 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setWorkspaces(next);
   }, []);
 
-  const value = useMemo(
+  // ── Dual Context values ──
+
+  const dataValue = useMemo(
     () => ({
-      config, allProviders, currentProvider, currentModel, updateConfig, refreshConfig, isLoading: providersLoading,
-      workspaces, updateWorkspaceConfig, touchWorkspace, removeWorkspace,
+      config, allProviders, currentProvider, currentModel, isLoading: providersLoading,
+      providerVerifyStatus, workspaces,
     }),
-    [config, allProviders, currentProvider, currentModel, updateConfig, refreshConfig, providersLoading,
-     workspaces, updateWorkspaceConfig, touchWorkspace, removeWorkspace]
+    [config, allProviders, currentProvider, currentModel, providersLoading,
+     providerVerifyStatus, workspaces]
   );
 
-  return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
+  const actionsValue = useMemo(
+    () => ({
+      updateConfig, refreshConfig, saveProviderVerifyStatus,
+      updateWorkspaceConfig, touchWorkspace, removeWorkspace,
+    }),
+    [updateConfig, refreshConfig, saveProviderVerifyStatus,
+     updateWorkspaceConfig, touchWorkspace, removeWorkspace]
+  );
+
+  return (
+    <ConfigActionsContext.Provider value={actionsValue}>
+      <ConfigDataContext.Provider value={dataValue}>
+        {children}
+      </ConfigDataContext.Provider>
+    </ConfigActionsContext.Provider>
+  );
 }

@@ -54,8 +54,19 @@ export interface Provider {
   // 官网链接 (用于"去官网"入口)
   websiteUrl?: string;
 
+  // 模型别名映射 (sonnet/opus/haiku → 实际模型 ID)
+  modelAliases?: ModelAliases;
+
   // 模型列表
   models: ModelEntity[];
+}
+
+// ── Model Aliases ──
+
+export interface ModelAliases {
+  sonnet?: string;
+  opus?: string;
+  haiku?: string;
 }
 
 // ── Proxy Settings ──
@@ -116,6 +127,10 @@ export interface AppConfig {
   presetCustomModels?: Record<string, ModelEntity[]>;
   /** Provider 验证状态缓存 (key = provider ID) */
   providerVerifyStatus?: Record<string, ProviderVerifyStatus>;
+  /** 用户自定义模型别名覆盖 (key = provider ID) */
+  providerModelAliases?: Record<string, ModelAliases>;
+  /** Extra args for MCP servers (appended to preset args, key = server ID) */
+  mcpServerArgs?: Record<string, string[]>;
   minimizeToTray?: boolean;
   defaultWorkspacePath?: string;
   proxySettings?: ProxySettings;
@@ -131,4 +146,5 @@ export interface ProviderEnv {
   disableNonessential?: boolean;
   maxOutputTokens?: number;
   upstreamFormat?: 'chat_completions' | 'responses';
+  modelAliases?: ModelAliases;
 }
