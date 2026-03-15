@@ -8,6 +8,55 @@
 
 ---
 
+## [0.1.5] - 2026-03-15
+
+### 新增
+
+#### Config 基建加固 (PRD 0.1.4)
+- **原子写入**：ConfigStore/SessionStore/SkillsStore 所有写入改用 .tmp → .bak → rename，崩溃自动从 .bak 恢复
+- **Config 磁盘优先**：所有配置写入走 atomicModifyConfig（读磁盘最新 → 合并 → 原子写盘）
+- **local_http 模块**：集中化 `.no_proxy()` 到 `crate::local_http`，消除 localhost 代理陷阱
+- **Rust PATCH 方法**：proxy_http_request 补全 PATCH 支持
+
+#### OpenAI Bridge + 消息队列 (PRD 0.1.5)
+- **OpenAI Bridge**：SDK loopback 协议翻译，DeepSeek/Gemini 等 OpenAI 兼容供应商可正常对话
+- **消息队列**：AI 回复中可继续发消息（排队 + 取消 + 强制执行），QueuedMessagesPanel UI
+- **MCP 预设扩展**：新增 Playwright/DuckDuckGo/Tavily 3 个预设 MCP 服务器
+- **Per-server 环境变量**：MCP 服务器独立 env 配置，持久化到 mcp-env.json
+- **URL 模板变量**：HTTP/SSE 类型 MCP 支持 `{{VAR}}` 模板语法
+- **Tool 渲染优化**：工具类型彩色图标 + BashOutputTool/KillShellTool/AgentTool 专用组件
+- **文件搜索重构**：ChatInput 搜索逻辑抽取到 FileSearchMenu 组件
+
+#### Provider & MCP 追平 (PRD 0.1.6)
+- **3 个新预设供应商**：Google Gemini / 火山方舟 API / 阿里云百炼
+- **modelAliases**：所有非 Anthropic 供应商添加 sonnet/opus/haiku 模型别名映射
+- **MCP JSON 批量导入**：兼容 Claude Desktop 格式，重复 ID 自动跳过
+- **MCP 运行时检测**：npx/uvx 不存在时返回下载链接提示
+- **MCP 远程连接验证**：HTTP/SSE URL 可达性检查（DNS/超时/401/404/405 错误映射）
+- **mcpServerArgs**：MCP 服务器追加启动参数
+- **Provider 模型数据同步**：volcengine/zenmux/openrouter 模型列表更新
+
+#### 工作区右键菜单 + Analytics (PRD 0.1.7)
+- **右键菜单**：文件（预览/引用/打开/重命名/删除）、文件夹（打开/引用/重命名/删除）
+- **@引用注入**：右键「引用」将 `@相对路径` 插入聊天输入框
+- **文件冲突重命名**：拖拽同名文件自动重命名为 `filename (1).ext`
+- **Analytics 埋点**：匿名统计（默认关闭），device_id 持久化 + 事件批量发送
+- **日志导出**：Settings 导出近 3 天统一日志为 zip
+
+#### 使用统计系统 (PRD 0.1.8)
+- **Turn 级 usage 采集**：从 SDK result 事件提取 modelUsage（per-model breakdown）+ 聚合 fallback
+- **持久化**：assistant 消息附带 usage/toolCount/durationMs，SessionStats 扩展 cache token 统计
+- **统计 API**：`GET /sessions/:id/stats`（单 session）+ `GET /api/global-stats?range=`（全局）
+- **消息 inline 展示**：assistant 气泡下方显示模型名 + token 数 + 耗时
+- **UsageStatsPanel**：设置页全局统计面板（汇总卡片 + 每日趋势图 + 模型分布表）
+- **SessionStatsModal**：历史记录菜单打开单 session 统计弹窗
+
+### 改进
+- **ConfigContext 拆分**：Data + Actions 双 Context，避免 actions 变化触发全子树重渲染
+- **providerVerifyStatus 缓存**：Provider 验证状态持久化到 AppConfig
+
+---
+
 ## [0.1.4] - 2026-03-15
 
 ### 新增
@@ -221,7 +270,8 @@
 
 ---
 
-[Unreleased]: https://github.com/applre/SoAgents/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/applre/SoAgents/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/applre/SoAgents/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/applre/SoAgents/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/applre/SoAgents/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/applre/SoAgents/compare/v0.1.1...v0.1.2
