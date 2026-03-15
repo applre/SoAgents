@@ -2,17 +2,16 @@ import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } fro
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { TabContext, type TabState } from './TabContext';
-import { ConfigContext } from './ConfigContext';
 import { SseConnection } from '../api/SseConnection';
 import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl, listRunningSidecars } from '../api/tauriClient';
 import { apiGetJson, apiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
-import type { Message, ContentBlock, ChatImage } from '../types/chat';
+import type { Message, ContentBlock, ChatImage, TurnMeta } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
 import type { LogEntry } from '../../shared/types/log';
 import type { QueuedMessageInfo } from '../../shared/types/queue';
+import type { ProviderEnv } from '../../shared/types/config';
 import { REACT_LOG_EVENT } from '../utils/frontendLogger';
-import { useContext } from 'react';
 
 interface Props {
   tabId: string;
@@ -30,7 +29,6 @@ type SessionScopedPayload = {
 };
 
 export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children }: Props) {
-  const configCtx = useContext(ConfigContext);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionState, setSessionState] = useState<'idle' | 'running' | 'error'>('idle');
@@ -52,18 +50,6 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
   const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
   const queuedMessagesRef = useRef<QueuedMessageInfo[]>([]);
-
-  // Refs for stable access in sendMessage callback (avoid stale closure)
-  const currentProviderRef = useRef(configCtx?.currentProvider);
-  currentProviderRef.current = configCtx?.currentProvider;
-  const currentModelRef = useRef(configCtx?.currentModel);
-  currentModelRef.current = configCtx?.currentModel;
-  const apiKeysRef = useRef(configCtx?.config.apiKeys ?? {});
-  apiKeysRef.current = configCtx?.config.apiKeys ?? {};
-  const allProvidersRef = useRef(configCtx?.allProviders ?? []);
-  allProvidersRef.current = configCtx?.allProviders ?? [];
-  const workspacesRef = useRef(configCtx?.workspaces ?? []);
-  workspacesRef.current = configCtx?.workspaces ?? [];
 
   // Per-session maps for SSE connections and server URLs
   const sseMapRef = useRef<Map<string, SseConnection>>(new Map());
@@ -312,9 +298,38 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     });
 
     sse.on('chat:message-complete', (data) => {
-      const evt = data as SessionScopedPayload | null;
+      const evt = data as (SessionScopedPayload & {
+        model?: string;
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheCreationTokens?: number;
+        durationMs?: number;
+        toolCount?: number;
+      }) | null;
       const completedSessionId = resolveEventSessionId(evt) ?? forSessionId;
       if (completedSessionId) adoptDraftSession(completedSessionId);
+
+      // Attach turnMeta to the last assistant message
+      if (evt && (evt.model || evt.inputTokens || evt.durationMs)) {
+        const turnMeta: TurnMeta = {
+          model: evt.model,
+          inputTokens: evt.inputTokens,
+          outputTokens: evt.outputTokens,
+          cacheReadTokens: evt.cacheReadTokens,
+          cacheCreationTokens: evt.cacheCreationTokens,
+          durationMs: evt.durationMs,
+          toolCount: evt.toolCount,
+        };
+        updateMessagesForSession(completedSessionId, (prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'assistant') {
+            return [...prev.slice(0, -1), { ...last, turnMeta }];
+          }
+          return prev;
+        });
+      }
+
       if (completedSessionId) {
         runningSessionsRef.current.delete(completedSessionId);
         setRunningSessions(new Set(runningSessionsRef.current));
@@ -611,7 +626,7 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     return () => clearInterval(interval);
   }, [stopSessionSidecarCleanup]);
 
-  const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[]) => {
+  const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]) => {
     let currentSessionId = activeSessionIdRef.current;
     const isCurrentlyRunning = currentSessionId && runningSessionsRef.current.has(currentSessionId);
 
@@ -652,26 +667,6 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     const skillContents = skills?.map(s => s.content).filter(Boolean) ?? [];
     const backendMessage = [text, ...skillContents].filter(Boolean).join('\n');
 
-    // Build providerEnv from refs (stable, avoids stale closure)
-    const ws = workspacesRef.current.find((w) => w.path === agentDir);
-    const wsProviderId = ws?.providerId;
-    const provider = wsProviderId
-      ? (allProvidersRef.current.find((p) => p.id === wsProviderId) ?? currentProviderRef.current)
-      : currentProviderRef.current;
-    const keys = apiKeysRef.current;
-    const wsModelId = ws?.modelId;
-    const selectedModel = wsModelId ?? currentModelRef.current?.model ?? provider?.primaryModel;
-    const providerEnv = provider && provider.type === 'api'
-      ? {
-          baseUrl: provider.config?.baseUrl,
-          apiKey: keys[provider.id] ?? '',
-          authType: provider.authType,
-          apiProtocol: provider.apiProtocol,
-          timeout: provider.config?.timeout,
-          disableNonessential: provider.config?.disableNonessential,
-        }
-      : undefined;
-
     try {
       // 如果是新 session（无 sessionId），先通过 global sidecar 创建
       if (!currentSessionId) {
@@ -703,9 +698,9 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         message: backendMessage,
         agentDir,
         providerEnv,
-        model: selectedModel,
+        model,
         permissionMode,
-        mcpEnabledServerIds: ws?.mcpEnabledServers,
+        mcpEnabledServerIds,
         images,
       });
 
@@ -735,7 +730,6 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         setSessionState('error');
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- provider/config refs are stable
   }, [agentDir, refreshSessions, updateMessagesForSession, ensureSessionSidecar, getGlobalUrl]);
 
   const stopResponse = useCallback(async () => {

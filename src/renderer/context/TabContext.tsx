@@ -3,6 +3,7 @@ import type { Message, ChatImage } from '../types/chat';
 import type { SessionMetadata } from '../../shared/types/session';
 import type { LogEntry } from '../../shared/types/log';
 import type { QueuedMessageInfo } from '../../shared/types/queue';
+import type { ProviderEnv } from '../../shared/types/config';
 
 export interface TabState {
   tabId: string;
@@ -12,7 +13,7 @@ export interface TabState {
   messages: Message[];
   isLoading: boolean;
   sessionState: 'idle' | 'running' | 'error';
-  sendMessage: (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[]) => Promise<void>;
+  sendMessage: (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]) => Promise<void>;
   stopResponse: () => Promise<void>;
   resetSession: () => Promise<void>;
   apiGet: <T>(path: string) => Promise<T>;

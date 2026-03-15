@@ -4,6 +4,7 @@ import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
 import * as MCPConfigStore from './MCPConfigStore';
+import * as ConfigStore from './ConfigStore';
 import { resolveClaudeCodeCli } from './provider-verify';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
@@ -138,6 +139,21 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string,
   // 非 OpenAI 协议时清除 bridge 配置
   currentOpenAiBridgeConfig = null;
 
+  // 7. Model aliases (sonnet/opus/haiku → actual model IDs for third-party providers)
+  if (providerEnv?.modelAliases) {
+    const aliases = providerEnv.modelAliases;
+    const parts: string[] = [];
+    if (aliases.sonnet) parts.push(`sonnet=${aliases.sonnet}`);
+    if (aliases.opus) parts.push(`opus=${aliases.opus}`);
+    if (aliases.haiku) parts.push(`haiku=${aliases.haiku}`);
+    if (parts.length > 0) {
+      env.CLAUDE_CODE_USE_MODEL_ALIASES = parts.join(',');
+      console.log(`[env] Model aliases: ${parts.join(', ')}`);
+    }
+  } else {
+    delete env.CLAUDE_CODE_USE_MODEL_ALIASES;
+  }
+
   return env;
 }
 
@@ -171,6 +187,11 @@ class SessionRunner {
   private turnAssistantContent = '';
   private turnHasStreamedContent = false;
   private currentToolId = '';
+
+  // ── Turn 级 usage 跟踪 ──
+  private turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined as string | undefined, modelUsage: undefined as Record<string, import('../shared/types/session').ModelUsageEntry> | undefined };
+  private turnStartTime: number | null = null;
+  private turnToolCount = 0;
 
   // ── 权限/问题处理 ──
   private pendingPermissions = new Map<string, (allow: boolean) => void>();
@@ -280,6 +301,9 @@ class SessionRunner {
       this.turnAssistantContent = '';
       this.turnHasStreamedContent = false;
       this.currentToolId = '';
+      this.turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined, modelUsage: undefined };
+      this.turnStartTime = Date.now();
+      this.turnToolCount = 0;
       this.isStreaming = true;
 
       console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued})`);
@@ -343,7 +367,9 @@ class SessionRunner {
           }
 
           if (cfg.type === 'stdio') {
-            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env };
+            const extraArgs = ConfigStore.readConfig().mcpServerArgs?.[cfg.id];
+            const finalArgs = extraArgs?.length ? [...(cfg.args ?? []), ...extraArgs] : cfg.args;
+            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: finalArgs, env: cfg.env };
           } else if (cfg.type === 'sse' || cfg.type === 'http') {
             // Expand URL templates like {{TAVILY_API_KEY}}
             let url = cfg.url ?? '';
@@ -500,6 +526,9 @@ class SessionRunner {
 
       if (streamEvent.type === 'message_start' && streamEvent.message) {
         console.log(`${logTag} API responded with model: ${streamEvent.message.model}, msg_id: ${streamEvent.message.id}`);
+        if (streamEvent.message.model) {
+          this.turnUsage.model = streamEvent.message.model;
+        }
       }
 
       if (streamEvent.type === 'content_block_delta') {
@@ -518,6 +547,7 @@ class SessionRunner {
         console.log(`${logTag} content_block_start: type=${block?.type}, name=${block?.name ?? '-'}, id=${block?.id ?? '-'}`);
         if (block?.type === 'tool_use') {
           this.currentToolId = block.id ?? '';
+          this.turnToolCount++;
           broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
         }
       } else if (streamEvent.type === 'content_block_stop') {
@@ -557,12 +587,55 @@ class SessionRunner {
       // 提取 sdkSessionId 用于恢复，并持久化到 SessionStore
       if ((msg as SDKMessage & { session_id?: string }).session_id) {
         this.sdkSessionId = (msg as SDKMessage & { session_id?: string }).session_id!;
-        SessionStore.saveSdkSessionId(activeSessionId, this.sdkSessionId);
+        SessionStore.saveSdkSessionId(activeSessionId, this.sdkSessionId!);
       }
 
-      // 保存助手消息并通知前端
-      this.saveTurnAssistantContent(activeSessionId);
-      broadcast('chat:message-complete', { sessionId: activeSessionId });
+      // 提取 token usage：优先 modelUsage（per-model），fallback usage（aggregate）
+      const resultMsg = msg as SDKMessage & {
+        usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+        modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }>;
+      };
+
+      if (resultMsg.modelUsage) {
+        let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheCreation = 0;
+        let primaryModel: string | undefined;
+        let maxModelTokens = 0;
+        const modelUsageMap: Record<string, import('../shared/types/session').ModelUsageEntry> = {};
+
+        for (const [model, stats] of Object.entries(resultMsg.modelUsage) as [string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }][]) {
+          const mi = stats.inputTokens ?? 0;
+          const mo = stats.outputTokens ?? 0;
+          const mcr = stats.cacheReadInputTokens ?? 0;
+          const mcc = stats.cacheCreationInputTokens ?? 0;
+          totalInput += mi; totalOutput += mo; totalCacheRead += mcr; totalCacheCreation += mcc;
+          modelUsageMap[model] = { inputTokens: mi, outputTokens: mo, cacheReadTokens: mcr || undefined, cacheCreationTokens: mcc || undefined };
+          const total = mi + mo;
+          if (total > maxModelTokens) { maxModelTokens = total; primaryModel = model; }
+        }
+        this.turnUsage = { inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreationTokens: totalCacheCreation, model: primaryModel, modelUsage: modelUsageMap };
+        console.log(`${logTag} Token usage from modelUsage: input=${totalInput}, output=${totalOutput}, models=${Object.keys(modelUsageMap).join(', ')}`);
+      } else if (resultMsg.usage) {
+        this.turnUsage.inputTokens = resultMsg.usage.input_tokens ?? 0;
+        this.turnUsage.outputTokens = resultMsg.usage.output_tokens ?? 0;
+        this.turnUsage.cacheReadTokens = resultMsg.usage.cache_read_input_tokens ?? 0;
+        this.turnUsage.cacheCreationTokens = resultMsg.usage.cache_creation_input_tokens ?? 0;
+        console.log(`${logTag} Token usage from usage: input=${this.turnUsage.inputTokens}, output=${this.turnUsage.outputTokens}`);
+      }
+
+      const durationMs = this.turnStartTime ? Date.now() - this.turnStartTime : undefined;
+
+      // 保存助手消息（含 usage）并通知前端
+      this.saveTurnAssistantContent(activeSessionId, durationMs);
+      broadcast('chat:message-complete', {
+        sessionId: activeSessionId,
+        model: this.turnUsage.model,
+        inputTokens: this.turnUsage.inputTokens,
+        outputTokens: this.turnUsage.outputTokens,
+        cacheReadTokens: this.turnUsage.cacheReadTokens,
+        cacheCreationTokens: this.turnUsage.cacheCreationTokens,
+        toolCount: this.turnToolCount,
+        durationMs,
+      });
 
       // 标记流式结束，解锁 generator 进入下一轮
       this.isStreaming = false;
@@ -573,13 +646,26 @@ class SessionRunner {
   }
 
   /** 保存当前轮的助手内容到 SessionStore */
-  private saveTurnAssistantContent(sessionId: string): void {
+  private saveTurnAssistantContent(sessionId: string, durationMs?: number): void {
     if (this.turnAssistantContent) {
+      const hasUsage = this.turnUsage.inputTokens > 0 || this.turnUsage.outputTokens > 0;
       SessionStore.saveMessage(sessionId, {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: this.turnAssistantContent,
         timestamp: new Date().toISOString(),
+        ...(hasUsage ? {
+          usage: {
+            inputTokens: this.turnUsage.inputTokens,
+            outputTokens: this.turnUsage.outputTokens,
+            cacheReadTokens: this.turnUsage.cacheReadTokens || undefined,
+            cacheCreationTokens: this.turnUsage.cacheCreationTokens || undefined,
+            model: this.turnUsage.model,
+            modelUsage: this.turnUsage.modelUsage,
+          },
+        } : {}),
+        ...(this.turnToolCount > 0 ? { toolCount: this.turnToolCount } : {}),
+        ...(durationMs ? { durationMs } : {}),
       });
       this.turnAssistantContent = '';
     }

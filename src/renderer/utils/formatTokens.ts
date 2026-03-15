@@ -1,7 +1,5 @@
 /**
  * 格式化 token 数量，自动转换为 K/M 单位
- * @param tokens - token 数量
- * @returns 格式化后的字符串，如 "1.2K", "3.5M"
  */
 export function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) {
@@ -11,4 +9,16 @@ export function formatTokens(tokens: number): string {
     return `${(tokens / 1_000).toFixed(1)}K`;
   }
   return tokens.toString();
+}
+
+/**
+ * 格式化耗时（毫秒）为人类可读字符串
+ */
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainSec = Math.round(seconds % 60);
+  return `${minutes}m${remainSec}s`;
 }

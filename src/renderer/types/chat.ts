@@ -20,9 +20,21 @@ export interface ChatImage {
   data: string;     // 纯 base64（不含 data: 前缀）
 }
 
+/** 单次 assistant turn 的使用元数据 */
+export interface TurnMeta {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  durationMs?: number;
+  toolCount?: number;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   blocks: ContentBlock[];
   createdAt: number;
+  turnMeta?: TurnMeta;
 }

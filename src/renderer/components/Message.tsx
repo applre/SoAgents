@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Puzzle } from 'lucide-react';
-import type { Message } from '../types/chat';
+import type { Message, TurnMeta } from '../types/chat';
 import ToolUse from './tools/ToolUse';
 import CodeBlock from './markdown/CodeBlock';
+import { formatTokens, formatDuration } from '../utils/formatTokens';
 
 interface Props {
   message: Message;
@@ -201,11 +202,28 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
           );
         })}
       </div>
-      {/* Hover action menu */}
-      <div className="flex items-center gap-0.5 mt-1 opacity-0 transition-opacity group-hover/assistant:opacity-100">
-        {copyButton}
+      {/* Turn meta + hover action menu */}
+      <div className="flex items-center gap-2 mt-1">
+        {message.turnMeta && <TurnMetaDisplay meta={message.turnMeta} />}
+        <div className="opacity-0 transition-opacity group-hover/assistant:opacity-100">
+          {copyButton}
+        </div>
       </div>
     </div>
+  );
+}
+
+function TurnMetaDisplay({ meta }: { meta: TurnMeta }) {
+  const parts: string[] = [];
+  if (meta.model) parts.push(meta.model);
+  const totalTokens = (meta.inputTokens ?? 0) + (meta.outputTokens ?? 0);
+  if (totalTokens > 0) parts.push(`${formatTokens(totalTokens)} tokens`);
+  if (meta.durationMs) parts.push(formatDuration(meta.durationMs));
+  if (parts.length === 0) return null;
+  return (
+    <span className="text-[11px] text-[var(--ink-tertiary)]">
+      {parts.join(' · ')}
+    </span>
   );
 }
 

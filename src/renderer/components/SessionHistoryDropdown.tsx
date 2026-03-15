@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { Clock, Trash2, Plus, MoreVertical, Edit2 } from 'lucide-react';
+import { Clock, Trash2, Plus, MoreVertical, Edit2, BarChart2 } from 'lucide-react';
 import { useTabState } from '../context/TabContext';
 import { formatRelativeTime } from '../utils/formatTime';
 import { formatTokens } from '../utils/formatTokens';
+import SessionStatsModal from './SessionStatsModal';
 
 export default function SessionHistoryDropdown() {
   const [open, setOpen] = useState(false);
@@ -11,6 +12,7 @@ export default function SessionHistoryDropdown() {
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const { sessionId, sessions, loadSession, deleteSession, resetSession, updateSessionTitle, refreshSessions } = useTabState();
 
@@ -133,6 +135,14 @@ export default function SessionHistoryDropdown() {
         </>
       )}
 
+      {statsSession && (
+        <SessionStatsModal
+          sessionId={statsSession.id}
+          sessionTitle={statsSession.title}
+          onClose={() => setStatsSession(null)}
+        />
+      )}
+
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
@@ -201,6 +211,13 @@ export default function SessionHistoryDropdown() {
                             >
                               <Edit2 size={13} />
                               重命名
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setStatsSession({ id: s.id, title: s.title }); setMenuOpenFor(null); }}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink-secondary)] hover:bg-[var(--paper-dark)]"
+                            >
+                              <BarChart2 size={13} />
+                              统计
                             </button>
                             <button
                               onClick={(e) => handleDeleteClick(e, s.id, s.title)}
