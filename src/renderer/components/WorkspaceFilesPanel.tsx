@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, Settings, Check, Plus } from 'lucide-react';
+import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, Settings, Check, Plus, AtSign, ExternalLink, Pencil, Trash2 } from 'lucide-react';
 import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import DiffViewer from './DiffViewer';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu';
+import RenameDialog from './RenameDialog';
+import ConfirmDialog from './ConfirmDialog';
 
 interface FileEntry {
   name: string;
@@ -23,6 +26,7 @@ interface FileDiffResult {
 interface Props {
   agentDir: string | null;
   onOpenFile?: (path: string) => void;
+  onInsertReference?: (paths: string[]) => void;
 }
 
 // ── 项目配置文件定义 ─────────────────────────────────────────────
@@ -326,9 +330,10 @@ interface TreeNodeProps {
   onOpenFile?: (path: string) => void;
   expandedDirs: Set<string>;
   dirChildren: Record<string, FileEntry[]>;
+  onContextMenu?: (e: React.MouseEvent, entry: FileEntry) => void;
 }
 
-function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, expandedDirs, dirChildren }: TreeNodeProps) {
+function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, expandedDirs, dirChildren, onContextMenu }: TreeNodeProps) {
   const indent = depth * 12 + 16; // px-4 (16) + 每层 12px
 
   if (entry.type === 'dir') {
@@ -336,6 +341,7 @@ function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, e
       <>
         <div
           onClick={() => onToggleDir(entry.path)}
+          onContextMenu={(e) => onContextMenu?.(e, entry)}
           className="flex items-center gap-1.5 py-1.5 hover:bg-[var(--hover)] transition-colors cursor-pointer select-none"
           style={{ paddingLeft: indent }}
         >
@@ -359,6 +365,7 @@ function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, e
             onOpenFile={onOpenFile}
             expandedDirs={expandedDirs}
             dirChildren={dirChildren}
+            onContextMenu={onContextMenu}
           />
         ))}
         {expanded && children && children.length === 0 && (
@@ -373,6 +380,7 @@ function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, e
   return (
     <div
       onClick={() => onOpenFile?.(entry.path)}
+      onContextMenu={(e) => onContextMenu?.(e, entry)}
       className="flex items-center gap-1.5 py-1.5 hover:bg-[var(--hover)] transition-colors cursor-pointer"
       style={{ paddingLeft: indent + 14 }} // 对齐：无 chevron，补偏移
     >
@@ -383,7 +391,7 @@ function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, e
 }
 
 // ── 主组件 ─────────────────────────────────────────────────────
-export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
+export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertReference }: Props) {
   const [rootFiles, setRootFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -627,6 +635,75 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
     }
   }, [showConfigTab]);
 
+  // ── 右键菜单 + 对话框 ──
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
+  const [dialog, setDialog] = useState<{ type: 'rename' | 'delete'; entry: FileEntry } | null>(null);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, entry });
+  }, []);
+
+  const handleOpenInFinder = useCallback(async (path: string) => {
+    if (!isTauri()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      // 文件 → 打开所在文件夹；文件夹 → 直接打开
+      await invoke('cmd_open_in_finder', { path });
+    } catch (err) {
+      console.error('打开文件夹失败:', err);
+    }
+  }, []);
+
+  const handleOpenWithDefault = useCallback(async (path: string) => {
+    if (!isTauri()) return;
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell');
+      await open(path);
+    } catch (err) {
+      console.error('打开文件失败:', err);
+    }
+  }, []);
+
+  const handleRename = useCallback(async (oldPath: string, newName: string) => {
+    try {
+      await globalApiPostJson('/api/file-rename', { oldPath, newName });
+      refresh();
+    } catch (err) {
+      console.error('重命名失败:', err);
+    }
+  }, [refresh]);
+
+  const handleDelete = useCallback(async (path: string) => {
+    try {
+      await globalApiPostJson('/api/file-delete', { path });
+      refresh();
+    } catch (err) {
+      console.error('删除失败:', err);
+    }
+  }, [refresh]);
+
+  const getContextMenuItems = useCallback((entry: FileEntry): ContextMenuItem[] => {
+    if (entry.type === 'file') {
+      return [
+        { label: '预览', icon: <Eye size={14} />, onClick: () => onOpenFile?.(entry.path) },
+        { label: '引用', icon: <AtSign size={14} />, onClick: () => onInsertReference?.([entry.path]) },
+        { label: '打开', icon: <ExternalLink size={14} />, onClick: () => handleOpenWithDefault(entry.path) },
+        { label: '打开所在文件夹', icon: <FolderOpen size={14} />, onClick: () => handleOpenInFinder(entry.path) },
+        { label: '重命名', icon: <Pencil size={14} />, onClick: () => setDialog({ type: 'rename', entry }) },
+        { label: '删除', icon: <Trash2 size={14} />, danger: true, onClick: () => setDialog({ type: 'delete', entry }) },
+      ];
+    }
+    // 文件夹
+    return [
+      { label: '打开所在文件夹', icon: <FolderOpen size={14} />, onClick: () => handleOpenInFinder(entry.path) },
+      { label: '引用', icon: <AtSign size={14} />, onClick: () => onInsertReference?.([entry.path]) },
+      { label: '重命名', icon: <Pencil size={14} />, onClick: () => setDialog({ type: 'rename', entry }) },
+      { label: '删除', icon: <Trash2 size={14} />, danger: true, onClick: () => setDialog({ type: 'delete', entry }) },
+    ];
+  }, [onOpenFile, onInsertReference, handleOpenInFinder, handleOpenWithDefault]);
+
   const handleToggleDir = useCallback(async (path: string) => {
     setExpandedDirs((prev) => {
       const next = new Set(prev);
@@ -654,12 +731,67 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
     invoke('cmd_open_in_finder', { path: agentDir }).catch(console.error);
   }, [agentDir]);
 
+  // ── 拖拽文件到工作区（冲突自动重命名） ──
+  const [isDroppingFiles, setIsDroppingFiles] = useState(false);
+  const dropCounterRef = useRef(0);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    dropCounterRef.current++;
+    if (e.dataTransfer.types.includes('Files')) setIsDroppingFiles(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    dropCounterRef.current--;
+    if (dropCounterRef.current <= 0) {
+      setIsDroppingFiles(false);
+      dropCounterRef.current = 0;
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDroppingFiles(false);
+    dropCounterRef.current = 0;
+    if (!agentDir) return;
+
+    // Tauri 环境中通过 dataTransfer.files 获取拖入的文件路径
+    const files = e.dataTransfer.files;
+    if (files.length === 0) return;
+
+    const sourcePaths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      // @ts-expect-error Tauri webview exposes path on File objects
+      const path = file.path as string | undefined;
+      if (path) sourcePaths.push(path);
+    }
+    if (sourcePaths.length === 0) return;
+
+    try {
+      await globalApiPostJson('/api/file-copy', { sourcePaths, targetDir: agentDir });
+      refresh();
+    } catch (err) {
+      console.error('拖拽文件复制失败:', err);
+    }
+  }, [agentDir, refresh]);
+
   const dirName = agentDir?.split('/').filter(Boolean).pop() ?? '工作区';
 
   return (
     <div
-      className="flex h-full flex-col border-l border-[var(--border)] bg-[var(--paper)]"
+      className={`flex h-full flex-col border-l border-[var(--border)] bg-[var(--paper)] ${isDroppingFiles ? 'ring-2 ring-inset ring-[var(--accent)]/30' : ''}`}
       style={{ width: 280, minWidth: 280 }}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
     >
       {/* 顶部标题：高度 48px，与 TopTabBar 对齐 */}
       <div
@@ -810,6 +942,7 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
                 onOpenFile={onOpenFile}
                 expandedDirs={expandedDirs}
                 dirChildren={dirChildren}
+                onContextMenu={handleContextMenu}
               />
             ))
           )
@@ -853,6 +986,44 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile }: Props) {
           )
         )}
       </div>
+
+      {/* 右键菜单 */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={getContextMenuItems(contextMenu.entry)}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* 重命名对话框 */}
+      {dialog?.type === 'rename' && (
+        <RenameDialog
+          currentName={dialog.entry.name}
+          itemType={dialog.entry.type === 'dir' ? 'folder' : 'file'}
+          onRename={(newName) => {
+            handleRename(dialog.entry.path, newName);
+            setDialog(null);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+
+      {/* 删除确认对话框 */}
+      {dialog?.type === 'delete' && (
+        <ConfirmDialog
+          title={`删除${dialog.entry.type === 'dir' ? '文件夹' : '文件'}`}
+          message={`确定要删除「${dialog.entry.name}」吗？此操作无法撤销。`}
+          confirmText="删除"
+          danger
+          onConfirm={() => {
+            handleDelete(dialog.entry.path);
+            setDialog(null);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 }

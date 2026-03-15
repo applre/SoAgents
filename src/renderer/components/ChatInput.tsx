@@ -9,7 +9,8 @@ import { useConfig } from '../context/ConfigContext';
 import { useTabState } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
-import type { ModelEntity, Provider } from '../../shared/types/config';
+import type { ModelEntity, Provider, ProviderEnv } from '../../shared/types/config';
+import { getEffectiveModelAliases } from '../../shared/providers';
 import type { ChatImage } from '../types/chat';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
@@ -27,12 +28,14 @@ interface SkillPayload {
 }
 
 interface Props {
-  onSend: (text: string, permissionMode?: string, skills?: SkillPayload[], images?: ChatImage[]) => void;
+  onSend: (text: string, permissionMode?: string, skills?: SkillPayload[], images?: ChatImage[], model?: string, providerEnv?: import('../../shared/types/config').ProviderEnv, mcpEnabledServerIds?: string[]) => void;
   onStop: () => void;
   isLoading: boolean;
   agentDir?: string;
   injectText?: string | null;
   onInjectConsumed?: () => void;
+  injectRefText?: string | null;
+  onRefTextConsumed?: () => void;
 }
 
 interface MCPServerItem {
@@ -51,7 +54,7 @@ interface AttachedFile {
   base64?: string; // 图片的 base64 数据
 }
 
-export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed }: Props) {
+export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed }: Props) {
   const { config, allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
   const { apiGet, messages } = useTabState();
   const isProviderLocked = messages.length > 0;
@@ -142,6 +145,17 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setTimeout(() => textareaRef.current?.focus(), 50);
     return () => { cancelled = true; };
   }, [injectText, onInjectConsumed, apiGet]);
+
+  // @引用注入：将 @path 文本插入到输入框
+  useEffect(() => {
+    if (!injectRefText) return;
+    onRefTextConsumed?.();
+    setText((prev) => {
+      const separator = prev && !prev.endsWith('\n') ? '\n' : '';
+      return prev + separator + injectRefText + ' ';
+    });
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }, [injectRefText, onRefTextConsumed]);
 
   // 加载 skills
   useEffect(() => {
@@ -284,7 +298,23 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         data: parts[1] ?? '',
       };
     });
-    onSend(userText, permissionMode, skills, images.length > 0 ? images : undefined);
+    // Build providerEnv from effective provider (assembled here, not in TabProvider)
+    const selectedModel = effectiveModel?.model ?? effectiveProvider.primaryModel;
+    const providerEnv: ProviderEnv | undefined = effectiveProvider && effectiveProvider.type === 'api'
+      ? {
+          baseUrl: effectiveProvider.config?.baseUrl,
+          apiKey: config.apiKeys[effectiveProvider.id] ?? '',
+          authType: effectiveProvider.authType,
+          apiProtocol: effectiveProvider.apiProtocol,
+          timeout: effectiveProvider.config?.timeout,
+          disableNonessential: effectiveProvider.config?.disableNonessential,
+          maxOutputTokens: effectiveProvider.maxOutputTokens,
+          upstreamFormat: effectiveProvider.upstreamFormat,
+          modelAliases: getEffectiveModelAliases(effectiveProvider, config.providerModelAliases),
+        }
+      : undefined;
+    const mcpEnabledServerIds = wsEntry?.mcpEnabledServers;
+    onSend(userText, permissionMode, skills, images.length > 0 ? images : undefined, selectedModel, providerEnv, mcpEnabledServerIds);
     setText('');
     setAttachedFiles([]);
     setSelectedSkills([]);
@@ -293,7 +323,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setShowFileSearch(false);
     setAtPosition(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [text, attachedFiles, selectedSkills, isLoading, onSend, permissionMode]);
+  }, [text, attachedFiles, selectedSkills, isLoading, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
 
   const handleFileSelect = useCallback((file: FileSearchResult) => {
     if (atPosition === null) return;
