@@ -108,6 +108,23 @@ jobs:
             exit 1
           fi
 
+      - name: Repackage DMG after bun re-signing
+        run: |
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          APP_BUNDLE="${BUNDLE_DIR}/macos/SoAgents.app"
+          DMG_DIR="${BUNDLE_DIR}/dmg"
+          VERSION=$(node -p "require('./package.json').version")
+          DMG_PATH="${DMG_DIR}/SoAgents_${VERSION}_aarch64.dmg"
+
+          echo "Removing old DMG..."
+          rm -f "${DMG_DIR}"/*.dmg
+
+          echo "Creating new DMG with re-signed app..."
+          hdiutil create -volname "SoAgents" -srcfolder "$APP_BUNDLE" \
+            -ov -format UDZO "$DMG_PATH"
+
+          echo "DMG size: $(du -h "$DMG_PATH" | cut -f1)"
+
       - name: Repackage tar.gz and sign for Tauri updater
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
