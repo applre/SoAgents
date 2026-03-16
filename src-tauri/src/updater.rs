@@ -240,23 +240,11 @@ pub async fn test_update_connectivity(app: AppHandle) -> Result<String, String> 
     log::info!("[updater] Testing HTTP connectivity to: {}", url);
 
     let current_version = app.package_info().version.to_string();
-    let builder = reqwest::Client::builder()
-        .user_agent(format!("SoAgents-Updater/{}", current_version))
-        .timeout(std::time::Duration::from_secs(30));
-
-    let client = if let Some(proxy_settings) = proxy_config::read_proxy_settings() {
-        let proxy_url = proxy_config::get_proxy_url(&proxy_settings)?;
-        let proxy = reqwest::Proxy::all(&proxy_url)
-            .map_err(|e| format!("Failed to create proxy: {}", e))?
-            .no_proxy(reqwest::NoProxy::from_string(
-                "localhost,127.0.0.1,127.0.0.0/8,::1,[::1]",
-            ));
-        builder.proxy(proxy)
-    } else {
-        builder.no_proxy()
-    }
-    .build()
-    .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+    let client = proxy_config::build_client_with_proxy(
+        reqwest::Client::builder()
+            .user_agent(format!("SoAgents-Updater/{}", current_version))
+            .timeout(std::time::Duration::from_secs(30)),
+    )?;
 
     let response = client
         .get(&url)

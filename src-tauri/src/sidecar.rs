@@ -307,8 +307,8 @@ impl SidecarManager {
                     cmd.env("HTTPS_PROXY", &proxy_url);
                     cmd.env("http_proxy", &proxy_url);
                     cmd.env("https_proxy", &proxy_url);
-                    cmd.env("NO_PROXY", "localhost,127.0.0.1,127.0.0.0/8,::1,[::1]");
-                    cmd.env("no_proxy", "localhost,127.0.0.1,127.0.0.0/8,::1,[::1]");
+                    cmd.env("NO_PROXY", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
+                    cmd.env("no_proxy", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
                 }
                 Err(e) => {
                     log::error!("[sidecar] Invalid proxy config: {}, stripping proxy vars", e);

@@ -369,7 +369,26 @@ class SessionRunner {
           if (cfg.type === 'stdio') {
             const extraArgs = ConfigStore.readConfig().mcpServerArgs?.[cfg.id];
             const finalArgs = extraArgs?.length ? [...(cfg.args ?? []), ...extraArgs] : cfg.args;
-            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: finalArgs, env: cfg.env };
+
+            // Build MCP config with isolated env to prevent proxy interference.
+            // The parent Sidecar may have HTTP_PROXY set (injected by Rust at spawn),
+            // which leaks into MCP child processes and breaks localhost WebSocket connections
+            // (e.g., playwright-core's ws transport to Chrome DevTools gets routed through proxy).
+            const mcpEnv: Record<string, string> = {};
+            if (cfg.env && Object.keys(cfg.env).length > 0) {
+              Object.assign(mcpEnv, cfg.env);
+            }
+            // Strip proxy env vars from MCP subprocess
+            for (const proxyVar of [
+              'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY',
+              'ALL_PROXY', 'all_proxy',
+            ]) {
+              if (!(proxyVar in mcpEnv)) {
+                mcpEnv[proxyVar] = '';
+              }
+            }
+
+            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: finalArgs, env: mcpEnv };
           } else if (cfg.type === 'sse' || cfg.type === 'http') {
             // Expand URL templates like {{TAVILY_API_KEY}}
             let url = cfg.url ?? '';
@@ -935,8 +954,9 @@ export function isRunning(): boolean {
 }
 
 /**
- * Hot-reload proxy configuration into process environment.
- * Subsequent SDK subprocess spawns inherit the new proxy.
+ * Hot-reload proxy configuration into the current process environment.
+ * Mutates process.env so that subsequent SDK subprocess spawns inherit the new proxy.
+ * Triggers session restart when the effective proxy URL actually changed.
  */
 export function setProxyConfig(proxySettings: {
   enabled: boolean;
@@ -945,22 +965,39 @@ export function setProxyConfig(proxySettings: {
   port?: number;
 } | null): void {
   const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'];
-  const NO_PROXY_VAL = 'localhost,127.0.0.1,127.0.0.0/8,::1,[::1]';
+  const NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
+
+  // Compute the new effective proxy URL for change detection
+  const oldProxyUrl = process.env.HTTP_PROXY || '';
+  const newProxyUrl = proxySettings?.enabled
+    ? `${proxySettings.protocol || 'http'}://${proxySettings.host || '127.0.0.1'}:${proxySettings.port || 7890}`
+    : '';
+  const proxyChanged = oldProxyUrl !== newProxyUrl;
 
   if (proxySettings?.enabled) {
-    const proxyUrl = `${proxySettings.protocol || 'http'}://${proxySettings.host || '127.0.0.1'}:${proxySettings.port || 7890}`;
-    process.env.HTTP_PROXY = proxyUrl;
-    process.env.HTTPS_PROXY = proxyUrl;
-    process.env.http_proxy = proxyUrl;
-    process.env.https_proxy = proxyUrl;
+    process.env.HTTP_PROXY = newProxyUrl;
+    process.env.HTTPS_PROXY = newProxyUrl;
+    process.env.http_proxy = newProxyUrl;
+    process.env.https_proxy = newProxyUrl;
     process.env.NO_PROXY = NO_PROXY_VAL;
     process.env.no_proxy = NO_PROXY_VAL;
     delete process.env.ALL_PROXY;
     delete process.env.all_proxy;
-    console.log(`[agent] Proxy hot-reloaded: ${proxyUrl}`);
+    console.log(`[agent] Proxy hot-reloaded: ${newProxyUrl}`);
   } else {
     for (const v of PROXY_VARS) delete process.env[v];
     console.log('[agent] Proxy cleared (direct connection)');
+  }
+
+  if (!proxyChanged) {
+    console.log('[agent] Proxy config unchanged, skipping session restart');
+    return;
+  }
+
+  // Restart running session so new subprocess picks up the new proxy env
+  if (runner) {
+    console.log('[agent] Proxy changed, restarting session');
+    runner.stop();
   }
 }
 

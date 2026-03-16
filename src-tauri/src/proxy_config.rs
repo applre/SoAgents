@@ -67,3 +67,30 @@ pub fn get_proxy_url(settings: &ProxySettings) -> Result<String, String> {
     let host = settings.host.as_deref().unwrap_or(DEFAULT_PROXY_HOST);
     Ok(format!("{}://{}:{}", protocol, host, port))
 }
+
+/// Build a reqwest client with user's proxy configuration
+/// - If proxy is enabled in config, use it for external requests
+/// - Always exclude localhost/127.0.0.1/::1 from proxy
+pub fn build_client_with_proxy(
+    builder: reqwest::ClientBuilder,
+) -> Result<reqwest::Client, String> {
+    let final_builder = if let Some(proxy_settings) = read_proxy_settings() {
+        let proxy_url = get_proxy_url(&proxy_settings)?;
+        log::info!("[proxy_config] Using proxy for external requests: {}", proxy_url);
+
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
+            .no_proxy(reqwest::NoProxy::from_string(
+                "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]",
+            ));
+
+        builder.proxy(proxy)
+    } else {
+        log::info!("[proxy_config] No proxy configured, using direct connection");
+        builder.no_proxy()
+    };
+
+    final_builder
+        .build()
+        .map_err(|e| format!("[proxy_config] Failed to build HTTP client: {}", e))
+}
