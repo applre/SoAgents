@@ -74,6 +74,24 @@ jobs:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: echo -n "$APPLE_API_KEY_CONTENT" > /tmp/AuthKey.p8
 
+      - name: Pre-sign Bun sidecar binary
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          BUN_BINARY="src-tauri/binaries/bun-aarch64-apple-darwin"
+          ENTITLEMENTS="src-tauri/Entitlements.plist"
+
+          echo "Removing quarantine attribute..."
+          xattr -d com.apple.quarantine "$BUN_BINARY" 2>/dev/null || true
+
+          echo "Pre-signing bun with app identity and JIT entitlements..."
+          codesign --force --options runtime --timestamp \
+            --entitlements "$ENTITLEMENTS" \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BUN_BINARY"
+
+          echo "Verifying signature..."
+          codesign -dvv "$BUN_BINARY"
+
       - name: Get version
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
