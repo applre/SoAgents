@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::commands::SidecarState;
+use crate::proxy_config;
 
 /// Global flag to prevent concurrent update checks/downloads
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -50,6 +51,27 @@ fn get_update_target() -> &'static str {
     {
         "unknown"
     }
+}
+
+/// Build an updater with user's proxy configuration applied.
+/// - Proxy enabled → `.proxy(url)`
+/// - No proxy configured → `.no_proxy()` (bypass system proxy env vars)
+fn build_updater_with_proxy(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let target = get_update_target();
+    let mut builder = app.updater_builder().target(target.to_string());
+
+    if let Some(proxy_settings) = proxy_config::read_proxy_settings() {
+        let proxy_url = proxy_config::get_proxy_url(&proxy_settings)?;
+        log::info!("[updater] Using proxy for update requests: {}", proxy_url);
+        let url = reqwest::Url::parse(&proxy_url)
+            .map_err(|e| format!("Invalid proxy URL '{}': {}", proxy_url, e))?;
+        builder = builder.proxy(url);
+    } else {
+        log::info!("[updater] No proxy configured, using direct connection");
+        builder = builder.no_proxy();
+    }
+
+    builder.build().map_err(|e| format!("Failed to build updater: {}", e))
 }
 
 /// Check for updates on startup and silently download if available
@@ -104,12 +126,8 @@ async fn check_and_download_silently(app: &AppHandle) -> Result<Option<String>, 
     let target = get_update_target();
     let current_version = app.package_info().version.to_string();
 
-    // Build updater with explicit target to override {{target}} template variable
-    let updater = app
-        .updater_builder()
-        .target(target.to_string())
-        .build()
-        .map_err(|e| format!("Failed to build updater: {}", e))?;
+    // Build updater with proxy configuration from ~/.soagents/config.json
+    let updater = build_updater_with_proxy(app)?;
 
     log::info!(
         "[updater] Checking for updates... Current: v{}, Target: {}",
@@ -222,11 +240,23 @@ pub async fn test_update_connectivity(app: AppHandle) -> Result<String, String> 
     log::info!("[updater] Testing HTTP connectivity to: {}", url);
 
     let current_version = app.package_info().version.to_string();
-    let client = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(format!("SoAgents-Updater/{}", current_version))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+        .timeout(std::time::Duration::from_secs(30));
+
+    let client = if let Some(proxy_settings) = proxy_config::read_proxy_settings() {
+        let proxy_url = proxy_config::get_proxy_url(&proxy_settings)?;
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| format!("Failed to create proxy: {}", e))?
+            .no_proxy(reqwest::NoProxy::from_string(
+                "localhost,127.0.0.1,127.0.0.0/8,::1,[::1]",
+            ));
+        builder.proxy(proxy)
+    } else {
+        builder.no_proxy()
+    }
+    .build()
+    .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
     let response = client
         .get(&url)

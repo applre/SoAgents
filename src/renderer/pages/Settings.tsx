@@ -2311,6 +2311,17 @@ function GeneralTab() {
     }
   }, [config.proxySettings]);
 
+  // Propagate proxy config to all running Sidecars via Rust command
+  const propagateProxy = useCallback(async () => {
+    if (!isTauri()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('cmd_propagate_proxy');
+    } catch (e) {
+      console.warn('[Settings] Failed to propagate proxy:', e);
+    }
+  }, []);
+
   const handleProxyToggle = useCallback(async (enabled: boolean) => {
     await updateConfig({
       proxySettings: {
@@ -2320,7 +2331,8 @@ function GeneralTab() {
         port: proxyForm.port,
       },
     });
-  }, [updateConfig, proxyForm]);
+    await propagateProxy();
+  }, [updateConfig, proxyForm, propagateProxy]);
 
   const handleProxySave = useCallback(async () => {
     if (!isValidProxyHost(proxyForm.host)) return;
@@ -2333,7 +2345,8 @@ function GeneralTab() {
         port: proxyForm.port,
       },
     });
-  }, [updateConfig, proxy.enabled, proxyForm]);
+    await propagateProxy();
+  }, [updateConfig, proxy.enabled, proxyForm, propagateProxy]);
 
   const handleSelectFolder = useCallback(async () => {
     if (!isTauri()) return;

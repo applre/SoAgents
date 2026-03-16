@@ -4,6 +4,7 @@
 mod sidecar;
 mod commands;
 mod proxy;
+mod proxy_config;
 mod sse_proxy;
 mod updater;
 mod scheduler;
@@ -44,6 +45,7 @@ pub fn run() {
             commands::cmd_get_default_workspace,
             commands::cmd_list_running_sidecars,
             commands::cmd_open_in_finder,
+            commands::cmd_propagate_proxy,
             proxy::cmd_proxy_http,
             sse_proxy::cmd_start_sse_proxy,
             sse_proxy::cmd_stop_sse_proxy,

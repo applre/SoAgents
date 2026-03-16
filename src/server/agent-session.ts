@@ -934,6 +934,36 @@ export function isRunning(): boolean {
   return runner?.getIsRunning() ?? false;
 }
 
+/**
+ * Hot-reload proxy configuration into process environment.
+ * Subsequent SDK subprocess spawns inherit the new proxy.
+ */
+export function setProxyConfig(proxySettings: {
+  enabled: boolean;
+  protocol?: string;
+  host?: string;
+  port?: number;
+} | null): void {
+  const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'];
+  const NO_PROXY_VAL = 'localhost,127.0.0.1,127.0.0.0/8,::1,[::1]';
+
+  if (proxySettings?.enabled) {
+    const proxyUrl = `${proxySettings.protocol || 'http'}://${proxySettings.host || '127.0.0.1'}:${proxySettings.port || 7890}`;
+    process.env.HTTP_PROXY = proxyUrl;
+    process.env.HTTPS_PROXY = proxyUrl;
+    process.env.http_proxy = proxyUrl;
+    process.env.https_proxy = proxyUrl;
+    process.env.NO_PROXY = NO_PROXY_VAL;
+    process.env.no_proxy = NO_PROXY_VAL;
+    delete process.env.ALL_PROXY;
+    delete process.env.all_proxy;
+    console.log(`[agent] Proxy hot-reloaded: ${proxyUrl}`);
+  } else {
+    for (const v of PROXY_VARS) delete process.env[v];
+    console.log('[agent] Proxy cleared (direct connection)');
+  }
+}
+
 export function getPendingState() {
   return runner?.getPendingState() ?? { permission: null, question: null };
 }

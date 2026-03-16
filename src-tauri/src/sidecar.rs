@@ -290,14 +290,41 @@ impl SidecarManager {
             cwd
         );
 
-        let mut child = Command::new(bun_path)
-            .arg(script_path)
+        let mut cmd = Command::new(bun_path);
+        cmd.arg(script_path)
             .arg(SIDECAR_MARKER)
             .current_dir(&cwd)
             .env("PORT", port.to_string())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+
+        // Inject proxy environment variables if configured
+        if let Some(proxy_settings) = crate::proxy_config::read_proxy_settings() {
+            match crate::proxy_config::get_proxy_url(&proxy_settings) {
+                Ok(proxy_url) => {
+                    log::info!("[sidecar] Injecting proxy: {}", proxy_url);
+                    cmd.env("HTTP_PROXY", &proxy_url);
+                    cmd.env("HTTPS_PROXY", &proxy_url);
+                    cmd.env("http_proxy", &proxy_url);
+                    cmd.env("https_proxy", &proxy_url);
+                    cmd.env("NO_PROXY", "localhost,127.0.0.1,127.0.0.0/8,::1,[::1]");
+                    cmd.env("no_proxy", "localhost,127.0.0.1,127.0.0.0/8,::1,[::1]");
+                }
+                Err(e) => {
+                    log::error!("[sidecar] Invalid proxy config: {}, stripping proxy vars", e);
+                    for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
+                        cmd.env_remove(var);
+                    }
+                }
+            }
+        } else {
+            // No proxy configured: strip inherited system proxy env vars
+            for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
+                cmd.env_remove(var);
+            }
+        }
+
+        let mut child = cmd.spawn()
             .map_err(|e| format!("Failed to spawn bun process: {}", e))?;
 
         // Capture stdout
@@ -428,6 +455,12 @@ impl SidecarManager {
 
     pub fn get_port(&self, sidecar_id: &str) -> Option<u16> {
         self.instances.get(sidecar_id).map(|i| i.port)
+    }
+
+    /// Get all ports of running sidecars (for broadcasting config changes)
+    pub fn get_all_active_ports(&mut self) -> Vec<u16> {
+        self.instances.retain(|_, inst| matches!(inst.process.try_wait(), Ok(None)));
+        self.instances.values().map(|i| i.port).collect()
     }
 
     pub fn list_running(&mut self) -> Vec<(String, Option<String>, u16)> {

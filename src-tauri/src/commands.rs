@@ -94,3 +94,50 @@ pub fn cmd_open_in_finder(path: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to open in Finder: {}", e))?;
     Ok(())
 }
+
+/// Propagate proxy settings from disk config to all running Sidecars
+#[tauri::command]
+pub async fn cmd_propagate_proxy(
+    state: tauri::State<'_, SidecarState>,
+) -> Result<serde_json::Value, String> {
+    let payload = match crate::proxy_config::read_proxy_settings() {
+        Some(s) => match crate::proxy_config::get_proxy_url(&s) {
+            Ok(_) => serde_json::json!({
+                "enabled": true,
+                "protocol": s.protocol.unwrap_or_else(|| "http".into()),
+                "host": s.host.unwrap_or_else(|| "127.0.0.1".into()),
+                "port": s.port.unwrap_or(7890),
+            }),
+            Err(_) => serde_json::json!({ "enabled": false }),
+        },
+        None => serde_json::json!({ "enabled": false }),
+    };
+
+    let client = crate::local_http::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let ports = {
+        let mut manager = state.lock().map_err(|e| e.to_string())?;
+        manager.get_all_active_ports()
+    };
+
+    let (mut ok, mut fail) = (0u32, 0u32);
+    for port in &ports {
+        let url = format!("http://127.0.0.1:{}/api/proxy/set", port);
+        match client.post(&url).json(&payload).send().await {
+            Ok(r) if r.status().is_success() => {
+                log::info!("[proxy-propagate] Updated sidecar on port {}", port);
+                ok += 1;
+            }
+            _ => {
+                log::warn!("[proxy-propagate] Failed to update sidecar on port {}", port);
+                fail += 1;
+            }
+        }
+    }
+
+    log::info!("[proxy-propagate] Done: {} updated, {} failed", ok, fail);
+    Ok(serde_json::json!({ "updated": ok, "failed": fail }))
+}

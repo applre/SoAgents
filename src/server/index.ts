@@ -1,5 +1,5 @@
 import { createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -616,6 +616,18 @@ const server = Bun.serve({
       }
       MCPConfigStore.remove(id);
       return Response.json({ ok: true });
+    }
+
+    // Proxy hot-reload
+    if (req.method === 'POST' && url.pathname === '/api/proxy/set') {
+      try {
+        const payload = await req.json();
+        setProxyConfig(payload);
+        return Response.json({ success: true });
+      } catch (error) {
+        console.error('[api/proxy/set] Error:', error);
+        return Response.json({ error: String(error) }, { status: 500 });
+      }
     }
 
     // MCP server args (extra args appended to preset)
