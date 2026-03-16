@@ -135,10 +135,7 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
   return (
     <div className="group/assistant flex flex-col items-start">
       <div
-        className={[
-          'max-w-[80%] rounded-2xl px-4 py-3 text-sm',
-          'bg-[var(--surface)] text-[var(--ink)] border border-[var(--border)]',
-        ].join(' ')}
+        className="w-full text-sm text-[var(--ink)]"
       >
         {message.blocks.map((block, i) => {
           if (block.type === 'thinking') {

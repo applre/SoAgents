@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { TabContext, type TabState } from './TabContext';
+import { TabContext, TabApiContext, TabActiveContext, type TabState, type TabApiContextValue } from './TabContext';
 import { SseConnection } from '../api/SseConnection';
 import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl, listRunningSidecars } from '../api/tauriClient';
 import { apiGetJson, apiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import type { Message, ContentBlock, ChatImage, TurnMeta } from '../types/chat';
-import type { SessionMetadata } from '../../shared/types/session';
 import type { LogEntry } from '../../shared/types/log';
 import type { QueuedMessageInfo } from '../../shared/types/queue';
 import type { ProviderEnv } from '../../shared/types/config';
@@ -16,23 +15,44 @@ import { REACT_LOG_EVENT } from '../utils/frontendLogger';
 interface Props {
   tabId: string;
   agentDir: string;
-  onRunningSessionsChange?: (runningSessions: Set<string>) => void;
+  sessionId?: string | null;
+  isActive?: boolean;
+  onRunningSessionsChange?: (sessionId: string, running: boolean) => void;
+  onGeneratingChange?: (isGenerating: boolean) => void;
+  onSessionIdChange?: (sessionId: string) => void;
   children: ReactNode;
 }
 
-const DRAFT_SESSION_KEY = '__draft__';
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const IDLE_CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds
 
-type SessionScopedPayload = {
-  sessionId?: string | null;
-};
+export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActive = true, onRunningSessionsChange, onGeneratingChange, onSessionIdChange, children }: Props) {
+  // ── Streaming split: history (stable during streaming) + streaming (updates per SSE chunk) ──
+  const [historyMessages, setHistoryMessages] = useState<Message[]>([]);
+  const [streamingMessage, setStreamingMessage] = useState<Message | null>(null);
+  const streamingMessageRef = useRef<Message | null>(null);
 
-export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children }: Props) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Wrapper setter that keeps ref in sync (for use in SSE handlers)
+  const updateStreamingMessage = useCallback((updater: Message | null | ((prev: Message | null) => Message | null)) => {
+    if (typeof updater === 'function') {
+      setStreamingMessage((prev) => {
+        const next = updater(prev);
+        streamingMessageRef.current = next;
+        return next;
+      });
+    } else {
+      streamingMessageRef.current = updater;
+      setStreamingMessage(updater);
+    }
+  }, []);
+
+  // Combined messages view (backward compat)
+  const messages = useMemo<Message[]>(() => {
+    return streamingMessage ? [...historyMessages, streamingMessage] : historyMessages;
+  }, [historyMessages, streamingMessage]);
+
   const [isLoading, setIsLoading] = useState(false);
   const [sessionState, setSessionState] = useState<'idle' | 'running' | 'error'>('idle');
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<{
     toolUseId: string;
@@ -43,25 +63,47 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
       multiSelect: boolean;
     }>;
   } | null>(null);
-  const [sessions, setSessions] = useState<SessionMetadata[]>([]);
-  const [sessionsFetched, setSessionsFetched] = useState(false);
   const [sidecarReady, setSidecarReady] = useState(false);
   const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
-  const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
+  const [isRunning, setIsRunning] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
   const queuedMessagesRef = useRef<QueuedMessageInfo[]>([]);
 
-  // Per-session maps for SSE connections and server URLs
-  const sseMapRef = useRef<Map<string, SseConnection>>(new Map());
-  const serverUrlMapRef = useRef<Map<string, string>>(new Map());
-  // Track when each session's sidecar was last active (for idle reclaim)
-  const lastActivityRef = useRef<Map<string, number>>(new Map());
+  // 1:1 model — single SSE connection and server URL per TabProvider
+  const sseRef = useRef<SseConnection | null>(null);
+  const serverUrlRef = useRef<string | null>(null);
+  const lastActivityRef = useRef<number>(0);
 
-  const messagesRef = useRef<Message[]>([]);
-  const activeSessionIdRef = useRef<string | null>(null);
-  const sessionMessagesRef = useRef<Map<string, Message[]>>(new Map());
-  const runningSessionsRef = useRef<Set<string>>(new Set());
-  const loadReqSeqRef = useRef(0);
+  const historyMessagesRef = useRef<Message[]>([]);
+  const sessionIdRef = useRef<string | null>(propSessionId ?? null);
+  const isRunningRef = useRef(false);
+  // Track whether session was created internally (sendMessage) to skip reload on sessionId prop change
+  const sessionCreatedInternallyRef = useRef(false);
+
+  const sessionId = propSessionId ?? null;
+
+  // Keep refs in sync
+  useEffect(() => {
+    historyMessagesRef.current = historyMessages;
+  }, [historyMessages]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
+  // ── Move streaming message to history ──
+  const moveStreamingToHistory = useCallback(() => {
+    const current = streamingMessageRef.current;
+    if (current) {
+      setHistoryMessages((prev) => [...prev, current]);
+      streamingMessageRef.current = null;
+      setStreamingMessage(null);
+    }
+  }, []);
 
   // ── Unified Logs: 监听 React 自定义事件 ──
   const appendUnifiedLog = useCallback((entry: LogEntry) => {
@@ -96,115 +138,46 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     return () => { unlisten?.(); };
   }, [appendUnifiedLog]);
 
-  const toSessionKey = useCallback((sid: string | null | undefined) => sid ?? DRAFT_SESSION_KEY, []);
-
-  const resolveEventSessionId = useCallback((data: unknown): string | null => {
-    if (data && typeof data === 'object') {
-      const sid = (data as SessionScopedPayload).sessionId;
-      if (typeof sid === 'string' && sid.length > 0) return sid;
-    }
-    return activeSessionIdRef.current;
-  }, []);
-
-  const setMessagesForSession = useCallback((sid: string | null, next: Message[]) => {
-    const key = toSessionKey(sid);
-    sessionMessagesRef.current.set(key, next);
-    if (activeSessionIdRef.current === sid) {
-      messagesRef.current = next;
-      setMessages(next);
-    }
-  }, [toSessionKey]);
-
-  const updateMessagesForSession = useCallback(
-    (sid: string | null, updater: (prev: Message[]) => Message[]) => {
-      const key = toSessionKey(sid);
-      const fallback = activeSessionIdRef.current === sid ? messagesRef.current : [];
-      const prev = sessionMessagesRef.current.get(key) ?? fallback;
-      const next = updater(prev);
-      setMessagesForSession(sid, next);
-    },
-    [setMessagesForSession, toSessionKey]
-  );
-
-  const adoptDraftSession = useCallback((sid: string) => {
-    if (activeSessionIdRef.current !== null) return;
-    const draftMessages = sessionMessagesRef.current.get(DRAFT_SESSION_KEY) ?? messagesRef.current;
-    if (!sessionMessagesRef.current.has(sid)) {
-      sessionMessagesRef.current.set(sid, draftMessages);
-    }
-    sessionMessagesRef.current.delete(DRAFT_SESSION_KEY);
-    activeSessionIdRef.current = sid;
-    setSessionId(sid);
-  }, []);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  useEffect(() => {
-    activeSessionIdRef.current = sessionId;
-  }, [sessionId]);
-
-  // Helper: get the global sidecar URL for session listing
+  // Helper: get the global sidecar URL
   const getGlobalUrl = useCallback(async (): Promise<string> => {
     if (!isTauri()) return 'http://localhost:3000';
     return invoke<string>('cmd_get_session_server_url', { sessionId: '__global__' }).catch(() => 'http://localhost:3000');
   }, []);
 
-  const refreshSessions = useCallback(async () => {
-    try {
-      const globalUrl = await getGlobalUrl();
-      const data = await apiGetJson<SessionMetadata[]>(globalUrl, '/chat/sessions');
-      setSessions(data.filter((s) => s.agentDir === agentDir));
-      setSessionsFetched(true);
-    } catch {
-      // global sidecar might not be ready
-    }
-  }, [agentDir, getGlobalUrl]);
-
-  // ── SSE event handler registration for a session sidecar ──
-  const registerSseHandlers = useCallback((sse: SseConnection, forSessionId: string) => {
+  // ── SSE event handler registration ──
+  const registerSseHandlers = useCallback((sse: SseConnection) => {
     sse.on('chat:message-chunk', (data) => {
-      const chunk = data as SessionScopedPayload & { text?: string };
-      const targetSessionId = resolveEventSessionId(chunk) ?? forSessionId;
+      const chunk = data as { text?: string };
       const text = chunk.text;
       if (!text) return;
-      adoptDraftSession(targetSessionId);
-      lastActivityRef.current.set(forSessionId, Date.now());
-      updateMessagesForSession(targetSessionId, (prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role === 'assistant') {
-          const blocks = [...last.blocks];
+      lastActivityRef.current = Date.now();
+      updateStreamingMessage((prev) => {
+        if (prev) {
+          const blocks = [...prev.blocks];
           const lastBlock = blocks[blocks.length - 1];
           if (lastBlock?.type === 'text') {
             blocks[blocks.length - 1] = { type: 'text', text: lastBlock.text + text };
           } else {
             blocks.push({ type: 'text', text });
           }
-          return [...prev.slice(0, -1), { ...last, blocks }];
+          return { ...prev, blocks };
         }
-        return [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            blocks: [{ type: 'text', text }],
-            createdAt: Date.now(),
-          },
-        ];
+        return {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          blocks: [{ type: 'text', text }],
+          createdAt: Date.now(),
+        };
       });
     });
 
     sse.on('chat:thinking-chunk', (data) => {
-      const chunk = data as SessionScopedPayload & { thinking?: string };
-      const targetSessionId = resolveEventSessionId(chunk) ?? forSessionId;
+      const chunk = data as { thinking?: string };
       const thinking = chunk.thinking;
       if (!thinking) return;
-      adoptDraftSession(targetSessionId);
-      updateMessagesForSession(targetSessionId, (prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role !== 'assistant') return prev;
-        const blocks = [...last.blocks];
+      updateStreamingMessage((prev) => {
+        if (!prev) return prev;
+        const blocks = [...prev.blocks];
         const thinkingIdx = blocks.findIndex((b): b is ContentBlock & { type: 'thinking' } => b.type === 'thinking');
         if (thinkingIdx >= 0) {
           const tb = blocks[thinkingIdx] as { type: 'thinking'; thinking: string };
@@ -212,56 +185,67 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         } else {
           blocks.unshift({ type: 'thinking', thinking });
         }
-        return [...prev.slice(0, -1), { ...last, blocks }];
+        return { ...prev, blocks };
       });
     });
 
     sse.on('chat:tool-use-start', (data) => {
-      const tool = data as SessionScopedPayload & { name?: string; id?: string };
-      const targetSessionId = resolveEventSessionId(tool) ?? forSessionId;
+      const tool = data as { name?: string; id?: string };
       const toolName = tool.name;
       const toolId = tool.id;
       if (!toolName || !toolId) return;
-      adoptDraftSession(targetSessionId);
-      updateMessagesForSession(targetSessionId, (prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role !== 'assistant') return prev;
-        return [
-          ...prev.slice(0, -1),
-          { ...last, blocks: [...last.blocks, { type: 'tool_use' as const, name: toolName, id: toolId, status: 'running' as const }] },
-        ];
+      updateStreamingMessage((prev) => {
+        if (!prev) return prev;
+        return { ...prev, blocks: [...prev.blocks, { type: 'tool_use' as const, name: toolName, id: toolId, status: 'running' as const }] };
       });
     });
 
     sse.on('chat:tool-input-delta', (data) => {
-      const delta = data as SessionScopedPayload & { id?: string; partial_json?: string };
-      const targetSessionId = resolveEventSessionId(delta) ?? forSessionId;
+      const delta = data as { id?: string; partial_json?: string };
       const toolId = delta.id;
       const partial = delta.partial_json;
       if (!toolId || !partial) return;
-      adoptDraftSession(targetSessionId);
-      updateMessagesForSession(targetSessionId, (prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role !== 'assistant') return prev;
-        const blocks = last.blocks.map((b) => {
+      updateStreamingMessage((prev) => {
+        if (!prev) return prev;
+        const blocks = prev.blocks.map((b) => {
           if (b.type === 'tool_use' && b.id === toolId) {
             return { ...b, input: (b.input ?? '') + partial };
           }
           return b;
         });
-        return [...prev.slice(0, -1), { ...last, blocks }];
+        return { ...prev, blocks };
       });
     });
 
     sse.on('chat:tool-result', (data) => {
-      const result = data as SessionScopedPayload & { id?: string; content?: string; isError?: boolean };
-      const targetSessionId = resolveEventSessionId(result) ?? forSessionId;
+      const result = data as { id?: string; content?: string; isError?: boolean };
       const resultId = result.id;
       if (!resultId) return;
-      adoptDraftSession(targetSessionId);
-      updateMessagesForSession(targetSessionId, (prev) => {
+      // tool-result can arrive for streaming message or history messages
+      // Try streaming first, then fall back to history
+      updateStreamingMessage((prev) => {
+        if (!prev) return prev;
+        const hasToolBlock = prev.blocks.some((b) => b.type === 'tool_use' && b.id === resultId);
+        if (!hasToolBlock) return prev; // not in streaming, will update history below
+        const blocks = prev.blocks.map((b) => {
+          if (b.type === 'tool_use' && b.id === resultId) {
+            return {
+              ...b,
+              result: result.content ?? '',
+              status: result.isError ? 'error' as const : 'done' as const,
+              isError: Boolean(result.isError),
+            };
+          }
+          return b;
+        });
+        return { ...prev, blocks };
+      });
+      // Also check history (tool result may arrive after message was moved to history)
+      setHistoryMessages((prev) => {
         return prev.map((msg) => {
           if (msg.role !== 'assistant') return msg;
+          const hasToolBlock = msg.blocks.some((b) => b.type === 'tool_use' && b.id === resultId);
+          if (!hasToolBlock) return msg;
           const blocks = msg.blocks.map((b) => {
             if (b.type === 'tool_use' && b.id === resultId) {
               return {
@@ -279,26 +263,20 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     });
 
     sse.on('permission:request', (data) => {
-      const req = data as SessionScopedPayload & { toolName: string; toolUseId: string; toolInput: Record<string, unknown> };
-      // 只有当前活跃 session 才展示权限弹窗
-      if (activeSessionIdRef.current === forSessionId) {
-        setPendingPermission({ toolName: req.toolName, toolUseId: req.toolUseId, toolInput: req.toolInput });
-      }
+      const req = data as { toolName: string; toolUseId: string; toolInput: Record<string, unknown> };
+      setPendingPermission({ toolName: req.toolName, toolUseId: req.toolUseId, toolInput: req.toolInput });
     });
 
     sse.on('question:request', (data) => {
-      const req = data as SessionScopedPayload & {
+      const req = data as {
         toolUseId: string;
         questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>;
       };
-      // 只有当前活跃 session 才展示问题弹窗
-      if (activeSessionIdRef.current === forSessionId) {
-        setPendingQuestion({ toolUseId: req.toolUseId, questions: req.questions });
-      }
+      setPendingQuestion({ toolUseId: req.toolUseId, questions: req.questions });
     });
 
     sse.on('chat:message-complete', (data) => {
-      const evt = data as (SessionScopedPayload & {
+      const evt = data as {
         model?: string;
         inputTokens?: number;
         outputTokens?: number;
@@ -306,11 +284,9 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         cacheCreationTokens?: number;
         durationMs?: number;
         toolCount?: number;
-      }) | null;
-      const completedSessionId = resolveEventSessionId(evt) ?? forSessionId;
-      if (completedSessionId) adoptDraftSession(completedSessionId);
+      } | null;
 
-      // Attach turnMeta to the last assistant message
+      // Attach turnMeta to the streaming message before moving to history
       if (evt && (evt.model || evt.inputTokens || evt.durationMs)) {
         const turnMeta: TurnMeta = {
           model: evt.model,
@@ -321,46 +297,39 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
           durationMs: evt.durationMs,
           toolCount: evt.toolCount,
         };
-        updateMessagesForSession(completedSessionId, (prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === 'assistant') {
-            return [...prev.slice(0, -1), { ...last, turnMeta }];
-          }
-          return prev;
-        });
+        // Update streaming message with turnMeta, then move to history
+        const current = streamingMessageRef.current;
+        if (current) {
+          const finalMsg = { ...current, turnMeta };
+          streamingMessageRef.current = null;
+          setStreamingMessage(null);
+          setHistoryMessages((prev) => [...prev, finalMsg]);
+        }
+      } else {
+        // No turnMeta, just move as-is
+        moveStreamingToHistory();
       }
 
-      if (completedSessionId) {
-        runningSessionsRef.current.delete(completedSessionId);
-        setRunningSessions(new Set(runningSessionsRef.current));
-        lastActivityRef.current.set(forSessionId, Date.now());
-      }
-      if (completedSessionId && activeSessionIdRef.current === completedSessionId) {
-        setIsLoading(false);
-        setSessionState('idle');
-      }
-      refreshSessions().catch(console.error);
+      isRunningRef.current = false;
+      setIsRunning(false);
+      setIsLoading(false);
+      setSessionState('idle');
+      lastActivityRef.current = Date.now();
     });
 
-    sse.on('chat:message-error', (data) => {
-      const evt = data as SessionScopedPayload | null;
-      const erroredSessionId = resolveEventSessionId(evt) ?? forSessionId;
-      if (erroredSessionId) adoptDraftSession(erroredSessionId);
-      if (erroredSessionId) {
-        runningSessionsRef.current.delete(erroredSessionId);
-        setRunningSessions(new Set(runningSessionsRef.current));
-      }
-      if (erroredSessionId && activeSessionIdRef.current === erroredSessionId) {
-        setIsLoading(false);
-        setSessionState('error');
-      }
+    sse.on('chat:message-error', () => {
+      // Move whatever streaming content we have to history
+      moveStreamingToHistory();
+      isRunningRef.current = false;
+      setIsRunning(false);
+      setIsLoading(false);
+      setSessionState('error');
     });
 
     // ── 队列事件 ──
     sse.on('queue:added', (data) => {
       const evt = data as { queueId: string; text: string };
       if (!evt.queueId) return;
-      // 去重（sendMessage 响应可能已添加）
       const exists = queuedMessagesRef.current.some((q) => q.queueId === evt.queueId);
       if (!exists) {
         const info: QueuedMessageInfo = { queueId: evt.queueId, text: evt.text, timestamp: Date.now() };
@@ -372,19 +341,15 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     sse.on('queue:started', (data) => {
       const evt = data as { queueId: string; text: string };
       if (!evt.queueId) return;
-      // 从排队列表移除
       queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== evt.queueId);
       setQueuedMessages(queuedMessagesRef.current);
-      // 将用户消息加入 messages 列表
-      const targetSessionId = resolveEventSessionId(data) ?? forSessionId;
-      adoptDraftSession(targetSessionId);
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: 'user',
         blocks: [{ type: 'text', text: evt.text }],
         createdAt: Date.now(),
       };
-      updateMessagesForSession(targetSessionId, (prev) => [...prev, userMsg]);
+      setHistoryMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
       setSessionState('running');
     });
@@ -396,241 +361,238 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
       setQueuedMessages(queuedMessagesRef.current);
     });
 
-    // ── 统一日志: 接收 Bun/Rust 层日志 ──
+    // ── 统一日志 ──
     sse.on('chat:log', (data) => {
       const entry = data as LogEntry;
       if (entry && entry.source && entry.level) {
         appendUnifiedLog(entry);
       }
     });
-  }, [resolveEventSessionId, adoptDraftSession, updateMessagesForSession, refreshSessions, appendUnifiedLog]);
+  }, [appendUnifiedLog, updateStreamingMessage, moveStreamingToHistory]);
 
   // ── ensureSessionSidecar: 按需启动 sidecar + SSE ──
   const ensureSessionSidecar = useCallback(async (sid: string): Promise<string> => {
     // 已有连接，直接返回
-    const existingUrl = serverUrlMapRef.current.get(sid);
-    if (existingUrl && sseMapRef.current.has(sid)) {
-      lastActivityRef.current.set(sid, Date.now());
-      return existingUrl;
+    if (serverUrlRef.current && sseRef.current) {
+      lastActivityRef.current = Date.now();
+      return serverUrlRef.current;
     }
 
     // 启动 sidecar
     await startSessionSidecar(sid, agentDir);
     const url = await getSessionServerUrl(sid);
-    serverUrlMapRef.current.set(sid, url);
+    serverUrlRef.current = url;
 
     // 创建 SSE 连接
     const sse = new SseConnection(sid, url);
-    sseMapRef.current.set(sid, sse);
+    sseRef.current = sse;
     await sse.connect();
 
     // 注册事件处理器
-    registerSseHandlers(sse, sid);
+    registerSseHandlers(sse);
 
-    lastActivityRef.current.set(sid, Date.now());
+    lastActivityRef.current = Date.now();
     return url;
   }, [agentDir, registerSseHandlers]);
 
-  // ── stopSessionSidecarCleanup: 停止 sidecar 并清理 ──
-  const stopSessionSidecarCleanup = useCallback(async (sid: string) => {
-    const sse = sseMapRef.current.get(sid);
-    if (sse) {
-      sse.disconnect();
-      sseMapRef.current.delete(sid);
+  // ── stopSidecarCleanup: 停止 sidecar 并清理 ──
+  const stopSidecarCleanup = useCallback(async () => {
+    const sid = sessionIdRef.current;
+    if (sseRef.current) {
+      sseRef.current.disconnect();
+      sseRef.current = null;
     }
-    serverUrlMapRef.current.delete(sid);
-    lastActivityRef.current.delete(sid);
-    runningSessionsRef.current.delete(sid);
-    setRunningSessions(new Set(runningSessionsRef.current));
-    await stopSessionSidecar(sid).catch(() => {});
+    serverUrlRef.current = null;
+    lastActivityRef.current = 0;
+    isRunningRef.current = false;
+    setIsRunning(false);
+    if (sid) {
+      await stopSessionSidecar(sid).catch(() => {});
+    }
   }, []);
 
-  // ── Tab mount: 只做状态重置，不启动 sidecar ──
+  // ── Tab mount / sessionId 变化: 初始化，如有 sessionId 则加载消息并尝试重连 ──
   useEffect(() => {
-    // 工作区切换时重置状态
-    setSidecarReady(true); // Tab 就绪不再等 sidecar
-    setMessages([]);
-    setSessionId(null);
-    setSessions([]);
-    setSessionsFetched(false);
+    // 如果 sessionId 是由 sendMessage 内部创建的，跳过重置（消息正在 streaming）
+    if (sessionCreatedInternallyRef.current) {
+      sessionCreatedInternallyRef.current = false;
+      return;
+    }
+
+    setSidecarReady(true);
+    setHistoryMessages([]);
+    updateStreamingMessage(null);
     setIsLoading(false);
     setSessionState('idle');
-    setRunningSessions(new Set());
-    messagesRef.current = [];
-    activeSessionIdRef.current = null;
-    sessionMessagesRef.current.clear();
-    sessionMessagesRef.current.set(DRAFT_SESSION_KEY, []);
-    runningSessionsRef.current.clear();
-    loadReqSeqRef.current = 0;
-    sseMapRef.current.clear();
-    serverUrlMapRef.current.clear();
-    lastActivityRef.current.clear();
+    setIsRunning(false);
+    historyMessagesRef.current = [];
+    isRunningRef.current = false;
+    sseRef.current = null;
+    serverUrlRef.current = null;
+    lastActivityRef.current = 0;
 
-    // 获取 session 列表（通过 global sidecar）
-    refreshSessions().catch(console.error);
+    if (!sessionId) return;
 
-    // 发现运行中的 sidecar 并重连
-    listRunningSidecars().then(async (sidecars) => {
-      const matching = sidecars.filter(
-        (s) => s.agentDir === agentDir && s.sessionId !== '__global__'
-      );
-      for (const sc of matching) {
+    // 有 sessionId：加载历史消息 + 发现运行中的 sidecar
+    (async () => {
+      // 1. 从 global sidecar 加载历史消息
+      try {
+        const globalUrl = await getGlobalUrl();
+        const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(globalUrl, `/chat/sessions/${sessionId}/messages`).catch(() => [] as Array<{ id: string; role: string; content: string; timestamp: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>);
+        if (sessionIdRef.current !== sessionId) return; // stale
+        if (msgs.length > 0) {
+          const formatted = msgs.map((m) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            blocks: [{ type: 'text' as const, text: m.content }],
+            createdAt: new Date(m.timestamp).getTime(),
+            ...(m.usage || m.durationMs ? { turnMeta: { model: m.usage?.model, inputTokens: m.usage?.inputTokens, outputTokens: m.usage?.outputTokens, cacheReadTokens: m.usage?.cacheReadTokens, cacheCreationTokens: m.usage?.cacheCreationTokens, durationMs: m.durationMs, toolCount: m.toolCount } as TurnMeta } : {}),
+          }));
+          setHistoryMessages(formatted);
+          historyMessagesRef.current = formatted;
+        }
+      } catch { /* global sidecar may not be ready */ }
+
+      // 2. 发现运行中的 sidecar 并重连
+      try {
+        const sidecars = await listRunningSidecars();
+        const sc = sidecars.find((s) => s.sessionId === sessionId && s.agentDir === agentDir);
+        if (!sc || sessionIdRef.current !== sessionId) return;
+
         const url = `http://127.0.0.1:${sc.port}`;
-        try {
-          // 查询 agent 状态
-          const state = await apiGetJson<{ isRunning: boolean }>(url, '/agent/state');
-          if (state.isRunning) {
-            // 重连 SSE
-            serverUrlMapRef.current.set(sc.sessionId, url);
-            const sse = new SseConnection(sc.sessionId, url);
-            sseMapRef.current.set(sc.sessionId, sse);
-            await sse.connect();
-            registerSseHandlers(sse, sc.sessionId);
-            lastActivityRef.current.set(sc.sessionId, Date.now());
-            runningSessionsRef.current.add(sc.sessionId);
+        const state = await apiGetJson<{ isRunning: boolean }>(url, '/agent/state');
 
-            // 恢复 pending 请求
-            const pending = await apiGetJson<{
-              permission: { toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null;
-              question: { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> } | null;
-            }>(url, '/agent/pending-requests').catch(() => ({ permission: null, question: null }));
-            if (pending.permission && activeSessionIdRef.current === sc.sessionId) {
-              setPendingPermission(pending.permission);
-            }
-            if (pending.question && activeSessionIdRef.current === sc.sessionId) {
-              setPendingQuestion(pending.question);
-            }
+        serverUrlRef.current = url;
+        const sse = new SseConnection(sessionId, url);
+        sseRef.current = sse;
+        await sse.connect();
+        registerSseHandlers(sse);
+        lastActivityRef.current = Date.now();
 
-            // 拉取最新消息
-            const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; createdAt: number }>>(url, '/chat/messages');
-            sessionMessagesRef.current.set(sc.sessionId, msgs.map(m => ({
-              id: m.id,
-              role: m.role as 'user' | 'assistant',
-              blocks: [{ type: 'text' as const, text: m.content }],
-              createdAt: m.createdAt,
-            })));
+        if (state.isRunning) {
+          isRunningRef.current = true;
+          setIsRunning(true);
+          setIsLoading(true);
+          setSessionState('running');
 
-            // 如果用户正在查看此 session，更新 UI 状态
-            if (activeSessionIdRef.current === sc.sessionId) {
-              const cached = sessionMessagesRef.current.get(sc.sessionId);
-              if (cached) {
-                setMessages(cached);
-                messagesRef.current = cached;
-              }
-              setIsLoading(true);
-              setSessionState('running');
-            }
-          } else {
-            // Agent 已完成，记录以便空闲回收
-            serverUrlMapRef.current.set(sc.sessionId, url);
-            lastActivityRef.current.set(sc.sessionId, Date.now());
-          }
-        } catch { /* sidecar 可能已经退出 */ }
-      }
-      setRunningSessions(new Set(runningSessionsRef.current));
-    }).catch(console.error);
+          // 恢复 pending 请求
+          const pending = await apiGetJson<{
+            permission: { toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null;
+            question: { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> } | null;
+          }>(url, '/agent/pending-requests').catch(() => ({ permission: null, question: null }));
+          if (pending.permission) setPendingPermission(pending.permission);
+          if (pending.question) setPendingQuestion(pending.question);
+
+          // 从 sidecar 获取最新消息（覆盖 global sidecar 的历史消息）
+          const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; createdAt: number; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(url, '/chat/messages');
+          if (sessionIdRef.current !== sessionId) return;
+          const formatted = msgs.map((m) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            blocks: [{ type: 'text' as const, text: m.content }],
+            createdAt: m.createdAt,
+            ...(m.usage || m.durationMs ? { turnMeta: { model: m.usage?.model, inputTokens: m.usage?.inputTokens, outputTokens: m.usage?.outputTokens, cacheReadTokens: m.usage?.cacheReadTokens, cacheCreationTokens: m.usage?.cacheCreationTokens, durationMs: m.durationMs, toolCount: m.toolCount } as TurnMeta } : {}),
+          }));
+          setHistoryMessages(formatted);
+          historyMessagesRef.current = formatted;
+        }
+      } catch { /* sidecar 可能已退出 */ }
+    })();
 
     return () => {
-      // Tab unmount: 只断开 SSE 连接，不停止 sidecar（让 Agent 继续运行）
-      for (const sse of sseMapRef.current.values()) {
-        sse.disconnect();
+      // Tab unmount: 只断开 SSE，不停止 sidecar（让 Agent 继续运行）
+      if (sseRef.current) {
+        sseRef.current.disconnect();
+        sseRef.current = null;
       }
-      sseMapRef.current.clear();
-      serverUrlMapRef.current.clear();
-      lastActivityRef.current.clear();
+      serverUrlRef.current = null;
+      lastActivityRef.current = 0;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabId, agentDir]);
+  }, [tabId, agentDir, sessionId]);
 
-  // ── 定时任务 session 开始/完成时自动发现 sidecar + 刷新 ──
+  // ── 定时任务 session 开始/完成时发现 sidecar ──
   useEffect(() => {
+    if (!sessionId) return;
     const unlisteners: Array<() => void> = [];
     listen<{ sessionId: string; workingDirectory: string }>('scheduler:session-started', (event) => {
-      if (event.payload.workingDirectory !== agentDir) return;
-      const sid = event.payload.sessionId;
-      refreshSessions().catch(console.error);
-      // 发现并连接定时任务的 sidecar（它使用 sessionId 作为 sidecar ID）
+      if (event.payload.sessionId !== sessionId) return;
+      // 发现并连接定时任务的 sidecar
       (async () => {
         try {
+          if (sseRef.current) return; // 已连接
           const sidecars = await listRunningSidecars();
-          const sc = sidecars.find((s) => s.sessionId === sid);
-          if (!sc || sseMapRef.current.has(sid)) return;
+          const sc = sidecars.find((s) => s.sessionId === sessionId);
+          if (!sc) return;
           const url = `http://127.0.0.1:${sc.port}`;
-          serverUrlMapRef.current.set(sid, url);
-          const sse = new SseConnection(sid, url);
-          sseMapRef.current.set(sid, sse);
+          serverUrlRef.current = url;
+          const sse = new SseConnection(sessionId, url);
+          sseRef.current = sse;
           await sse.connect();
-          registerSseHandlers(sse, sid);
-          lastActivityRef.current.set(sid, Date.now());
-          runningSessionsRef.current.add(sid);
-          setRunningSessions(new Set(runningSessionsRef.current));
+          registerSseHandlers(sse);
+          lastActivityRef.current = Date.now();
+          isRunningRef.current = true;
+          setIsRunning(true);
+          setIsLoading(true);
+          setSessionState('running');
         } catch { /* sidecar may not be ready yet */ }
       })();
     }).then(fn => unlisteners.push(fn));
     listen<{ sessionId: string; workingDirectory: string }>('scheduler:session-finished', (event) => {
-      if (event.payload.workingDirectory !== agentDir) return;
-      const finishedSid = event.payload.sessionId;
-      refreshSessions().catch(console.error);
-      // 标记不再运行
-      runningSessionsRef.current.delete(finishedSid);
-      setRunningSessions(new Set(runningSessionsRef.current));
-      if (activeSessionIdRef.current === finishedSid) {
-        setIsLoading(false);
-        setSessionState('idle');
-      }
-      // 如果当前正在查看该 session，清除缓存并重新加载消息
-      if (activeSessionIdRef.current === finishedSid) {
-        sessionMessagesRef.current.delete(toSessionKey(finishedSid));
-        (async () => {
-          try {
-            const globalUrl = await getGlobalUrl();
-            const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string }>>(globalUrl, `/chat/sessions/${finishedSid}/messages`);
-            if (activeSessionIdRef.current !== finishedSid) return;
-            const formatted = msgs.map((m) => ({
-              id: m.id,
-              role: m.role as 'user' | 'assistant',
-              blocks: [{ type: 'text' as const, text: m.content }],
-              createdAt: new Date(m.timestamp).getTime(),
-            }));
-            sessionMessagesRef.current.set(toSessionKey(finishedSid), formatted);
-            setMessages(formatted);
-            messagesRef.current = formatted;
-          } catch { /* ignore */ }
-        })();
-      }
+      if (event.payload.sessionId !== sessionId) return;
+      isRunningRef.current = false;
+      setIsRunning(false);
+      setIsLoading(false);
+      setSessionState('idle');
+      // 重新加载消息
+      (async () => {
+        try {
+          const globalUrl = await getGlobalUrl();
+          const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(globalUrl, `/chat/sessions/${sessionId}/messages`);
+          if (sessionIdRef.current !== sessionId) return;
+          const formatted = msgs.map((m) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            blocks: [{ type: 'text' as const, text: m.content }],
+            createdAt: new Date(m.timestamp).getTime(),
+            ...(m.usage || m.durationMs ? { turnMeta: { model: m.usage?.model, inputTokens: m.usage?.inputTokens, outputTokens: m.usage?.outputTokens, cacheReadTokens: m.usage?.cacheReadTokens, cacheCreationTokens: m.usage?.cacheCreationTokens, durationMs: m.durationMs, toolCount: m.toolCount } as TurnMeta } : {}),
+          }));
+          setHistoryMessages(formatted);
+          historyMessagesRef.current = formatted;
+        } catch { /* ignore */ }
+      })();
     }).then(fn => unlisteners.push(fn));
     return () => { unlisteners.forEach(fn => fn()); };
-  }, [agentDir, refreshSessions, toSessionKey, getGlobalUrl, registerSseHandlers]);
+  }, [sessionId, getGlobalUrl, registerSseHandlers]);
 
-  // ── runningSessions 变化时通知父组件 ──
+  // ── isRunning 变化时通知父组件 ──
   useEffect(() => {
-    onRunningSessionsChange?.(runningSessions);
-  }, [runningSessions, onRunningSessionsChange]);
+    if (sessionId) {
+      onRunningSessionsChange?.(sessionId, isRunning);
+    }
+    onGeneratingChange?.(isRunning);
+  }, [isRunning, sessionId, onRunningSessionsChange, onGeneratingChange]);
 
-  // ── 空闲回收 useEffect ──
+  // ── 空闲回收 ──
   useEffect(() => {
     const interval = setInterval(() => {
-      const now = Date.now();
-      for (const [sid, lastActive] of lastActivityRef.current.entries()) {
-        // 跳过活跃 session
-        if (sid === activeSessionIdRef.current) continue;
-        // 跳过有 running agent 的 session
-        if (runningSessionsRef.current.has(sid)) continue;
-        // 超过空闲时间
-        if (now - lastActive > IDLE_TIMEOUT_MS) {
-          console.log(`[TabProvider] Reclaiming idle sidecar for session ${sid.slice(0, 8)}`);
-          stopSessionSidecarCleanup(sid).catch(console.error);
-        }
+      if (!sessionIdRef.current) return;
+      if (isRunningRef.current) return;
+      if (!serverUrlRef.current) return;
+      const idle = Date.now() - lastActivityRef.current;
+      if (idle > IDLE_TIMEOUT_MS) {
+        console.log(`[TabProvider] Reclaiming idle sidecar for session ${sessionIdRef.current.slice(0, 8)}`);
+        stopSidecarCleanup().catch(console.error);
       }
     }, IDLE_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [stopSessionSidecarCleanup]);
+  }, [stopSidecarCleanup]);
 
   const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]) => {
-    let currentSessionId = activeSessionIdRef.current;
-    const isCurrentlyRunning = currentSessionId && runningSessionsRef.current.has(currentSessionId);
+    let currentSessionId = sessionIdRef.current;
+    const wasRunning = isRunningRef.current;
 
-    // ── 前端展示用 blocks（用户 Prompt 优先，skill/图片在后） ──
+    // ── 前端展示用 blocks ──
     const blocks: Message['blocks'] = [];
     if (text) {
       blocks.push({ type: 'text', text });
@@ -656,19 +618,19 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
       createdAt: Date.now(),
     };
 
-    // 非排队时立即显示用户消息；排队时延迟到 queue:started
-    if (!isCurrentlyRunning) {
-      updateMessagesForSession(currentSessionId, (prev) => [...prev, userMsg]);
+    // 非排队时立即显示用户消息（添加到 history，不是 streaming）
+    if (!wasRunning) {
+      setHistoryMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
       setSessionState('running');
     }
 
-    // ── 后端实际发送的消息（用户文本优先，skill 内容在后） ──
+    // ── 后端实际发送的消息 ──
     const skillContents = skills?.map(s => s.content).filter(Boolean) ?? [];
     const backendMessage = [text, ...skillContents].filter(Boolean).join('\n');
 
     try {
-      // 如果是新 session（无 sessionId），先通过 global sidecar 创建
+      // 新 session：先通过 global sidecar 创建
       if (!currentSessionId) {
         const globalUrl = await getGlobalUrl();
         const createResp = await apiPostJson<{ sessionId: string }>(globalUrl, '/sessions/create', {
@@ -676,18 +638,16 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
           title: text.slice(0, 50),
         });
         currentSessionId = createResp.sessionId;
-        // 将 draft 消息迁移到新 session
-        const draftMessages = sessionMessagesRef.current.get(DRAFT_SESSION_KEY) ?? messagesRef.current;
-        sessionMessagesRef.current.set(currentSessionId, draftMessages);
-        sessionMessagesRef.current.delete(DRAFT_SESSION_KEY);
-        activeSessionIdRef.current = currentSessionId;
-        setSessionId(currentSessionId);
-        refreshSessions().catch(console.error);
+        sessionIdRef.current = currentSessionId;
+        // 标记内部创建，防止 prop 变化时 effect 重置消息
+        sessionCreatedInternallyRef.current = true;
+        // 通知父组件新 sessionId
+        onSessionIdChange?.(currentSessionId);
       }
 
-      if (!isCurrentlyRunning) {
-        runningSessionsRef.current.add(currentSessionId);
-        setRunningSessions(new Set(runningSessionsRef.current));
+      if (!wasRunning) {
+        isRunningRef.current = true;
+        setIsRunning(true);
       }
 
       // 确保 session sidecar 运行
@@ -704,7 +664,7 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         images,
       });
 
-      // 如果消息被排队，加入 queuedMessages 状态
+      // 排队消息
       if (resp.queued && resp.queueId) {
         const queuedInfo: QueuedMessageInfo = {
           queueId: resp.queueId,
@@ -714,126 +674,46 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         queuedMessagesRef.current = [...queuedMessagesRef.current, queuedInfo];
         setQueuedMessages(queuedMessagesRef.current);
       }
-
-      const assignedSessionId = resp.sessionId;
-      if (assignedSessionId && assignedSessionId !== currentSessionId) {
-        runningSessionsRef.current.add(assignedSessionId);
-        setRunningSessions(new Set(runningSessionsRef.current));
-      }
     } catch {
-      if (currentSessionId && !isCurrentlyRunning) {
-        runningSessionsRef.current.delete(currentSessionId);
-        setRunningSessions(new Set(runningSessionsRef.current));
-      }
-      if (!isCurrentlyRunning) {
+      if (!wasRunning) {
+        isRunningRef.current = false;
+        setIsRunning(false);
         setIsLoading(false);
         setSessionState('error');
       }
     }
-  }, [agentDir, refreshSessions, updateMessagesForSession, ensureSessionSidecar, getGlobalUrl]);
+  }, [agentDir, ensureSessionSidecar, getGlobalUrl, onSessionIdChange]);
 
   const stopResponse = useCallback(async () => {
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    const url = serverUrlMapRef.current.get(sid);
+    const url = serverUrlRef.current;
     if (!url) return;
     await apiPostJson(url, '/chat/stop', {});
-    runningSessionsRef.current.delete(sid);
-    setRunningSessions(new Set(runningSessionsRef.current));
+    moveStreamingToHistory();
+    isRunningRef.current = false;
+    setIsRunning(false);
     setIsLoading(false);
     setSessionState('idle');
-  }, []);
+  }, [moveStreamingToHistory]);
 
   const resetSession = useCallback(async () => {
-    sessionMessagesRef.current.set(toSessionKey(activeSessionIdRef.current), messagesRef.current);
-    sessionMessagesRef.current.set(DRAFT_SESSION_KEY, []);
-    activeSessionIdRef.current = null;
-    setMessages([]);
-    messagesRef.current = [];
+    setHistoryMessages([]);
+    updateStreamingMessage(null);
+    historyMessagesRef.current = [];
     setIsLoading(false);
     setSessionState('idle');
-    setSessionId(null);
+    isRunningRef.current = false;
+    setIsRunning(false);
     setPendingPermission(null);
     setPendingQuestion(null);
     queuedMessagesRef.current = [];
     setQueuedMessages([]);
-    await refreshSessions().catch(() => {});
-  }, [refreshSessions, toSessionKey]);
-
-  const loadSession = useCallback(async (sid: string) => {
-    // 先缓存当前展示会话
-    sessionMessagesRef.current.set(toSessionKey(activeSessionIdRef.current), messagesRef.current);
-
-    activeSessionIdRef.current = sid;
-    setSessionId(sid);
-    setPendingPermission(null);
-    setPendingQuestion(null);
-
-    const cached = sessionMessagesRef.current.get(toSessionKey(sid));
-    if (cached) {
-      setMessages(cached);
-      messagesRef.current = cached;
-    } else {
-      setMessages([]);
-      messagesRef.current = [];
-    }
-
-    const running = runningSessionsRef.current.has(sid);
-    setIsLoading(running);
-    setSessionState(running ? 'running' : 'idle');
-
-    // 如果该 session 已有 sidecar 运行（在 sseMapRef 中），直接使用
-    if (sseMapRef.current.has(sid)) {
-      // SSE 已连接，从 sidecar 获取最新消息
-      const url = serverUrlMapRef.current.get(sid);
-      if (url && !cached) {
-        const reqSeq = ++loadReqSeqRef.current;
-        try {
-          const msgs = await apiGetJson<Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: number }>>(url, '/chat/messages');
-          if (reqSeq !== loadReqSeqRef.current) return;
-          const formatted = msgs.map((m) => ({
-            id: m.id,
-            role: m.role,
-            blocks: [{ type: 'text' as const, text: m.content }],
-            createdAt: m.createdAt,
-          }));
-          sessionMessagesRef.current.set(toSessionKey(sid), formatted);
-          if (activeSessionIdRef.current === sid) {
-            setMessages(formatted);
-            messagesRef.current = formatted;
-          }
-        } catch { /* sidecar might be shutting down */ }
-      }
-      return;
-    }
-
-    // 没有 sidecar 运行，从 global sidecar 的 SessionStore 读取消息
-    if (!cached) {
-      const reqSeq = ++loadReqSeqRef.current;
-      try {
-        const globalUrl = await getGlobalUrl();
-        const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string }>>(globalUrl, `/chat/sessions/${sid}/messages`).catch(() => [] as Array<{ id: string; role: string; content: string; timestamp: string }>);
-        if (reqSeq !== loadReqSeqRef.current) return;
-        if (msgs.length > 0) {
-          const formatted = msgs.map((m) => ({
-            id: m.id,
-            role: m.role as 'user' | 'assistant',
-            blocks: [{ type: 'text' as const, text: m.content }],
-            createdAt: new Date(m.timestamp).getTime(),
-          }));
-          sessionMessagesRef.current.set(toSessionKey(sid), formatted);
-          if (activeSessionIdRef.current === sid) {
-            setMessages(formatted);
-            messagesRef.current = formatted;
-          }
-        }
-      } catch { /* global sidecar might not be ready */ }
-    }
-  }, [toSessionKey, getGlobalUrl]);
+  }, [updateStreamingMessage]);
 
   const deleteSession = useCallback(async (sessionIdToDelete: string) => {
-    // 如果正在运行，先停止 sidecar
-    await stopSessionSidecarCleanup(sessionIdToDelete).catch(() => {});
+    // 停止 sidecar
+    if (sessionIdToDelete === sessionIdRef.current) {
+      await stopSidecarCleanup().catch(() => {});
+    }
 
     // 通过 global sidecar 删除
     const globalUrl = await getGlobalUrl();
@@ -842,17 +722,14 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
     } else {
       await fetch(`${globalUrl}/chat/sessions/${sessionIdToDelete}`, { method: 'DELETE' });
     }
-    sessionMessagesRef.current.delete(toSessionKey(sessionIdToDelete));
-    if (activeSessionIdRef.current === sessionIdToDelete) {
-      activeSessionIdRef.current = null;
-      setSessionId(null);
-      setMessages([]);
-      messagesRef.current = [];
+    if (sessionIdRef.current === sessionIdToDelete) {
+      setHistoryMessages([]);
+      updateStreamingMessage(null);
+      historyMessagesRef.current = [];
       setIsLoading(false);
       setSessionState('idle');
     }
-    await refreshSessions();
-  }, [refreshSessions, toSessionKey, stopSessionSidecarCleanup, getGlobalUrl]);
+  }, [stopSidecarCleanup, getGlobalUrl, updateStreamingMessage]);
 
   const updateSessionTitle = useCallback(async (sessionIdToUpdate: string, title: string) => {
     const globalUrl = await getGlobalUrl();
@@ -865,13 +742,11 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
         body: JSON.stringify({ title }),
       });
     }
-    await refreshSessions();
-  }, [refreshSessions, getGlobalUrl]);
+  }, [getGlobalUrl]);
 
   const apiGet = useCallback(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function<T>(path: string): Promise<T> {
-      // Use global sidecar for API calls
       return getGlobalUrl().then((url) => apiGetJson<T>(url, path));
     },
     [getGlobalUrl]
@@ -886,9 +761,7 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
   );
 
   const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
-    const sid = activeSessionIdRef.current;
-    if (!sid) return null;
-    const url = serverUrlMapRef.current.get(sid);
+    const url = serverUrlRef.current;
     if (!url) return null;
     const resp = await apiPostJson<{ ok: boolean; text?: string }>(url, '/chat/queue/cancel', { queueId });
     if (resp.ok) {
@@ -900,65 +773,68 @@ export function TabProvider({ tabId, agentDir, onRunningSessionsChange, children
   }, []);
 
   const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
-    const sid = activeSessionIdRef.current;
-    if (!sid) return false;
-    const url = serverUrlMapRef.current.get(sid);
+    const url = serverUrlRef.current;
     if (!url) return false;
     const resp = await apiPostJson<{ ok: boolean }>(url, '/chat/queue/force', { queueId });
     return resp.ok;
   }, []);
 
   const respondPermission = useCallback(async (toolUseId: string, allow: boolean) => {
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    const url = serverUrlMapRef.current.get(sid);
+    const url = serverUrlRef.current;
     if (!url) return;
     await apiPostJson(url, '/chat/permission-response', { toolUseId, allow });
     setPendingPermission(null);
   }, []);
 
   const respondQuestion = useCallback(async (toolUseId: string, answers: Record<string, string>) => {
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    const url = serverUrlMapRef.current.get(sid);
+    const url = serverUrlRef.current;
     if (!url) return;
     await apiPostJson(url, '/question/respond', { toolUseId, answers });
     setPendingQuestion(null);
   }, []);
 
+  // ── TabApiContext: lightweight, stable during streaming ──
+  const hasMessages = historyMessages.length > 0 || streamingMessage !== null;
+  const apiValue = useMemo<TabApiContextValue>(
+    () => ({ tabId, agentDir, sessionId, apiGet, apiPost, hasMessages }),
+    [tabId, agentDir, sessionId, apiGet, apiPost, hasMessages]
+  );
+
+  // ── TabContext: full state ──
   const value = useMemo<TabState>(
     () => ({
       tabId,
       agentDir,
       sessionId,
       sidecarReady,
+      historyMessages,
+      streamingMessage,
       messages,
       isLoading,
       sessionState,
       sendMessage,
       stopResponse,
       resetSession,
-      apiGet,
-      apiPost,
       pendingPermission,
       pendingQuestion,
       respondPermission,
       respondQuestion,
-      sessions,
-      sessionsFetched,
-      loadSession,
       deleteSession,
       updateSessionTitle,
-      refreshSessions,
-      runningSessions,
       unifiedLogs,
       clearUnifiedLogs,
       queuedMessages,
       cancelQueuedMessage,
       forceExecuteQueuedMessage,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, apiGet, apiPost, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, refreshSessions, runningSessions, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage]
+    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, deleteSession, updateSessionTitle, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage]
   );
 
-  return <TabContext.Provider value={value}>{children}</TabContext.Provider>;
+  return (
+    <TabActiveContext.Provider value={isActive}>
+      <TabApiContext.Provider value={apiValue}>
+        <TabContext.Provider value={value}>{children}</TabContext.Provider>
+      </TabApiContext.Provider>
+    </TabActiveContext.Provider>
+  );
 }

@@ -181,6 +181,9 @@ const server = Bun.serve({
         role: m.role,
         content: m.content,
         createdAt: new Date(m.timestamp).getTime(),
+        ...(m.usage ? { usage: m.usage } : {}),
+        ...(m.durationMs ? { durationMs: m.durationMs } : {}),
+        ...(m.toolCount ? { toolCount: m.toolCount } : {}),
       })));
     }
 

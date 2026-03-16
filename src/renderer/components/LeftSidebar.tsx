@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Clock, Folder, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Clock, Folder, FolderOpen, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Search, Settings, Trash2 } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
@@ -90,7 +90,7 @@ export default function LeftSidebar({
   }, []);
 
   const dirName = useCallback((path: string) => {
-    return path.split('/').filter(Boolean).pop()?.toUpperCase() ?? path;
+    return path.split('/').filter(Boolean).pop() ?? path;
   }, []);
 
   // Group sessions by agentDir
@@ -119,19 +119,15 @@ export default function LeftSidebar({
   }, [sessions, pinnedSessionIds]);
 
   const handleSessionClick = useCallback((s: SessionMetadata) => {
-    if (s.agentDir === agentDir) {
-      onSelectSession(s.id);
-    } else {
-      onNavigateToSession(s.agentDir, s.id);
-    }
-  }, [agentDir, onSelectSession, onNavigateToSession]);
+    onNavigateToSession(s.agentDir, s.id);
+  }, [onNavigateToSession]);
 
   return (
     <div
       className="flex h-full flex-col overflow-hidden bg-[var(--surface)]"
       style={{
-        width: 278,
-        minWidth: 278,
+        width: 300,
+        minWidth: 300,
         borderRight: '1px solid var(--border)',
       }}
     >
@@ -165,21 +161,21 @@ export default function LeftSidebar({
         <div className="flex flex-col gap-1 mt-3" onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
           <button
             onClick={onNewChat}
-            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
+            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
           >
             <MessageSquarePlus size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
             新建对话
           </button>
           <button
             onClick={() => setShowSearch(true)}
-            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
+            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
           >
             <Search size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
             搜索对话
           </button>
           <button
             onClick={onOpenScheduledTasks}
-            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium transition-colors text-left ${
+            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium transition-colors text-left ${
               isScheduledTasksActive
                 ? 'bg-[var(--hover)] text-[var(--ink)]'
                 : 'text-[var(--ink)] hover:bg-[var(--hover)]'
@@ -194,7 +190,7 @@ export default function LeftSidebar({
       {/* 最近对话标题（固定） */}
       {!isSettingsActive && sessions.length > 0 && (
         <div className="shrink-0 flex items-center justify-between" style={{ padding: '12px 22px 6px' }}>
-          <span className="text-[14px] font-semibold text-[var(--ink-secondary)]">最近对话</span>
+          <span className="text-[13px] font-semibold text-[var(--ink-secondary)]">最近对话</span>
           <button onClick={onNewChat}>
             <Plus size={16} className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors" />
           </button>
@@ -221,8 +217,11 @@ export default function LeftSidebar({
                       ? <ChevronRight size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
                       : <ChevronDown size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
                     }
-                    <Folder size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
-                    <span className="text-[11px] font-semibold text-[var(--ink-tertiary)] uppercase tracking-wide">
+                    {isCollapsed
+                      ? <Folder size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+                      : <FolderOpen size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+                    }
+                    <span className="text-[14px] font-normal text-[var(--ink-secondary)]">
                       {dirName(agentDirKey)}
                     </span>
                   </button>
@@ -358,6 +357,7 @@ export default function LeftSidebar({
               : 'hover:bg-[var(--hover)] text-[var(--ink)]'
           }`}
         >
+          <Settings size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
           <span className="text-[14px] font-medium">设置</span>
         </button>
       </div>

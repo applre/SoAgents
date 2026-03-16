@@ -58,7 +58,10 @@ export default function WorkspaceSelector({ workspaces, selectedPath, onSelect, 
           className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-[var(--hover)] transition-colors"
         >
           <Folder size={16} className="shrink-0 text-[var(--ink-tertiary)]" />
-          <span className="flex-1 truncate text-[14px] text-[var(--ink)]">{dirName(ws.path)}</span>
+          <div className="flex-1 min-w-0">
+            <span className="block truncate text-[14px] text-[var(--ink)]">{dirName(ws.path)}</span>
+            <span className="block truncate text-[11px] text-[var(--ink-tertiary)]">{ws.path}</span>
+          </div>
           {ws.path === selectedPath && <Check size={16} className="shrink-0 text-[var(--accent)]" />}
         </button>
       ))}

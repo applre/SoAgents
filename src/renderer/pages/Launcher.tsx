@@ -5,7 +5,7 @@ import WorkspaceSelector from '../components/WorkspaceSelector';
 
 interface Props {
   tabId: string;
-  onSelectWorkspace: (tabId: string, agentDir: string) => void;
+  onSelectWorkspace: (tabId: string, agentDir: string, initialMessage?: string) => void;
 }
 
 export default function Launcher({ tabId, onSelectWorkspace }: Props) {
@@ -37,7 +37,7 @@ export default function Launcher({ tabId, onSelectWorkspace }: Props) {
     const text = message.trim();
     if (!text || !selectedDir) return;
     touchWorkspace(selectedDir);
-    onSelectWorkspace(tabId, selectedDir);
+    onSelectWorkspace(tabId, selectedDir, text);
   }, [message, selectedDir, tabId, onSelectWorkspace, touchWorkspace]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {

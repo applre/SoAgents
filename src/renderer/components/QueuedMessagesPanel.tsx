@@ -11,7 +11,7 @@ export default function QueuedMessagesPanel({ queuedMessages, onCancel, onForceE
   if (queuedMessages.length === 0) return null;
 
   return (
-    <div className="border-t border-[var(--border)] bg-[var(--paper)] px-4 py-2">
+    <div className="border-t border-[var(--border)] bg-[var(--paper)] px-6 py-2 mx-auto w-full" style={{ maxWidth: 860 }}>
       <div className="mb-1 text-[12px] font-medium text-[var(--ink-tertiary)]">
         排队中 ({queuedMessages.length})
       </div>

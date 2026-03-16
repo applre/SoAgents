@@ -6,7 +6,7 @@ import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
-import { useTabState } from '../context/TabContext';
+import { useTabApi } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
 import type { ModelEntity, Provider, ProviderEnv } from '../../shared/types/config';
@@ -56,8 +56,8 @@ interface AttachedFile {
 
 export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed }: Props) {
   const { config, allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
-  const { apiGet, messages } = useTabState();
-  const isProviderLocked = messages.length > 0;
+  const { apiGet, hasMessages } = useTabApi();
+  const isProviderLocked = hasMessages;
 
   // Provider 可用性检查：subscription 类型暂时放行，api 类型需要有 key
   const isProviderAvailable = useCallback((p: Provider): boolean => {
@@ -610,7 +610,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const workspaceMcpCount = mcpServers.filter((s) => workspaceMcpEnabled.has(s.id)).length;
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    <div className="px-6 pb-4 pt-2 mx-auto w-full" style={{ maxWidth: 860 }}>
       <div
         className="relative rounded-2xl border border-[var(--border)] bg-white"
         style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}

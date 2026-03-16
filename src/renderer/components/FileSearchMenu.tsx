@@ -21,6 +21,8 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
   const [isSearching, setIsSearching] = useState(false);
   const [dirFiles, setDirFiles] = useState<FileSearchResult[]>([]);
   const [dirPath, setDirPath] = useState('');
+  const [previewFiles, setPreviewFiles] = useState<FileSearchResult[]>([]);
+  const [previewPath, setPreviewPath] = useState('');
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -37,6 +39,7 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
   useEffect(() => {
     if (!agentDir) return;
     loadDir(agentDir);
+    loadPreview(agentDir);
   }, [agentDir]);
 
   // Scroll selected item into view
@@ -67,6 +70,18 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
     }
   }, []);
 
+  const loadPreview = useCallback(async (path: string) => {
+    try {
+      const files = await globalApiGetJson<FileSearchResult[]>(
+        `/api/dir-files?path=${encodeURIComponent(path)}`
+      );
+      setPreviewFiles(files);
+      setPreviewPath(path);
+    } catch {
+      setPreviewFiles([]);
+    }
+  }, []);
+
   const searchFiles = useCallback(async (q: string) => {
     if (!agentDir || q.length < 1) {
       setResults([]);
@@ -87,16 +102,26 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
     }
   }, [agentDir]);
 
-  // Update right panel when selection changes
+  // Update right preview panel when selection changes
   useEffect(() => {
     if (query && results.length > 0 && selectedIndex < results.length) {
+      // Search mode: preview the selected item's directory (or itself if dir)
       const selected = results[selectedIndex];
-      const parentDir = selected.type === 'dir'
+      const previewDir = selected.type === 'dir'
         ? selected.path
         : selected.path.substring(0, selected.path.lastIndexOf('/')) || agentDir;
-      loadDir(parentDir);
+      loadPreview(previewDir);
+    } else if (!query && dirFiles.length > 0 && selectedIndex < dirFiles.length) {
+      // Browse mode: if selected item is a dir, preview its contents
+      const selected = dirFiles[selectedIndex];
+      if (selected?.type === 'dir') {
+        loadPreview(selected.path);
+      } else {
+        // Selected a file — preview the current directory
+        loadPreview(dirPath);
+      }
     }
-  }, [selectedIndex, results, query, agentDir, loadDir]);
+  }, [selectedIndex, results, dirFiles, query, agentDir, dirPath, loadPreview]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -153,6 +178,7 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
   };
 
   const relDirPath = relativePath(dirPath) || '.';
+  const relPreviewPath = relativePath(previewPath) || '.';
 
   const leftItems = query ? results : dirFiles;
 
@@ -249,12 +275,12 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
         {/* Right panel: directory preview */}
         <div className="w-[45%] overflow-y-auto bg-[var(--paper-dark)]/30">
           <div className="sticky top-0 bg-[var(--paper-dark)]/60 px-3 py-1.5 text-[10px] font-medium text-[var(--ink-tertiary)] backdrop-blur-sm">
-            {relDirPath}
+            {relPreviewPath}
           </div>
-          {dirFiles.length === 0 ? (
+          {previewFiles.length === 0 ? (
             <div className="px-3 py-4 text-center text-xs text-[var(--ink-tertiary)]">空目录</div>
           ) : (
-            dirFiles.map((file) => {
+            previewFiles.map((file) => {
               const isHighlighted = query && results[selectedIndex]?.path === file.path;
               return (
                 <button
@@ -268,6 +294,7 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
                   onClick={() => {
                     if (file.type === 'dir') {
                       loadDir(file.path);
+                      loadPreview(file.path);
                       setSelectedIndex(0);
                       setQuery('');
                       setResults([]);
