@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Clock, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Clock, Folder, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
+import { relativeTimeCompact } from '../utils/formatTime';
 import SearchModal from './SearchModal';
 
 interface Props {
@@ -13,6 +14,7 @@ interface Props {
   runningSessions?: Set<string>;
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
+  onNavigateToSession: (agentDir: string, sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, title: string) => void;
   onTogglePin: (sessionId: string) => void;
@@ -34,6 +36,7 @@ export default function LeftSidebar({
   runningSessions,
   onNewChat,
   onSelectSession,
+  onNavigateToSession,
   onDeleteSession,
   onRenameSession,
   onTogglePin,
@@ -50,6 +53,7 @@ export default function LeftSidebar({
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const editInputRef = useRef<HTMLInputElement>(null);
 
   const sessionTitle = useCallback((s: SessionMetadata) => {
@@ -76,14 +80,51 @@ export default function LeftSidebar({
     }
   }, [editingId]);
 
-  const sortedSessions = React.useMemo(() => {
-    return [...sessions].sort((a, b) => {
-      const aPinned = pinnedSessionIds.has(a.id);
-      const bPinned = pinnedSessionIds.has(b.id);
-      if (aPinned !== bPinned) return aPinned ? -1 : 1;
-      return 0;
+  const toggleGroup = useCallback((dir: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      return next;
+    });
+  }, []);
+
+  const dirName = useCallback((path: string) => {
+    return path.split('/').filter(Boolean).pop()?.toUpperCase() ?? path;
+  }, []);
+
+  // Group sessions by agentDir
+  const groupedSessions = React.useMemo(() => {
+    const groups = new Map<string, SessionMetadata[]>();
+    for (const s of sessions) {
+      const dir = s.agentDir || '未分类';
+      if (!groups.has(dir)) groups.set(dir, []);
+      groups.get(dir)!.push(s);
+    }
+    // Sort within each group: pinned first, then by lastActiveAt desc
+    for (const [, list] of groups) {
+      list.sort((a, b) => {
+        const ap = pinnedSessionIds.has(a.id);
+        const bp = pinnedSessionIds.has(b.id);
+        if (ap !== bp) return ap ? -1 : 1;
+        return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
+      });
+    }
+    // Sort groups by their latest session time desc
+    return [...groups.entries()].sort((a, b) => {
+      const aLatest = new Date(a[1][0]?.lastActiveAt ?? 0).getTime();
+      const bLatest = new Date(b[1][0]?.lastActiveAt ?? 0).getTime();
+      return bLatest - aLatest;
     });
   }, [sessions, pinnedSessionIds]);
+
+  const handleSessionClick = useCallback((s: SessionMetadata) => {
+    if (s.agentDir === agentDir) {
+      onSelectSession(s.id);
+    } else {
+      onNavigateToSession(s.agentDir, s.id);
+    }
+  }, [agentDir, onSelectSession, onNavigateToSession]);
 
   return (
     <div
@@ -160,91 +201,122 @@ export default function LeftSidebar({
         </div>
       )}
 
-      {/* 可滚动区：session 列表 */}
+      {/* 可滚动区：session 列表（按工作区分组） */}
       <div className="flex-1 overflow-y-auto min-h-0" style={{ paddingLeft: 14, paddingRight: 14 }}>
         {!isSettingsActive && sessions.length > 0 && (
-          <div className="flex flex-col gap-0.5 rounded-2xl relative" style={{ background: '#F5F3F0', padding: '6px 8px' }}>
+          <div className="flex flex-col gap-0.5">
             {menuOpenId && (
               <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
             )}
-            {sortedSessions.map((s) => {
-              const isActive = s.id === activeSessionId;
-              const isPinned = pinnedSessionIds.has(s.id);
-              const isMenuOpen = menuOpenId === s.id;
-              const isEditing = editingId === s.id;
-
+            {groupedSessions.map(([agentDirKey, groupSessions]) => {
+              const isCollapsed = collapsedGroups.has(agentDirKey);
               return (
-                <div key={s.id} className="group relative">
-                  {isEditing ? (
-                    <input
-                      ref={editInputRef}
-                      value={editingTitle}
-                      onChange={(e) => setEditingTitle(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitRename();
-                        if (e.key === 'Escape') setEditingId(null);
-                      }}
-                      onBlur={commitRename}
-                      className="w-full rounded-lg px-2 py-1.5 text-[14px] bg-white border border-[var(--accent)] outline-none text-[var(--ink)]"
-                    />
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => onSelectSession(s.id)}
-                        className={`w-full rounded-lg px-2 py-1.5 text-left text-[14px] transition-colors truncate pr-8 flex items-center gap-1.5 ${
-                          isActive
-                            ? 'bg-[var(--border)] text-[var(--ink)]'
-                            : 'text-[var(--ink)] hover:bg-[var(--hover)]'
-                        }`}
-                      >
-                        {runningSessions?.has(s.id) && (
-                          <span className="relative flex h-2 w-2 shrink-0">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-                            <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
-                          </span>
-                        )}
-                        {isPinned && <Pin size={12} className="shrink-0 text-[var(--ink-tertiary)]" />}
-                        <span className="truncate">{sessionTitle(s)}</span>
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setMenuOpenId(isMenuOpen ? null : s.id); }}
-                        className={`absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded transition-all ${
-                          isMenuOpen
-                            ? 'opacity-100 bg-[var(--hover)]'
-                            : 'opacity-0 group-hover:opacity-100 hover:bg-[var(--hover)]'
-                        }`}
-                      >
-                        <MoreHorizontal size={14} className="text-[var(--ink-secondary)]" />
-                      </button>
-                    </>
-                  )}
+                <div key={agentDirKey}>
+                  {/* Group header */}
+                  <button
+                    onClick={() => toggleGroup(agentDirKey)}
+                    className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--hover)] transition-colors"
+                  >
+                    {isCollapsed
+                      ? <ChevronRight size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
+                      : <ChevronDown size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
+                    }
+                    <Folder size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+                    <span className="text-[11px] font-semibold text-[var(--ink-tertiary)] uppercase tracking-wide">
+                      {dirName(agentDirKey)}
+                    </span>
+                  </button>
 
-                  {isMenuOpen && (
-                    <div
-                      className="absolute right-0 top-full mt-1 z-50 min-w-[160px] rounded-xl border border-[var(--border)] bg-white py-1"
-                      style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
-                    >
-                      <button
-                        onClick={() => startRename(s)}
-                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink)] hover:bg-[var(--hover)] transition-colors"
-                      >
-                        <Pencil size={14} />
-                        重命名
-                      </button>
-                      <button
-                        onClick={() => { onTogglePin(s.id); setMenuOpenId(null); }}
-                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink)] hover:bg-[var(--hover)] transition-colors"
-                      >
-                        <Pin size={14} />
-                        {isPinned ? '取消置顶' : '置顶'}
-                      </button>
-                      <button
-                        onClick={() => { onDeleteSession(s.id); setMenuOpenId(null); }}
-                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50 transition-colors"
-                      >
-                        <Trash2 size={14} />
-                        删除
-                      </button>
+                  {/* Session items */}
+                  {!isCollapsed && (
+                    <div className="flex flex-col gap-0.5" style={{ paddingBottom: 4 }}>
+                      {groupSessions.map((s) => {
+                        const isActive = s.id === activeSessionId;
+                        const isPinned = pinnedSessionIds.has(s.id);
+                        const isMenuOpen = menuOpenId === s.id;
+                        const isEditing = editingId === s.id;
+
+                        return (
+                          <div key={s.id} className="group relative">
+                            {isEditing ? (
+                              <input
+                                ref={editInputRef}
+                                value={editingTitle}
+                                onChange={(e) => setEditingTitle(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') commitRename();
+                                  if (e.key === 'Escape') setEditingId(null);
+                                }}
+                                onBlur={commitRename}
+                                className="w-full rounded-lg px-2 py-1.5 text-[14px] bg-white border border-[var(--accent)] outline-none text-[var(--ink)]"
+                              />
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => handleSessionClick(s)}
+                                  className={`w-full rounded-lg px-2 py-1.5 text-left text-[14px] transition-colors pr-8 flex items-center gap-1.5 ${
+                                    isActive
+                                      ? 'bg-[var(--border)] text-[var(--ink)]'
+                                      : 'text-[var(--ink)] hover:bg-[var(--hover)]'
+                                  }`}
+                                  style={{ paddingLeft: 26 }}
+                                >
+                                  {runningSessions?.has(s.id) && (
+                                    <span className="relative flex h-2 w-2 shrink-0">
+                                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+                                      <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+                                    </span>
+                                  )}
+                                  {isPinned && <Pin size={12} className="shrink-0 text-[var(--ink-tertiary)]" />}
+                                  <span className="truncate">{sessionTitle(s)}</span>
+                                  <span className="ml-auto shrink-0 text-[11px] text-[var(--ink-tertiary)]">
+                                    {relativeTimeCompact(s.lastActiveAt)}
+                                  </span>
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setMenuOpenId(isMenuOpen ? null : s.id); }}
+                                  className={`absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded transition-all ${
+                                    isMenuOpen
+                                      ? 'opacity-100 bg-[var(--hover)]'
+                                      : 'opacity-0 group-hover:opacity-100 hover:bg-[var(--hover)]'
+                                  }`}
+                                >
+                                  <MoreHorizontal size={14} className="text-[var(--ink-secondary)]" />
+                                </button>
+                              </>
+                            )}
+
+                            {isMenuOpen && (
+                              <div
+                                className="absolute right-0 top-full mt-1 z-50 min-w-[160px] rounded-xl border border-[var(--border)] bg-white py-1"
+                                style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
+                              >
+                                <button
+                                  onClick={() => startRename(s)}
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink)] hover:bg-[var(--hover)] transition-colors"
+                                >
+                                  <Pencil size={14} />
+                                  重命名
+                                </button>
+                                <button
+                                  onClick={() => { onTogglePin(s.id); setMenuOpenId(null); }}
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink)] hover:bg-[var(--hover)] transition-colors"
+                                >
+                                  <Pin size={14} />
+                                  {isPinned ? '取消置顶' : '置顶'}
+                                </button>
+                                <button
+                                  onClick={() => { onDeleteSession(s.id); setMenuOpenId(null); }}
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50 transition-colors"
+                                >
+                                  <Trash2 size={14} />
+                                  删除
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

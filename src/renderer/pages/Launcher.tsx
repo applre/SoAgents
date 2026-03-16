@@ -1,18 +1,7 @@
-import { useCallback } from 'react';
-import { open } from '@tauri-apps/plugin-dialog';
-import { isTauri } from '../utils/env';
-import { FolderOpen, X } from 'lucide-react';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { Send } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
-
-function getGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 6) return '夜深了';
-  if (hour < 10) return '早上好';
-  if (hour < 13) return '上午好';
-  if (hour < 14) return '中午好';
-  if (hour < 18) return '下午好';
-  return '晚上好';
-}
+import WorkspaceSelector from '../components/WorkspaceSelector';
 
 interface Props {
   tabId: string;
@@ -20,98 +9,98 @@ interface Props {
 }
 
 export default function Launcher({ tabId, onSelectWorkspace }: Props) {
-  const { workspaces, touchWorkspace, removeWorkspace } = useConfig();
+  const { workspaces, touchWorkspace } = useConfig();
+  const [selectedDir, setSelectedDir] = useState<string | null>(null);
+  const [showSelector, setShowSelector] = useState(false);
+  const [message, setMessage] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Sort by lastOpenedAt descending
   const recentWorkspaces = [...workspaces].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+  const dirName = (p: string) => p.split('/').filter(Boolean).pop() ?? p;
 
-  const handleSelect = useCallback(
-    (dir: string) => {
-      touchWorkspace(dir);
-      onSelectWorkspace(tabId, dir);
-    },
-    [tabId, onSelectWorkspace, touchWorkspace]
-  );
-
-  const handleOpenDialog = useCallback(async () => {
-    if (!isTauri()) return;
-    try {
-      const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === 'string' && selected) {
-        handleSelect(selected);
-      }
-    } catch (e) {
-      console.error('Dialog error:', e);
+  // Auto-select most recent workspace on mount
+  useEffect(() => {
+    if (!selectedDir && recentWorkspaces.length > 0) {
+      setSelectedDir(recentWorkspaces[0].path);
     }
-  }, [handleSelect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const handleRemoveRecent = useCallback((dir: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    removeWorkspace(dir);
-  }, [removeWorkspace]);
+  const handleSelect = useCallback((dir: string) => {
+    setSelectedDir(dir);
+    touchWorkspace(dir);
+    setShowSelector(false);
+    textareaRef.current?.focus();
+  }, [touchWorkspace]);
 
-  const dirBasename = (path: string) => path.split('/').filter(Boolean).pop() ?? path;
-  const dirParent = (path: string) => {
-    const parts = path.split('/').filter(Boolean);
-    return parts.length > 1 ? '/' + parts.slice(0, -1).join('/') : '/';
-  };
+  const handleSend = useCallback(() => {
+    const text = message.trim();
+    if (!text || !selectedDir) return;
+    touchWorkspace(selectedDir);
+    onSelectWorkspace(tabId, selectedDir);
+  }, [message, selectedDir, tabId, onSelectWorkspace, touchWorkspace]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
 
   return (
     <div className="flex h-full flex-col items-center justify-center bg-[var(--paper)] px-8">
-      <div className="w-full" style={{ maxWidth: 560 }}>
-        {/* 问候语 */}
+      <div className="w-full" style={{ maxWidth: 620 }}>
+        {/* Welcome */}
         <div className="mb-8 text-center">
-          <h1 className="text-[26px] font-semibold text-[var(--ink)]">
-            👋 {getGreeting()}，选择一个工作区
-          </h1>
-          <p className="mt-2 text-[14px] text-[var(--ink-tertiary)]">
-            AI 将在该目录下工作
-          </p>
+          <div style={{ fontSize: 40, opacity: 0.6, marginBottom: 16 }}>👋</div>
+          <div className="text-[16px] text-[var(--ink-secondary)] mb-2">有什么可以帮你的?</div>
+          {/* Workspace selector trigger */}
+          <div className="relative inline-flex flex-col items-center">
+            <button
+              onClick={() => setShowSelector((v) => !v)}
+              className="inline-flex items-baseline gap-1.5 cursor-pointer hover:opacity-70 transition-opacity"
+            >
+              <span className="text-[22px] font-medium text-[var(--ink)]">
+                {selectedDir ? dirName(selectedDir) : '选择工作区'}
+              </span>
+              <span className="text-[12px] text-[var(--ink-tertiary)]">▾</span>
+            </button>
+            {showSelector && (
+              <WorkspaceSelector
+                workspaces={recentWorkspaces}
+                selectedPath={selectedDir}
+                onSelect={handleSelect}
+                onClose={() => setShowSelector(false)}
+              />
+            )}
+          </div>
         </div>
 
-        {/* 浏览文件夹 */}
-        <button
-          onClick={handleOpenDialog}
-          className="flex w-full items-center gap-3 rounded-xl border border-[var(--border)] bg-white px-4 py-3.5 hover:bg-[var(--hover)] transition-colors"
+        {/* Input */}
+        <div
+          className="rounded-2xl border border-[var(--border)] bg-white overflow-hidden"
+          style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}
         >
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--surface)] shrink-0">
-            <FolderOpen size={16} className="text-[var(--ink-secondary)]" />
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="输入消息开始对话..."
+            className="w-full resize-none border-none bg-transparent px-4 py-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none"
+            rows={3}
+          />
+          <div className="flex items-center justify-end px-3 pb-3">
+            <button
+              onClick={handleSend}
+              disabled={!message.trim() || !selectedDir}
+              className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:opacity-30"
+              style={{ background: 'var(--accent)', color: 'white' }}
+            >
+              <Send size={16} />
+            </button>
           </div>
-          <span className="text-[15px] font-medium text-[var(--ink)]">浏览文件夹</span>
-        </button>
-
-        {/* 最近工作区 */}
-        {recentWorkspaces.length > 0 && (
-          <div className="mt-6">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--ink-tertiary)]">最近工作区</p>
-            <div className="space-y-1">
-              {recentWorkspaces.map((ws) => (
-                <div
-                  key={ws.path}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelect(ws.path)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSelect(ws.path)}
-                  className="group flex w-full items-center justify-between rounded-xl px-3 py-2.5 hover:bg-[var(--hover)] transition-colors cursor-pointer"
-                >
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <FolderOpen size={15} className="shrink-0 text-[var(--ink-tertiary)]" />
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-[var(--ink)]">{dirBasename(ws.path)}</p>
-                      <p className="truncate text-xs text-[var(--ink-tertiary)]">{ws.path}</p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => handleRemoveRecent(ws.path, e)}
-                    className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-tertiary)] opacity-0 group-hover:opacity-100 hover:bg-[var(--border)] transition-opacity"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );

@@ -34,6 +34,7 @@ import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
 import { useConfig } from './context/ConfigContext';
 import { useUpdater } from './hooks/useUpdater';
+import { useSidebarSessions } from './hooks/useSidebarSessions';
 import type { SessionMetadata } from '../shared/types/session';
 
 function createTab(overrides: Partial<Tab> = {}): Tab {
@@ -162,6 +163,9 @@ export default function App() {
 
   // Auto-updater
   const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
+
+  // Independent session fetch for sidebar (all workspaces)
+  const { sessions: allSessions } = useSidebarSessions();
 
   useEffect(() => {
     initFrontendLogger();
@@ -479,13 +483,14 @@ export default function App() {
       <div className="flex h-screen overflow-hidden bg-[var(--paper)]">
         {showSidebar ? (
           <LeftSidebar
-            sessions={tabSessions[activeTabId] ?? []}
+            sessions={allSessions}
             activeSessionId={activeSessionId}
             agentDir={activeTab?.agentDir ?? undefined}
             pinnedSessionIds={pinnedSessionIds}
             runningSessions={runningSessions}
             onNewChat={handleNewChat}
             onSelectSession={handleSelectSession}
+            onNavigateToSession={handleNavigateToSession}
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
             onTogglePin={handleTogglePin}
