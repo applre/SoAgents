@@ -23,8 +23,13 @@ export default function MessageList({ messages, isLoading, onOpenUrl }: Props) {
           发送消息开始对话
         </div>
       )}
-      {messages.map((msg) => (
-        <MessageItem key={msg.id} message={msg} onOpenUrl={onOpenUrl} />
+      {messages.map((msg, idx) => (
+        <MessageItem
+          key={msg.id}
+          message={msg}
+          isStreaming={isLoading && idx === messages.length - 1 && msg.role === 'assistant'}
+          onOpenUrl={onOpenUrl}
+        />
       ))}
       {isLoading && <ThinkingIndicator />}
     </div>

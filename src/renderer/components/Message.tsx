@@ -2,16 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Puzzle } from 'lucide-react';
-import type { Message } from '../types/chat';
+import type { Message, TurnMeta } from '../types/chat';
 import ToolUse from './tools/ToolUse';
 import CodeBlock from './markdown/CodeBlock';
+import { formatTokens, formatDuration } from '../utils/formatTokens';
 
 interface Props {
   message: Message;
+  isStreaming?: boolean;
   onOpenUrl?: (url: string) => void;
 }
 
-export default function MessageItem({ message, onOpenUrl }: Props) {
+export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -140,7 +142,10 @@ export default function MessageItem({ message, onOpenUrl }: Props) {
       >
         {message.blocks.map((block, i) => {
           if (block.type === 'thinking') {
-            return <ThinkingBlock key={i} text={block.thinking} />;
+            // 流式阶段且该消息只有 thinking block（text 还没来）→ 默认展开
+            const hasTextBlock = message.blocks.some((b) => b.type === 'text');
+            const isActiveThinking = isStreaming && !hasTextBlock;
+            return <ThinkingBlock key={i} text={block.thinking} defaultOpen={isActiveThinking} isActive={isActiveThinking} />;
           }
           if (block.type === 'tool_use') {
             return <ToolUse key={i} block={block} />;
@@ -197,26 +202,62 @@ export default function MessageItem({ message, onOpenUrl }: Props) {
           );
         })}
       </div>
-      {/* Hover action menu */}
-      <div className="flex items-center gap-0.5 mt-1 opacity-0 transition-opacity group-hover/assistant:opacity-100">
-        {copyButton}
+      {/* Turn meta + hover action menu */}
+      <div className="flex items-center gap-2 mt-1">
+        {message.turnMeta && <TurnMetaDisplay meta={message.turnMeta} />}
+        <div className="opacity-0 transition-opacity group-hover/assistant:opacity-100">
+          {copyButton}
+        </div>
       </div>
     </div>
   );
 }
 
-function ThinkingBlock({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+function TurnMetaDisplay({ meta }: { meta: TurnMeta }) {
+  const parts: string[] = [];
+  if (meta.model) parts.push(meta.model);
+  const totalTokens = (meta.inputTokens ?? 0) + (meta.outputTokens ?? 0);
+  if (totalTokens > 0) parts.push(`${formatTokens(totalTokens)} tokens`);
+  if (meta.durationMs) parts.push(formatDuration(meta.durationMs));
+  if (parts.length === 0) return null;
+  return (
+    <span className="text-[11px] text-[var(--ink-tertiary)]">
+      {parts.join(' · ')}
+    </span>
+  );
+}
+
+function ThinkingBlock({ text, defaultOpen, isActive }: { text: string; defaultOpen?: boolean; isActive?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const wasActiveRef = useRef(isActive);
+
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current) {
+      // 思考开始 → 自动展开
+      setOpen(true);
+    } else if (!isActive && wasActiveRef.current) {
+      // 思考结束（text 开始输出）→ 自动折叠
+      setOpen(false);
+    }
+    wasActiveRef.current = isActive;
+  }, [isActive]);
+
   return (
     <div className="mb-2 text-xs">
       <button
         className="text-[var(--ink-tertiary)] italic hover:text-[var(--ink-secondary)] flex items-center gap-1"
         onClick={() => setOpen((v) => !v)}
       >
-        {open ? '▾' : '▸'} 思考过程
+        {isActive && <span className="text-[var(--accent)] animate-pulse">●</span>}
+        {open ? '▾' : '▸'} {isActive ? '正在思考…' : '思考过程'}
       </button>
       {open && (
-        <div className="mt-1 pl-3 border-l border-[var(--border)] text-[var(--ink-tertiary)] italic whitespace-pre-wrap">
+        <div
+          ref={contentRef}
+          className="mt-1 pl-3 border-l border-[var(--border)] text-[var(--ink-tertiary)] italic whitespace-pre-wrap max-h-48 overflow-y-auto"
+        >
           {text}
         </div>
       )}

@@ -7,8 +7,7 @@ pub async fn cmd_proxy_http(
     headers: Option<HashMap<String, String>>,
     body: Option<String>,
 ) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
+    let client = crate::local_http::builder()
         .tcp_nodelay(true)
         .http1_only()
         .build()
@@ -19,6 +18,7 @@ pub async fn cmd_proxy_http(
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
+        "PATCH" => client.patch(&url),
         _ => return Err(format!("Unsupported method: {}", method)),
     };
 

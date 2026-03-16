@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { AppConfig, Provider, ModelEntity, ProviderVerifyStatus } from '../shared/types/config';
 import { DEFAULT_CONFIG, PROVIDERS } from '../shared/providers';
+import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const DATA_DIR = join(homedir(), '.soagents');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
@@ -15,28 +16,25 @@ function ensureDataDir() {
 
 export function readConfig(): AppConfig {
   ensureDataDir();
-  if (!existsSync(CONFIG_PATH)) {
+  const parsed = safeLoadJsonSync<Partial<AppConfig>>(CONFIG_PATH, {});
+  if (!parsed || Object.keys(parsed).length === 0) {
     return { ...DEFAULT_CONFIG };
   }
-  try {
-    const raw = readFileSync(CONFIG_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<AppConfig>;
-    return {
-      currentProviderId: parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
-      currentModelId: parsed.currentModelId,
-      apiKeys: parsed.apiKeys ?? {},
-      customProviders: parsed.customProviders ?? [],
-      presetCustomModels: parsed.presetCustomModels,
-      providerVerifyStatus: parsed.providerVerifyStatus,
-    };
-  } catch {
-    return { ...DEFAULT_CONFIG };
-  }
+  return {
+    currentProviderId: parsed.currentProviderId ?? DEFAULT_CONFIG.currentProviderId,
+    currentModelId: parsed.currentModelId,
+    apiKeys: parsed.apiKeys ?? {},
+    customProviders: parsed.customProviders ?? [],
+    presetCustomModels: parsed.presetCustomModels,
+    providerVerifyStatus: parsed.providerVerifyStatus,
+    providerModelAliases: parsed.providerModelAliases,
+    mcpServerArgs: parsed.mcpServerArgs,
+  };
 }
 
 export function writeConfig(config: AppConfig): void {
   ensureDataDir();
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  safeWriteJsonSync(CONFIG_PATH, config);
 }
 
 function isValidCustomProviderId(id: string): boolean {

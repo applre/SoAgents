@@ -8,6 +8,7 @@ import SearchModal from './SearchModal';
 interface Props {
   sessions: SessionMetadata[];
   activeSessionId: string | null;
+  agentDir?: string;
   pinnedSessionIds: Set<string>;
   runningSessions?: Set<string>;
   onNewChat: () => void;
@@ -28,6 +29,7 @@ interface Props {
 export default function LeftSidebar({
   sessions,
   activeSessionId,
+  agentDir,
   pinnedSessionIds,
   runningSessions,
   onNewChat,
@@ -165,7 +167,7 @@ export default function LeftSidebar({
             {menuOpenId && (
               <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
             )}
-            {sortedSessions.slice(0, 10).map((s) => {
+            {sortedSessions.map((s) => {
               const isActive = s.id === activeSessionId;
               const isPinned = pinnedSessionIds.has(s.id);
               const isMenuOpen = menuOpenId === s.id;
@@ -255,6 +257,7 @@ export default function LeftSidebar({
       {/* 搜索弹窗 */}
       {showSearch && (
         <SearchModal
+          agentDir={agentDir}
           onSelectSession={onSelectSession}
           onClose={() => setShowSearch(false)}
         />

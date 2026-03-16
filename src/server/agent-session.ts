@@ -4,6 +4,7 @@ import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
 import * as MCPConfigStore from './MCPConfigStore';
+import * as ConfigStore from './ConfigStore';
 import { resolveClaudeCodeCli } from './provider-verify';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
@@ -14,11 +15,31 @@ interface ChatImage {
   data: string; // 纯 base64
 }
 
+/** OpenAI Bridge 上游配置（当 apiProtocol === 'openai' 时存储） */
+export interface OpenAiBridgeConfig {
+  baseUrl: string;
+  apiKey: string;
+  maxOutputTokens?: number;
+  upstreamFormat?: 'chat_completions' | 'responses';
+}
+
+/** 当前 OpenAI bridge 配置（模块级，供 bridge handler 读取） */
+let currentOpenAiBridgeConfig: OpenAiBridgeConfig | null = null;
+
+/** 获取当前 OpenAI bridge 配置 */
+export function getOpenAiBridgeConfig(): OpenAiBridgeConfig | null {
+  return currentOpenAiBridgeConfig;
+}
+
 /** 消息队列项 */
 interface QueueItem {
   sdkMessage: SDKUserMessage;
   text: string; // 用于日志和持久化
+  queueId: string;
+  wasQueued: boolean; // 区分直接发送和排队消息
 }
+
+const MAX_QUEUE_SIZE = 10;
 
 /** 会话启动所需的配置快照 */
 interface SessionConfig {
@@ -83,10 +104,54 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string,
     delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
   }
 
-  // 6. OpenAI 协议桥接 — TODO: 需要移植 openai-bridge 模块实现回环翻译
-  // 目前仅记录日志，实际 bridge 功能待后续实现
+  // 6. OpenAI 协议桥接
   if (providerEnv?.apiProtocol === 'openai') {
-    console.warn('[env] apiProtocol=openai detected but bridge not yet implemented');
+    const sidecarPort = parseInt(process.env.PORT || '3000', 10);
+    if (sidecarPort > 0) {
+      // SDK 请求转发到 sidecar 的 loopback 路由，由 sidecar 翻译为 OpenAI 格式
+      env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${sidecarPort}`;
+      env.ANTHROPIC_API_KEY = providerEnv.apiKey ?? '';
+      delete env.ANTHROPIC_AUTH_TOKEN;
+
+      // 清除代理变量，防止 loopback 请求被路由到系统代理
+      for (const proxyVar of [
+        'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY',
+        'ALL_PROXY', 'all_proxy', 'no_proxy', 'NO_PROXY',
+      ]) {
+        delete env[proxyVar];
+      }
+
+      // 存储 upstream 配置供 OpenAI bridge handler 读取
+      currentOpenAiBridgeConfig = {
+        baseUrl: providerEnv.baseUrl ?? '',
+        apiKey: providerEnv.apiKey ?? '',
+        maxOutputTokens: providerEnv.maxOutputTokens,
+        upstreamFormat: providerEnv.upstreamFormat,
+      };
+      console.log(`[env] OpenAI bridge: ANTHROPIC_BASE_URL → loopback :${sidecarPort}, upstream → ${providerEnv.baseUrl}, proxy vars stripped`);
+    } else {
+      console.warn('[env] apiProtocol=openai but sidecar port unavailable');
+      currentOpenAiBridgeConfig = null;
+    }
+    return env;
+  }
+
+  // 非 OpenAI 协议时清除 bridge 配置
+  currentOpenAiBridgeConfig = null;
+
+  // 7. Model aliases (sonnet/opus/haiku → actual model IDs for third-party providers)
+  if (providerEnv?.modelAliases) {
+    const aliases = providerEnv.modelAliases;
+    const parts: string[] = [];
+    if (aliases.sonnet) parts.push(`sonnet=${aliases.sonnet}`);
+    if (aliases.opus) parts.push(`opus=${aliases.opus}`);
+    if (aliases.haiku) parts.push(`haiku=${aliases.haiku}`);
+    if (parts.length > 0) {
+      env.CLAUDE_CODE_USE_MODEL_ALIASES = parts.join(',');
+      console.log(`[env] Model aliases: ${parts.join(', ')}`);
+    }
+  } else {
+    delete env.CLAUDE_CODE_USE_MODEL_ALIASES;
   }
 
   return env;
@@ -122,6 +187,11 @@ class SessionRunner {
   private turnAssistantContent = '';
   private turnHasStreamedContent = false;
   private currentToolId = '';
+
+  // ── Turn 级 usage 跟踪 ──
+  private turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined as string | undefined, modelUsage: undefined as Record<string, import('../shared/types/session').ModelUsageEntry> | undefined };
+  private turnStartTime: number | null = null;
+  private turnToolCount = 0;
 
   // ── 权限/问题处理 ──
   private pendingPermissions = new Map<string, (allow: boolean) => void>();
@@ -173,6 +243,16 @@ class SessionRunner {
     return new Promise(resolve => { this.resolveTurnComplete = resolve; });
   }
 
+  /** session 异常死亡时逐条广播 queue:cancelled */
+  private drainMessageQueue(): void {
+    for (const item of this.messageQueue) {
+      if (item.wasQueued) {
+        broadcast('queue:cancelled', { sessionId: this.sessionId, queueId: item.queueId });
+      }
+    }
+    this.messageQueue.length = 0;
+  }
+
   /** 中止持久 session：唤醒所有被阻塞的 Promise + 中断 subprocess */
   private abortSession(): void {
     this.shouldAbort = true;
@@ -202,13 +282,31 @@ class SessionRunner {
         return;
       }
 
+      // 排队消息：在 yield 前保存用户消息到 SessionStore 并广播 queue:started
+      if (item.wasQueued) {
+        SessionStore.saveMessage(this.sessionId, {
+          id: crypto.randomUUID(),
+          role: 'user',
+          content: item.text,
+          timestamp: new Date().toISOString(),
+        });
+        broadcast('queue:started', {
+          sessionId: this.sessionId,
+          queueId: item.queueId,
+          text: item.text,
+        });
+      }
+
       // 重置每轮状态
       this.turnAssistantContent = '';
       this.turnHasStreamedContent = false;
       this.currentToolId = '';
+      this.turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined, modelUsage: undefined };
+      this.turnStartTime = Date.now();
+      this.turnToolCount = 0;
       this.isStreaming = true;
 
-      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}"`);
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued})`);
       yield item.sdkMessage;
 
       // 等待本轮 AI 回复完成（result 消息到达后解锁）
@@ -261,12 +359,25 @@ class SessionRunner {
       if (mcpFiltered.length > 0) {
         mcpServers = {};
         for (const cfg of mcpFiltered) {
+          // Skip MCP servers that require config but aren't configured yet
+          if (cfg.requiresConfig?.length) {
+            const serverEnv = MCPConfigStore.getServerEnv(cfg.id);
+            const missing = cfg.requiresConfig.some((key) => !serverEnv[key]);
+            if (missing) continue;
+          }
+
           if (cfg.type === 'stdio') {
-            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env };
-          } else if (cfg.type === 'sse') {
-            mcpServers[cfg.id] = { type: 'sse', url: cfg.url };
-          } else {
-            mcpServers[cfg.id] = { type: 'http', url: cfg.url };
+            const extraArgs = ConfigStore.readConfig().mcpServerArgs?.[cfg.id];
+            const finalArgs = extraArgs?.length ? [...(cfg.args ?? []), ...extraArgs] : cfg.args;
+            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: finalArgs, env: cfg.env };
+          } else if (cfg.type === 'sse' || cfg.type === 'http') {
+            // Expand URL templates like {{TAVILY_API_KEY}}
+            let url = cfg.url ?? '';
+            if (url.includes('{{')) {
+              const serverEnv = MCPConfigStore.getServerEnv(cfg.id);
+              url = url.replace(/\{\{(\w+)\}\}/g, (_, key) => serverEnv[key] ?? '');
+            }
+            mcpServers[cfg.id] = { type: cfg.type, url };
           }
         }
       }
@@ -393,8 +504,8 @@ class SessionRunner {
       }
       this.signalTurnComplete();
 
-      // 清空队列中未处理的消息
-      this.messageQueue.length = 0;
+      // Drain：逐条广播 queue:cancelled
+      this.drainMessageQueue();
 
       console.log(`${logPrefix} Subprocess terminated`);
       resolveTermination();
@@ -415,6 +526,9 @@ class SessionRunner {
 
       if (streamEvent.type === 'message_start' && streamEvent.message) {
         console.log(`${logTag} API responded with model: ${streamEvent.message.model}, msg_id: ${streamEvent.message.id}`);
+        if (streamEvent.message.model) {
+          this.turnUsage.model = streamEvent.message.model;
+        }
       }
 
       if (streamEvent.type === 'content_block_delta') {
@@ -433,6 +547,7 @@ class SessionRunner {
         console.log(`${logTag} content_block_start: type=${block?.type}, name=${block?.name ?? '-'}, id=${block?.id ?? '-'}`);
         if (block?.type === 'tool_use') {
           this.currentToolId = block.id ?? '';
+          this.turnToolCount++;
           broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
         }
       } else if (streamEvent.type === 'content_block_stop') {
@@ -472,12 +587,55 @@ class SessionRunner {
       // 提取 sdkSessionId 用于恢复，并持久化到 SessionStore
       if ((msg as SDKMessage & { session_id?: string }).session_id) {
         this.sdkSessionId = (msg as SDKMessage & { session_id?: string }).session_id!;
-        SessionStore.saveSdkSessionId(activeSessionId, this.sdkSessionId);
+        SessionStore.saveSdkSessionId(activeSessionId, this.sdkSessionId!);
       }
 
-      // 保存助手消息并通知前端
-      this.saveTurnAssistantContent(activeSessionId);
-      broadcast('chat:message-complete', { sessionId: activeSessionId });
+      // 提取 token usage：优先 modelUsage（per-model），fallback usage（aggregate）
+      const resultMsg = msg as SDKMessage & {
+        usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+        modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }>;
+      };
+
+      if (resultMsg.modelUsage) {
+        let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheCreation = 0;
+        let primaryModel: string | undefined;
+        let maxModelTokens = 0;
+        const modelUsageMap: Record<string, import('../shared/types/session').ModelUsageEntry> = {};
+
+        for (const [model, stats] of Object.entries(resultMsg.modelUsage) as [string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }][]) {
+          const mi = stats.inputTokens ?? 0;
+          const mo = stats.outputTokens ?? 0;
+          const mcr = stats.cacheReadInputTokens ?? 0;
+          const mcc = stats.cacheCreationInputTokens ?? 0;
+          totalInput += mi; totalOutput += mo; totalCacheRead += mcr; totalCacheCreation += mcc;
+          modelUsageMap[model] = { inputTokens: mi, outputTokens: mo, cacheReadTokens: mcr || undefined, cacheCreationTokens: mcc || undefined };
+          const total = mi + mo;
+          if (total > maxModelTokens) { maxModelTokens = total; primaryModel = model; }
+        }
+        this.turnUsage = { inputTokens: totalInput, outputTokens: totalOutput, cacheReadTokens: totalCacheRead, cacheCreationTokens: totalCacheCreation, model: primaryModel, modelUsage: modelUsageMap };
+        console.log(`${logTag} Token usage from modelUsage: input=${totalInput}, output=${totalOutput}, models=${Object.keys(modelUsageMap).join(', ')}`);
+      } else if (resultMsg.usage) {
+        this.turnUsage.inputTokens = resultMsg.usage.input_tokens ?? 0;
+        this.turnUsage.outputTokens = resultMsg.usage.output_tokens ?? 0;
+        this.turnUsage.cacheReadTokens = resultMsg.usage.cache_read_input_tokens ?? 0;
+        this.turnUsage.cacheCreationTokens = resultMsg.usage.cache_creation_input_tokens ?? 0;
+        console.log(`${logTag} Token usage from usage: input=${this.turnUsage.inputTokens}, output=${this.turnUsage.outputTokens}`);
+      }
+
+      const durationMs = this.turnStartTime ? Date.now() - this.turnStartTime : undefined;
+
+      // 保存助手消息（含 usage）并通知前端
+      this.saveTurnAssistantContent(activeSessionId, durationMs);
+      broadcast('chat:message-complete', {
+        sessionId: activeSessionId,
+        model: this.turnUsage.model,
+        inputTokens: this.turnUsage.inputTokens,
+        outputTokens: this.turnUsage.outputTokens,
+        cacheReadTokens: this.turnUsage.cacheReadTokens,
+        cacheCreationTokens: this.turnUsage.cacheCreationTokens,
+        toolCount: this.turnToolCount,
+        durationMs,
+      });
 
       // 标记流式结束，解锁 generator 进入下一轮
       this.isStreaming = false;
@@ -488,13 +646,26 @@ class SessionRunner {
   }
 
   /** 保存当前轮的助手内容到 SessionStore */
-  private saveTurnAssistantContent(sessionId: string): void {
+  private saveTurnAssistantContent(sessionId: string, durationMs?: number): void {
     if (this.turnAssistantContent) {
+      const hasUsage = this.turnUsage.inputTokens > 0 || this.turnUsage.outputTokens > 0;
       SessionStore.saveMessage(sessionId, {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: this.turnAssistantContent,
         timestamp: new Date().toISOString(),
+        ...(hasUsage ? {
+          usage: {
+            inputTokens: this.turnUsage.inputTokens,
+            outputTokens: this.turnUsage.outputTokens,
+            cacheReadTokens: this.turnUsage.cacheReadTokens || undefined,
+            cacheCreationTokens: this.turnUsage.cacheCreationTokens || undefined,
+            model: this.turnUsage.model,
+            modelUsage: this.turnUsage.modelUsage,
+          },
+        } : {}),
+        ...(this.turnToolCount > 0 ? { toolCount: this.turnToolCount } : {}),
+        ...(durationMs ? { durationMs } : {}),
       });
       this.turnAssistantContent = '';
     }
@@ -537,11 +708,36 @@ class SessionRunner {
 
   // ── 公共 API ──
 
-  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<void> {
-    // 如果正在 streaming，拒绝新消息（保持当前语义）
-    if (this.isStreaming) return;
-
+  async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<{ ok: boolean; queued?: boolean; queueId?: string; error?: string }> {
     const activeSessionId = this.sessionId;
+    const queueId = crypto.randomUUID();
+
+    // 如果正在 streaming，排队而不是拒绝
+    if (this.isStreaming) {
+      if (this.messageQueue.length >= MAX_QUEUE_SIZE) {
+        return { ok: false, error: 'queue_full' };
+      }
+
+      // 构建 SDK 用户消息用于排队
+      const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
+      const messageContent = this.buildMessageContent(text, images);
+      const queueItem: QueueItem = {
+        sdkMessage: {
+          type: 'user' as const,
+          message: messageContent,
+          parent_tool_use_id: null,
+          session_id: sdkSid,
+        } as SDKUserMessage,
+        text,
+        queueId,
+        wasQueued: true,
+      };
+
+      this.messageQueue.push(queueItem);
+      broadcast('queue:added', { sessionId: activeSessionId, queueId, text });
+      console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] Message queued (${this.messageQueue.length}/${MAX_QUEUE_SIZE}): "${text.slice(0, 50)}"`);
+      return { ok: true, queued: true, queueId };
+    }
 
     // 保存用户消息到 SessionStore
     SessionStore.saveMessage(activeSessionId, {
@@ -570,31 +766,11 @@ class SessionRunner {
     console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] sendMessage: "${text.slice(0, 50)}" in ${agentDir}, mode: ${resolvedMode}, model: ${model ?? 'default'}, provider: ${providerEnv?.baseUrl ?? 'default(subscription)'}, authType: ${providerEnv?.authType ?? 'N/A'}, apiKey: ${providerEnv?.apiKey ? '***' + providerEnv.apiKey.slice(-4) : 'none'}, images: ${images?.length ?? 0}, sessionActive: ${this.sessionActive}`);
 
     // 构建 SDK 用户消息
-    // generator 模式下 message 必须是 MessageParam 对象（不能是裸字符串）
-    // 如果内存中没有 sdkSessionId，尝试从 SessionStore 恢复（跨 sidecar resume）
     if (!this.sdkSessionId) {
       this.sdkSessionId = SessionStore.getSdkSessionId(activeSessionId) ?? null;
     }
     const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let messageContent: { role: 'user'; content: any };
-
-    if (images && images.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const contentBlocks: any[] = [];
-      if (text) {
-        contentBlocks.push({ type: 'text', text });
-      }
-      for (const img of images) {
-        contentBlocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: img.mimeType, data: img.data },
-        });
-      }
-      messageContent = { role: 'user' as const, content: contentBlocks };
-    } else {
-      messageContent = { role: 'user' as const, content: text };
-    }
+    const messageContent = this.buildMessageContent(text, images);
 
     const queueItem: QueueItem = {
       sdkMessage: {
@@ -604,6 +780,8 @@ class SessionRunner {
         session_id: sdkSid,
       } as SDKUserMessage,
       text,
+      queueId,
+      wasQueued: false,
     };
 
     // 启动会话（如果未运行）
@@ -622,6 +800,56 @@ class SessionRunner {
       // 会话已运行，直接投递
       this.wakeGenerator(queueItem);
     }
+
+    return { ok: true, queued: false };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private buildMessageContent(text: string, images?: ChatImage[]): { role: 'user'; content: any } {
+    if (images && images.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contentBlocks: any[] = [];
+      if (text) {
+        contentBlocks.push({ type: 'text', text });
+      }
+      for (const img of images) {
+        contentBlocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mimeType, data: img.data },
+        });
+      }
+      return { role: 'user' as const, content: contentBlocks };
+    }
+    return { role: 'user' as const, content: text };
+  }
+
+  cancelQueueItem(queueId: string): { ok: boolean; text?: string } {
+    const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
+    if (idx === -1) return { ok: false };
+    const [removed] = this.messageQueue.splice(idx, 1);
+    broadcast('queue:cancelled', { sessionId: this.sessionId, queueId });
+    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Queue item cancelled: "${removed.text.slice(0, 50)}"`);
+    return { ok: true, text: removed.text };
+  }
+
+  forceExecuteQueueItem(queueId: string): boolean {
+    const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
+    if (idx === -1) return false;
+    // 移到队首
+    const [item] = this.messageQueue.splice(idx, 1);
+    this.messageQueue.unshift(item);
+    // 中断当前回复
+    if (this.querySession) {
+      this.querySession.interrupt().catch(() => {});
+    }
+    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Force executing queue item: "${item.text.slice(0, 50)}"`);
+    return true;
+  }
+
+  getQueueStatus(): { queueId: string; text: string }[] {
+    return this.messageQueue
+      .filter((item) => item.wasQueued)
+      .map((item) => ({ queueId: item.queueId, text: item.text }));
   }
 
   stop(): void {

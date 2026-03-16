@@ -135,6 +135,7 @@ export default function App() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [showSearch, setShowSearch] = useState(false);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
+  const [pendingRefText, setPendingRefText] = useState<Record<string, string>>({});
   const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
   const deleteSessionRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
   const updateSessionTitleRef = useRef<((sessionId: string, title: string) => Promise<void>) | null>(null);
@@ -369,6 +370,19 @@ export default function App() {
     );
   }, [activeTabId]);
 
+  // 引用文件：将 @相对路径 注入到当前 chat 输入框
+  const handleInsertReference = useCallback((paths: string[]) => {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab?.agentDir) return;
+    const refText = paths
+      .map((p) => {
+        const rel = p.startsWith(tab.agentDir!) ? p.slice(tab.agentDir!.length + 1) : p;
+        return p.endsWith('/') ? `@${rel}` : `@${rel}`;
+      })
+      .join('\n');
+    setPendingRefText((prev) => ({ ...prev, [activeTabId]: refText }));
+  }, [tabs, activeTabId]);
+
   // 打开 URL：在 SecondTabBar 中新建 WebView tab
   const openUrl = useCallback((url: string) => {
     let title: string;
@@ -468,6 +482,7 @@ export default function App() {
           <LeftSidebar
             sessions={tabSessions[activeTabId] ?? []}
             activeSessionId={activeSessionId}
+            agentDir={activeTab?.agentDir ?? undefined}
             pinnedSessionIds={pinnedSessionIds}
             runningSessions={runningSessions}
             onNewChat={handleNewChat}
@@ -550,6 +565,7 @@ export default function App() {
         {/* 搜索弹窗（收缩侧边栏时使用） */}
         {!showSidebar && showSearch && (
           <SearchModal
+            agentDir={activeTab?.agentDir ?? undefined}
             onSelectSession={handleSelectSession}
             onClose={() => setShowSearch(false)}
           />
@@ -672,6 +688,8 @@ export default function App() {
                       onExposeUpdateTitle={t.id === activeTabId ? handleExposeUpdateTitle : undefined}
                       injectText={pendingInjects[t.id] ?? null}
                       onInjectConsumed={() => setPendingInjects((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
+                      injectRefText={pendingRefText[t.id] ?? null}
+                      onRefTextConsumed={() => setPendingRefText((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
                       onOpenUrl={openUrl}
                     />
                   </div>
@@ -732,6 +750,7 @@ export default function App() {
           <WorkspaceFilesPanel
             agentDir={activeTab?.agentDir ?? null}
             onOpenFile={openEditorFile}
+            onInsertReference={handleInsertReference}
           />
         )}
       </div>

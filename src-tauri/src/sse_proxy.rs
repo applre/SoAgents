@@ -40,8 +40,7 @@ pub async fn cmd_start_sse_proxy(
         conns.insert(session_id.clone(), SseConnection { cancel_tx });
     }
 
-    let client = reqwest::Client::builder()
-        .no_proxy()
+    let client = crate::local_http::builder()
         .tcp_nodelay(true)
         .http1_only()
         .build()

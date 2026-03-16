@@ -7,6 +7,7 @@ mod proxy;
 mod sse_proxy;
 mod updater;
 mod scheduler;
+mod local_http;
 pub mod logger;
 
 use std::sync::{Arc, Mutex};

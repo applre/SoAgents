@@ -9,4 +9,26 @@ export interface McpServerDefinition {
   url?: string;
   headers?: Record<string, string>;
   isBuiltin: boolean;
+  isFree?: boolean;
+  requiresConfig?: string[];   // e.g. ['GEMINI_API_KEY']
+  configHint?: string;         // UI hint for config
+  websiteUrl?: string;         // where to get API key
+}
+
+// ── MCP Enable Error ──
+
+export type McpEnableErrorType =
+  | 'command_not_found'
+  | 'warmup_failed'
+  | 'package_not_found'
+  | 'runtime_error'
+  | 'connection_failed'
+  | 'unknown';
+
+export interface McpEnableError {
+  type: McpEnableErrorType;
+  message: string;
+  command?: string;
+  runtimeName?: string;
+  downloadUrl?: string;
 }

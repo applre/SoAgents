@@ -7,6 +7,7 @@ import ChatInput from '../components/ChatInput';
 import PermissionPrompt from '../components/PermissionPrompt';
 import AskUserQuestionPrompt from '../components/AskUserQuestionPrompt';
 import UnifiedLogsPanel from '../components/UnifiedLogsPanel';
+import QueuedMessagesPanel from '../components/QueuedMessagesPanel';
 import type { Tab } from '../types/tab';
 import type { SessionMetadata } from '../../shared/types/session';
 
@@ -20,6 +21,8 @@ interface Props {
   onExposeUpdateTitle?: (fn: (sessionId: string, title: string) => Promise<void>) => void;
   injectText?: string | null;
   onInjectConsumed?: () => void;
+  injectRefText?: string | null;
+  onRefTextConsumed?: () => void;
   onOpenUrl?: (url: string) => void;
 }
 
@@ -33,11 +36,13 @@ interface ChatContentProps {
   onExposeUpdateTitle?: (fn: (sessionId: string, title: string) => Promise<void>) => void;
   injectText?: string | null;
   onInjectConsumed?: () => void;
+  injectRefText?: string | null;
+  onRefTextConsumed?: () => void;
   onOpenUrl?: (url: string) => void;
 }
 
-function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: ChatContentProps) {
-  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady, unifiedLogs, clearUnifiedLogs } = useTabState();
+function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, onOpenUrl }: ChatContentProps) {
+  const { tabId, messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, sessions, sessionsFetched, loadSession, deleteSession, updateSessionTitle, resetSession, refreshSessions, sessionId: currentSessionId, sidecarReady, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
   const { config } = useConfig();
   const [showLogs, setShowLogs] = useState(false);
 
@@ -54,9 +59,11 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
   }, [sessions, sessionsFetched, onSessionsChange, tabId]);
 
   // 同步当前 session id 给 App
+  // 守卫：当 tab 指定了目标 session 但尚未加载完成时，跳过同步，避免用旧值覆盖 activeSessionId
   useEffect(() => {
+    if (sessionId && currentSessionId !== sessionId) return;
     onActiveSessionChange?.(currentSessionId);
-  }, [currentSessionId, onActiveSessionChange]);
+  }, [currentSessionId, onActiveSessionChange, sessionId]);
 
   // 暴露 resetSession 给 App
   useEffect(() => {
@@ -95,7 +102,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
                 onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
               />
             )}
-            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} />
+            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} injectRefText={injectRefText} onRefTextConsumed={onRefTextConsumed} />
           </div>
         </div>
         {pendingPermission && (
@@ -120,6 +127,11 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
           onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
         />
       )}
+      <QueuedMessagesPanel
+        queuedMessages={queuedMessages}
+        onCancel={(queueId) => cancelQueuedMessage(queueId)}
+        onForceExecute={(queueId) => forceExecuteQueuedMessage(queueId)}
+      />
       <div className="relative">
         <ChatInput
           onSend={sendMessage}
@@ -128,6 +140,8 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
           agentDir={agentDir}
           injectText={injectText}
           onInjectConsumed={onInjectConsumed}
+          injectRefText={injectRefText}
+          onRefTextConsumed={onRefTextConsumed}
         />
         {/* 开发者模式: Logs 按钮 */}
         {config.showDevTools && (
@@ -164,7 +178,7 @@ function ChatContent({ agentDir, sessionId, onSessionsChange, onActiveSessionCha
   );
 }
 
-export default function Chat({ tab, onSessionsChange, onRunningSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, onOpenUrl }: Props) {
+export default function Chat({ tab, onSessionsChange, onRunningSessionsChange, onActiveSessionChange, onExposeReset, onExposeDeleteSession, onExposeUpdateTitle, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, onOpenUrl }: Props) {
   if (!tab.agentDir) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -185,6 +199,8 @@ export default function Chat({ tab, onSessionsChange, onRunningSessionsChange, o
         onExposeUpdateTitle={onExposeUpdateTitle}
         injectText={injectText}
         onInjectConsumed={onInjectConsumed}
+        injectRefText={injectRefText}
+        onRefTextConsumed={onRefTextConsumed}
         onOpenUrl={onOpenUrl}
       />
     </TabProvider>

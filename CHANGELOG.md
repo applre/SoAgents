@@ -6,17 +6,112 @@
 
 ## [Unreleased]
 
-### 新增
-- **GitHub Actions CI**：push `v*` tag 自动构建签名公证的 DMG 并发布到 GitHub Releases（`.github/workflows/release.yml`）
-- **Provider 可用性防护**：未配置 API Key 的供应商在下拉列表中灰显禁用，发送按钮联动禁用，hover 提示"请在设置页面配置 API Key"
-- **搜索弹窗最近对话**：搜索弹窗打开时默认展示最近 10 条对话列表，带相对时间显示
+---
 
-### 修复
-- **Session 切换消息丢失**：修复 agent 回答中途切换 session 导致已有回复内容丢失的问题。streaming chunk 同步累加到 `assistantContent`，`loadSession` 等待进行中的 query 完成保存后再切换，`finally` 块使用捕获的 session ID 保存到正确的 session
-- **useAutoScroll 依赖稳定性**：将 spread array 依赖改为 `triggerCount + isLoading`，避免无限重渲染
+## [0.1.5] - 2026-03-15
+
+### 新增
+
+#### Config 基建加固 (PRD 0.1.4)
+- **原子写入**：ConfigStore/SessionStore/SkillsStore 所有写入改用 .tmp → .bak → rename，崩溃自动从 .bak 恢复
+- **Config 磁盘优先**：所有配置写入走 atomicModifyConfig（读磁盘最新 → 合并 → 原子写盘）
+- **local_http 模块**：集中化 `.no_proxy()` 到 `crate::local_http`，消除 localhost 代理陷阱
+- **Rust PATCH 方法**：proxy_http_request 补全 PATCH 支持
+
+#### OpenAI Bridge + 消息队列 (PRD 0.1.5)
+- **OpenAI Bridge**：SDK loopback 协议翻译，DeepSeek/Gemini 等 OpenAI 兼容供应商可正常对话
+- **消息队列**：AI 回复中可继续发消息（排队 + 取消 + 强制执行），QueuedMessagesPanel UI
+- **MCP 预设扩展**：新增 Playwright/DuckDuckGo/Tavily 3 个预设 MCP 服务器
+- **Per-server 环境变量**：MCP 服务器独立 env 配置，持久化到 mcp-env.json
+- **URL 模板变量**：HTTP/SSE 类型 MCP 支持 `{{VAR}}` 模板语法
+- **Tool 渲染优化**：工具类型彩色图标 + BashOutputTool/KillShellTool/AgentTool 专用组件
+- **文件搜索重构**：ChatInput 搜索逻辑抽取到 FileSearchMenu 组件
+
+#### Provider & MCP 追平 (PRD 0.1.6)
+- **3 个新预设供应商**：Google Gemini / 火山方舟 API / 阿里云百炼
+- **modelAliases**：所有非 Anthropic 供应商添加 sonnet/opus/haiku 模型别名映射
+- **MCP JSON 批量导入**：兼容 Claude Desktop 格式，重复 ID 自动跳过
+- **MCP 运行时检测**：npx/uvx 不存在时返回下载链接提示
+- **MCP 远程连接验证**：HTTP/SSE URL 可达性检查（DNS/超时/401/404/405 错误映射）
+- **mcpServerArgs**：MCP 服务器追加启动参数
+- **Provider 模型数据同步**：volcengine/zenmux/openrouter 模型列表更新
+
+#### 工作区右键菜单 + Analytics (PRD 0.1.7)
+- **右键菜单**：文件（预览/引用/打开/重命名/删除）、文件夹（打开/引用/重命名/删除）
+- **@引用注入**：右键「引用」将 `@相对路径` 插入聊天输入框
+- **文件冲突重命名**：拖拽同名文件自动重命名为 `filename (1).ext`
+- **Analytics 埋点**：匿名统计（默认关闭），device_id 持久化 + 事件批量发送
+- **日志导出**：Settings 导出近 3 天统一日志为 zip
+
+#### 使用统计系统 (PRD 0.1.8)
+- **Turn 级 usage 采集**：从 SDK result 事件提取 modelUsage（per-model breakdown）+ 聚合 fallback
+- **持久化**：assistant 消息附带 usage/toolCount/durationMs，SessionStats 扩展 cache token 统计
+- **统计 API**：`GET /sessions/:id/stats`（单 session）+ `GET /api/global-stats?range=`（全局）
+- **消息 inline 展示**：assistant 气泡下方显示模型名 + token 数 + 耗时
+- **UsageStatsPanel**：设置页全局统计面板（汇总卡片 + 每日趋势图 + 模型分布表）
+- **SessionStatsModal**：历史记录菜单打开单 session 统计弹窗
 
 ### 改进
-- **日志目录隔离**：开发版日志写入 `~/.soagents/logs_dev/`，发布版写入 `~/.soagents/logs/`，两个版本可同时运行互不干扰
+- **ConfigContext 拆分**：Data + Actions 双 Context，避免 actions 变化触发全子树重渲染
+- **providerVerifyStatus 缓存**：Provider 验证状态持久化到 AppConfig
+
+---
+
+## [0.1.4] - 2026-03-15
+
+### 新增
+- **持久会话模式**：子进程常驻，多轮对话免重启 SDK
+- **Sidecar 架构重构**：粒度从 Tab 级改为 Session 级隔离，每个 Session 独立进程
+- **定时任务系统**：Rust scheduler + Sidecar owner 管理 + 前端任务视图 UI，支持 cron 表达式和固定间隔（every）调度模式
+- **Tool 渲染增强**：新增 6 个工具专用渲染器（Bash/KillShell/Agent/Read/Edit/Glob），CodeBlock 组件独立抽取，Message 组件重构
+- **ChatInput @ 文件引用**：输入 `@` 触发文件搜索，选择后插入路径引用；Skill 多选支持
+- **Provider 配置对齐**：Provider 类型/预设供应商/订阅验证/缓存机制与 MyAgents 对齐
+- **Provider upstreamFormat & maxOutputTokens**：支持 OpenAI Bridge 所需的协议格式和输出 token 限制配置
+- **UI 交互增强**：文件 Tab 拖拽排序、停止按钮、会话运行指示器
+- **CodeMirror Merge Diff**：差异视图增强
+- **Provider 可用性防护**：未配置 API Key 的供应商灰显禁用，发送按钮联动禁用
+- **搜索弹窗最近对话**：搜索弹窗打开时默认展示最近 10 条对话列表
+- **GitHub Actions CI**：push `v*` tag 自动构建签名公证 DMG；R2 updater manifest 自动上传 & 签名流程优化
+
+### 修复
+- **Session 切换消息丢失**：streaming chunk 同步累加到 `assistantContent`，`loadSession` 等待 query 完成后再切换
+- **useAutoScroll 依赖稳定性**：将 spread array 依赖改为 `triggerCount + isLoading`，避免无限重渲染
+- scrollbar-hide 工具类样式补充
+- Rust 编译 warning 清理（移除未使用的 SidecarOwner::ScheduledTask 和 healthy 字段）
+
+### 改进
+- **日志增强**：sdkSessionId 持久化、SSE 广播日志
+- **日志目录隔离**：开发版 `~/.soagents/logs_dev/`，发布版 `~/.soagents/logs/`
+- 同步 Cargo.lock 版本号，移除 filesystem MCP 预设
+
+---
+
+## [0.1.3] - 2026-02-28
+
+### 修复
+- 打包时排除 macOS `._ ` 元数据文件，修复 updater 解包失败
+
+---
+
+## [0.1.2] - 2026-02-28
+
+### 修复
+- 为 bundled bun 添加 JIT entitlements，修复正式版 sidecar 崩溃
+
+---
+
+## [0.1.1] - 2026-02-28
+
+### 新增
+- **自动更新系统**：Tauri updater + 统一日志 + SSE/滚动优化
+- **Tauri 原生文件拖拽**：支持拖拽文件到工作区
+- **变动文件目录树**：未跟踪文件展开显示
+- **GitHub Actions CI**：发布流程、updater 签名、.tar.gz/.sig 产物生成
+
+### 修复
+- 用户消息气泡内粘贴内容颜色不统一
+- Moonshot URL 修复
+- icon.png 加入版本控制，修复 CI 构建失败
 
 ---
 
@@ -175,7 +270,12 @@
 
 ---
 
-[Unreleased]: https://github.com/applre/SoAgents/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/applre/SoAgents/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/applre/SoAgents/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/applre/SoAgents/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/applre/SoAgents/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/applre/SoAgents/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/applre/SoAgents/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/applre/SoAgents/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/applre/SoAgents/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/applre/SoAgents/compare/v0.0.7...v0.0.8

@@ -9,7 +9,8 @@ import { useConfig } from '../context/ConfigContext';
 import { useTabState } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
-import type { ModelEntity, Provider } from '../../shared/types/config';
+import type { ModelEntity, Provider, ProviderEnv } from '../../shared/types/config';
+import { getEffectiveModelAliases } from '../../shared/providers';
 import type { ChatImage } from '../types/chat';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
@@ -27,17 +28,20 @@ interface SkillPayload {
 }
 
 interface Props {
-  onSend: (text: string, permissionMode?: string, skills?: SkillPayload[], images?: ChatImage[]) => void;
+  onSend: (text: string, permissionMode?: string, skills?: SkillPayload[], images?: ChatImage[], model?: string, providerEnv?: import('../../shared/types/config').ProviderEnv, mcpEnabledServerIds?: string[]) => void;
   onStop: () => void;
   isLoading: boolean;
   agentDir?: string;
   injectText?: string | null;
   onInjectConsumed?: () => void;
+  injectRefText?: string | null;
+  onRefTextConsumed?: () => void;
 }
 
 interface MCPServerItem {
   id: string;
   name: string;
+  description?: string;
   type: string;
   isBuiltin: boolean;
 }
@@ -50,7 +54,7 @@ interface AttachedFile {
   base64?: string; // 图片的 base64 数据
 }
 
-export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed }: Props) {
+export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed }: Props) {
   const { config, allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
   const { apiGet, messages } = useTabState();
   const isProviderLocked = messages.length > 0;
@@ -71,12 +75,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   // @ 文件搜索
   const [showFileSearch, setShowFileSearch] = useState(false);
-  const [fileSearchQuery, setFileSearchQuery] = useState('');
-  const [fileSearchResults, setFileSearchResults] = useState<FileSearchResult[]>([]);
-  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [atPosition, setAtPosition] = useState<number | null>(null);
-  const [isFileSearching, setIsFileSearching] = useState(false);
-  const fileSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedSkills, setSelectedSkills] = useState<{ name: string; content: string }[]>([]);
   const [skillPanelTab, setSkillPanelTab] = useState<'all' | 'selected'>('all');
   const [skillSearchQuery, setSkillSearchQuery] = useState('');
@@ -147,6 +146,17 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     return () => { cancelled = true; };
   }, [injectText, onInjectConsumed, apiGet]);
 
+  // @引用注入：将 @path 文本插入到输入框
+  useEffect(() => {
+    if (!injectRefText) return;
+    onRefTextConsumed?.();
+    setText((prev) => {
+      const separator = prev && !prev.endsWith('\n') ? '\n' : '';
+      return prev + separator + injectRefText + ' ';
+    });
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }, [injectRefText, onRefTextConsumed]);
+
   // 加载 skills
   useEffect(() => {
     const loadSkills = async () => {
@@ -165,30 +175,11 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     loadSkills();
   }, [agentDir]);
 
-  // @ 文件搜索 API
-  const searchFiles = useCallback(async (query: string) => {
-    if (!agentDir || query.length < 1) {
-      setFileSearchResults([]);
-      setIsFileSearching(false);
-      return;
-    }
-    setIsFileSearching(true);
-    try {
-      const results = await globalApiGetJson<FileSearchResult[]>(
-        `/api/search-files?agentDir=${encodeURIComponent(agentDir)}&q=${encodeURIComponent(query)}`
-      );
-      setFileSearchResults(results.slice(0, 10));
-      setSelectedFileIndex(0);
-    } catch {
-      setFileSearchResults([]);
-    } finally {
-      setIsFileSearching(false);
-    }
-  }, [agentDir]);
+  // @ 文件搜索 API — 搜索逻辑已下沉到 FileSearchMenu 内部
 
-  // 加载 MCP servers
+  // 加载全局已启用的 MCP servers
   useEffect(() => {
-    globalApiGetJson<{ servers: Array<{ id: string; name: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
+    globalApiGetJson<{ servers: Array<{ id: string; name: string; description?: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
       .then((data) => {
         const enabledSet = new Set(data.enabledIds);
         setMcpServers(data.servers.filter((s) => enabledSet.has(s.id)));
@@ -238,9 +229,6 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       nextAtPosition = cursorPos - 1;
       setShowFileSearch(true);
       setAtPosition(cursorPos - 1);
-      setFileSearchQuery('');
-      setFileSearchResults([]);
-      setSelectedFileIndex(0);
       // 关闭 / 菜单
       nextShowSlash = false;
       nextSlashPosition = null;
@@ -263,26 +251,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       setAtPosition(null);
     }
 
-    // 更新 @ 文件搜索查询
-    if (nextShowFileSearch && nextAtPosition !== null) {
-      if (nextAtPosition >= newValue.length || newValue[nextAtPosition] !== '@') {
-        setShowFileSearch(false);
-        setAtPosition(null);
-      } else {
-        const textAfterAt = newValue.slice(nextAtPosition + 1, cursorPos);
-        if (textAfterAt.includes(' ') || textAfterAt.includes('\n')) {
-          setShowFileSearch(false);
-          setAtPosition(null);
-        } else {
-          setFileSearchQuery(textAfterAt);
-          // 防抖搜索
-          if (fileSearchTimerRef.current) clearTimeout(fileSearchTimerRef.current);
-          fileSearchTimerRef.current = setTimeout(() => {
-            searchFiles(textAfterAt);
-          }, 200);
-        }
-      }
-    }
+    // @ 文件搜索弹窗：不再在 textarea 中追踪查询字符，搜索由 FileSearchMenu 内部管理
 
     // 更新 / 技能查询
     if (nextShowSlash && nextSlashPosition !== null) {
@@ -305,7 +274,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-  }, [text, showFileSearch, atPosition, showSlash, slashPosition, searchFiles]);
+  }, [text, showFileSearch, atPosition, showSlash, slashPosition]);
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
@@ -329,7 +298,23 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         data: parts[1] ?? '',
       };
     });
-    onSend(userText, permissionMode, skills, images.length > 0 ? images : undefined);
+    // Build providerEnv from effective provider (assembled here, not in TabProvider)
+    const selectedModel = effectiveModel?.model ?? effectiveProvider.primaryModel;
+    const providerEnv: ProviderEnv | undefined = effectiveProvider && effectiveProvider.type === 'api'
+      ? {
+          baseUrl: effectiveProvider.config?.baseUrl,
+          apiKey: config.apiKeys[effectiveProvider.id] ?? '',
+          authType: effectiveProvider.authType,
+          apiProtocol: effectiveProvider.apiProtocol,
+          timeout: effectiveProvider.config?.timeout,
+          disableNonessential: effectiveProvider.config?.disableNonessential,
+          maxOutputTokens: effectiveProvider.maxOutputTokens,
+          upstreamFormat: effectiveProvider.upstreamFormat,
+          modelAliases: getEffectiveModelAliases(effectiveProvider, config.providerModelAliases),
+        }
+      : undefined;
+    const mcpEnabledServerIds = wsEntry?.mcpEnabledServers;
+    onSend(userText, permissionMode, skills, images.length > 0 ? images : undefined, selectedModel, providerEnv, mcpEnabledServerIds);
     setText('');
     setAttachedFiles([]);
     setSelectedSkills([]);
@@ -338,46 +323,31 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setShowFileSearch(false);
     setAtPosition(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [text, attachedFiles, selectedSkills, isLoading, onSend, permissionMode]);
+  }, [text, attachedFiles, selectedSkills, isLoading, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
 
   const handleFileSelect = useCallback((file: FileSearchResult) => {
     if (atPosition === null) return;
     const before = text.slice(0, atPosition);
-    const cursorEnd = textareaRef.current?.selectionStart ?? (atPosition + fileSearchQuery.length + 1);
-    const after = text.slice(cursorEnd);
+    // 移除 @ 字符本身，替换为 @filepath
+    const after = text.slice(atPosition + 1);
     setText(`${before}@${file.path} ${after}`);
     setShowFileSearch(false);
     setAtPosition(null);
-    setFileSearchQuery('');
-    setFileSearchResults([]);
     textareaRef.current?.focus();
-  }, [atPosition, text, fileSearchQuery]);
+  }, [atPosition, text]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // @ 文件搜索键盘导航
+      // @ 文件搜索键盘导航 — 由 FileSearchMenu 内部处理
       if (showFileSearch) {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          setSelectedFileIndex((i) => Math.min(i + 1, fileSearchResults.length - 1));
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setSelectedFileIndex((i) => Math.max(i - 1, 0));
-          return;
-        }
-        if ((e.key === 'Enter' || e.key === 'Tab') && fileSearchResults.length > 0) {
-          e.preventDefault();
-          handleFileSelect(fileSearchResults[selectedFileIndex]);
-          return;
-        }
+        // 阻止 Enter 发送消息和其他键盘事件传播到 textarea
         if (e.key === 'Escape') {
           e.preventDefault();
           setShowFileSearch(false);
           setAtPosition(null);
           return;
         }
+        return;
       }
       // / 技能键盘导航（由 SlashCommandMenu 内部处理，这里仅阻止 Enter 发送）
       if (showSlash) {
@@ -394,7 +364,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         handleSend();
       }
     },
-    [handleSend, showSlash, showFileSearch, fileSearchResults, selectedFileIndex, handleFileSelect]
+    [handleSend, showSlash, showFileSearch]
   );
 
   // 追加 skill 到 selectedSkills（不重复）
@@ -629,7 +599,15 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   }, [processFiles]);
 
   const canSend = text.trim().length > 0 || attachedFiles.length > 0 || selectedSkills.length > 0;
-  const mcpList = mcpServers;
+  // Workspace-level MCP enable state
+  const workspaceMcpEnabled = useMemo(() => new Set(wsEntry?.mcpEnabledServers ?? []), [wsEntry?.mcpEnabledServers]);
+  const handleWorkspaceMcpToggle = useCallback((serverId: string, enabled: boolean) => {
+    if (!agentDir) return;
+    const current = wsEntry?.mcpEnabledServers ?? [];
+    const next = enabled ? [...current, serverId] : current.filter((id) => id !== serverId);
+    updateWorkspaceConfig(agentDir, { mcpEnabledServers: next });
+  }, [agentDir, wsEntry?.mcpEnabledServers, updateWorkspaceConfig]);
+  const workspaceMcpCount = mcpServers.filter((s) => workspaceMcpEnabled.has(s.id)).length;
 
   return (
     <div className="px-4 pb-4 pt-2">
@@ -651,13 +629,11 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
           </div>
         )}
         {/* @ 文件搜索浮层 */}
-        {showFileSearch && (
+        {showFileSearch && agentDir && (
           <FileSearchMenu
-            query={fileSearchQuery}
-            results={fileSearchResults}
-            selectedIndex={selectedFileIndex}
-            isSearching={isFileSearching}
+            agentDir={agentDir}
             onSelect={handleFileSelect}
+            onClose={() => { setShowFileSearch(false); setAtPosition(null); }}
           />
         )}
         {/* Slash 命令菜单 */}
@@ -779,17 +755,42 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
 
         {/* MCP Popover */}
         {showMCPPopover && (
-          <div className="absolute bottom-full mb-2 left-12 z-50 w-72 max-h-64 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-lg">
-            <div className="px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">MCP Servers（已启用）</div>
-            {mcpList.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">暂无已启用的 MCP Server，前往设置添加</div>
+          <div className="absolute bottom-full mb-2 left-12 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-lg">
+            <div className="px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">
+              工具 (在此工作区启用)
+            </div>
+            {mcpServers.length === 0 ? (
+              <div className="px-3 py-3 text-sm text-[var(--ink-tertiary)]">暂无全局启用的 MCP Server，前往设置添加</div>
             ) : (
-              mcpList.map((s) => (
-                <div key={s.id} className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <span className="font-medium text-[var(--ink)] truncate">{s.name || s.id}</span>
-                  <span className="ml-auto shrink-0 text-xs text-[var(--ink-tertiary)]">{s.type}</span>
-                </div>
-              ))
+              mcpServers.map((s) => {
+                const isWsEnabled = workspaceMcpEnabled.has(s.id);
+                return (
+                  <div key={s.id} className="flex items-center justify-between px-3 py-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-[var(--ink)] truncate">{s.name || s.id}</div>
+                      {s.description && (
+                        <div className="text-xs text-[var(--ink-tertiary)] truncate">{s.description}</div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleWorkspaceMcpToggle(s.id, !isWsEnabled);
+                      }}
+                      className={`relative ml-2 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                        isWsEnabled ? 'bg-[var(--accent)]' : 'bg-gray-300'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                          isWsEnabled ? 'translate-x-4' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                );
+              })
             )}
           </div>
         )}
@@ -1009,12 +1010,17 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             <button
               ref={mcpBtnRef}
               onClick={() => { setShowMCPPopover((v) => !v); setShowSkillPopover(false); setShowModelPopover(false); }}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                showMCPPopover ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+              className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+                showMCPPopover || workspaceMcpCount > 0 ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
               }`}
               title="选择 MCP Server"
             >
               <Wrench size={16} />
+              {workspaceMcpCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[9px] font-bold leading-none">
+                  {workspaceMcpCount}
+                </span>
+              )}
             </button>
           </div>
 

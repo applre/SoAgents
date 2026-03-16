@@ -240,29 +240,19 @@ export default function TaskForm({ editingTask }: Props) {
             )}
 
             {scheduleUI.mode === 'weekly' && (
-              <select
-                value={scheduleUI.weekday}
-                onChange={(e) => updateSchedule({ weekday: parseInt(e.target.value, 10) })}
-                className={inputStyle}
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink)', flex: '0 0 auto', width: 100 }}
-              >
-                {WEEKDAYS.map((label, idx) => (
-                  <option key={idx} value={idx}>{label}</option>
-                ))}
-              </select>
+              <CustomSelect
+                value={String(scheduleUI.weekday)}
+                onChange={(v) => updateSchedule({ weekday: parseInt(v, 10) })}
+                options={WEEKDAYS.map((label, idx) => ({ value: String(idx), label }))}
+              />
             )}
 
             {scheduleUI.mode === 'monthly' && (
-              <select
-                value={scheduleUI.monthDay}
-                onChange={(e) => updateSchedule({ monthDay: parseInt(e.target.value, 10) })}
-                className={inputStyle}
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink)', flex: '0 0 auto', width: 100 }}
-              >
-                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                  <option key={d} value={d}>{d} 日</option>
-                ))}
-              </select>
+              <CustomSelect
+                value={String(scheduleUI.monthDay)}
+                onChange={(v) => updateSchedule({ monthDay: parseInt(v, 10) })}
+                options={Array.from({ length: 31 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} 日` }))}
+              />
             )}
 
             {scheduleUI.mode !== 'once' && scheduleUI.mode !== 'every' && (

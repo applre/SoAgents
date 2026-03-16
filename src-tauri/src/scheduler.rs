@@ -834,8 +834,7 @@ async fn execute_with_sidecar(
     let bun_path = sidecar::find_bun_executable(app_handle)?;
     let script_path = sidecar::find_server_script(app_handle)?;
 
-    let client = reqwest::Client::builder()
-        .no_proxy()
+    let client = crate::local_http::builder()
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 

@@ -1,8 +1,9 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, statSync, rmdirSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, appendFileSync, readFileSync, statSync, rmdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import crypto from 'node:crypto';
-import type { SessionMetadata, SessionMessage, SessionStats } from '../shared/types/session';
+import type { SessionMetadata, SessionMessage, SessionStats, ModelUsageEntry, SessionDetailedStats, GlobalStats } from '../shared/types/session';
+import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const SOAGENTS_DIR = join(homedir(), '.soagents');
 const SESSIONS_DIR = join(SOAGENTS_DIR, 'sessions');
@@ -71,18 +72,12 @@ function withLock<T>(fn: () => T): T {
 }
 
 function readIndex(): SessionMetadata[] {
-  if (!existsSync(SESSIONS_INDEX)) return [];
-  try {
-    const content = readFileSync(SESSIONS_INDEX, 'utf8');
-    return JSON.parse(content) as SessionMetadata[];
-  } catch {
-    return [];
-  }
+  return safeLoadJsonSync<SessionMetadata[]>(SESSIONS_INDEX, []);
 }
 
 function writeIndex(sessions: SessionMetadata[]): void {
   ensureDirs();
-  writeFileSync(SESSIONS_INDEX, JSON.stringify(sessions, null, 2), 'utf8');
+  safeWriteJsonSync(SESSIONS_INDEX, sessions);
 }
 
 function isValidId(id: string): boolean {
@@ -130,6 +125,8 @@ export function saveMessage(sessionId: string, msg: SessionMessage): void {
     messageCount: 1,
     totalInputTokens: msg.usage?.inputTokens ?? 0,
     totalOutputTokens: msg.usage?.outputTokens ?? 0,
+    totalCacheReadTokens: msg.usage?.cacheReadTokens ?? 0,
+    totalCacheCreationTokens: msg.usage?.cacheCreationTokens ?? 0,
   });
 }
 
@@ -181,6 +178,12 @@ export function updateSessionStats(sessionId: string, delta: Partial<SessionStat
     if (delta.totalOutputTokens !== undefined) {
       session.stats.totalOutputTokens += delta.totalOutputTokens;
     }
+    if (delta.totalCacheReadTokens) {
+      session.stats.totalCacheReadTokens = (session.stats.totalCacheReadTokens ?? 0) + delta.totalCacheReadTokens;
+    }
+    if (delta.totalCacheCreationTokens) {
+      session.stats.totalCacheCreationTokens = (session.stats.totalCacheCreationTokens ?? 0) + delta.totalCacheCreationTokens;
+    }
     session.lastActiveAt = new Date().toISOString();
     sessions[idx] = session;
     writeIndex(sessions);
@@ -225,6 +228,117 @@ export function getSdkSessionId(sessionId: string): string | undefined {
   if (!isValidId(sessionId)) return undefined;
   const sessions = readIndex();
   return sessions.find(s => s.id === sessionId)?.sdkSessionId;
+}
+
+// ── 统计 API ──
+
+function aggregateByModel(
+  byModel: Record<string, { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; count: number }>,
+  msg: SessionMessage,
+): void {
+  if (!msg.usage) return;
+  if (msg.usage.modelUsage) {
+    for (const [model, mu] of Object.entries(msg.usage.modelUsage)) {
+      if (!byModel[model]) byModel[model] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, count: 0 };
+      byModel[model].inputTokens += mu.inputTokens ?? 0;
+      byModel[model].outputTokens += mu.outputTokens ?? 0;
+      byModel[model].cacheReadTokens += mu.cacheReadTokens ?? 0;
+      byModel[model].cacheCreationTokens += mu.cacheCreationTokens ?? 0;
+      byModel[model].count++;
+    }
+  } else {
+    const model = msg.usage.model || 'unknown';
+    if (!byModel[model]) byModel[model] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, count: 0 };
+    byModel[model].inputTokens += msg.usage.inputTokens ?? 0;
+    byModel[model].outputTokens += msg.usage.outputTokens ?? 0;
+    byModel[model].cacheReadTokens += msg.usage.cacheReadTokens ?? 0;
+    byModel[model].cacheCreationTokens += msg.usage.cacheCreationTokens ?? 0;
+    byModel[model].count++;
+  }
+}
+
+export function getSessionDetailedStats(sessionId: string): SessionDetailedStats | null {
+  if (!isValidId(sessionId)) return null;
+  const messages = getSessionMessages(sessionId);
+  if (messages.length === 0) return null;
+
+  const sessions = readIndex();
+  const session = sessions.find(s => s.id === sessionId);
+  const summary: SessionStats = session?.stats ?? { messageCount: 0, totalInputTokens: 0, totalOutputTokens: 0 };
+
+  const byModel: SessionDetailedStats['byModel'] = {};
+  const messageDetails: SessionDetailedStats['messageDetails'] = [];
+  let currentUserQuery = '';
+
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      currentUserQuery = msg.content.slice(0, 100);
+    } else if (msg.role === 'assistant' && msg.usage) {
+      aggregateByModel(byModel, msg);
+      messageDetails.push({
+        userQuery: currentUserQuery,
+        inputTokens: msg.usage.inputTokens ?? 0,
+        outputTokens: msg.usage.outputTokens ?? 0,
+        cacheReadTokens: (msg.usage.cacheReadTokens ?? 0) + (msg.usage.cacheCreationTokens ?? 0),
+        cacheCreationTokens: 0,
+        toolCount: msg.toolCount ?? 0,
+        durationMs: msg.durationMs ?? 0,
+      });
+    }
+  }
+
+  return { summary, byModel, messageDetails };
+}
+
+function toLocalDate(isoStr: string): string {
+  const d = new Date(isoStr);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export function getGlobalStats(range: '7d' | '30d' | '60d'): GlobalStats {
+  const allSessions = listSessions();
+  const rangeDays = range === '7d' ? 7 : range === '30d' ? 30 : 60;
+  const cutoff = Date.now() - rangeDays * 86400_000;
+  const sessions = allSessions.filter(s => new Date(s.lastActiveAt).getTime() >= cutoff);
+
+  let messageCount = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCacheReadTokens = 0, totalCacheCreationTokens = 0;
+  for (const s of sessions) {
+    if (s.stats) {
+      messageCount += s.stats.messageCount ?? 0;
+      totalInputTokens += s.stats.totalInputTokens ?? 0;
+      totalOutputTokens += s.stats.totalOutputTokens ?? 0;
+      totalCacheReadTokens += s.stats.totalCacheReadTokens ?? 0;
+      totalCacheCreationTokens += s.stats.totalCacheCreationTokens ?? 0;
+    }
+  }
+
+  const dailyMap: Record<string, { inputTokens: number; outputTokens: number; messageCount: number }> = {};
+  const byModel: GlobalStats['byModel'] = {};
+
+  for (const s of sessions) {
+    const messages = getSessionMessages(s.id);
+    let lastDate = toLocalDate(s.createdAt);
+    for (const msg of messages) {
+      if (msg.role === 'user') {
+        lastDate = msg.timestamp ? toLocalDate(msg.timestamp) : lastDate;
+      } else if (msg.role === 'assistant' && msg.usage) {
+        const date = msg.timestamp ? toLocalDate(msg.timestamp) : lastDate;
+        if (!dailyMap[date]) dailyMap[date] = { inputTokens: 0, outputTokens: 0, messageCount: 0 };
+        dailyMap[date].inputTokens += msg.usage.inputTokens ?? 0;
+        dailyMap[date].outputTokens += msg.usage.outputTokens ?? 0;
+        dailyMap[date].messageCount++;
+        aggregateByModel(byModel, msg);
+      }
+    }
+  }
+
+  const daily = Object.entries(dailyMap).map(([date, d]) => ({ date, ...d })).sort((a, b) => a.date.localeCompare(b.date));
+
+  return {
+    summary: { totalSessions: sessions.length, messageCount, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens },
+    daily,
+    byModel,
+  };
 }
 
 export function deleteSession(sessionId: string): void {
