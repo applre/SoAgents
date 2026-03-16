@@ -165,9 +165,8 @@ export default function App() {
 
   useEffect(() => {
     initFrontendLogger();
-    startGlobalSidecar().catch(console.error);
-    // 获取默认工作区路径，打开初始 tab
-    getDefaultWorkspace().then((dir) => {
+    // 必须等 global sidecar 就绪后再设置 agentDir，否则 refreshSessions 会因 sidecar 未启动而静默失败
+    Promise.all([startGlobalSidecar(), getDefaultWorkspace()]).then(([, dir]) => {
       if (!dir) return;
       setTabs((prev) => prev.map((t) =>
         t.id === INITIAL_TAB.id && !t.agentDir
