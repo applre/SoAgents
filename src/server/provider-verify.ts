@@ -132,7 +132,7 @@ async function verifyViaSdk(
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         pathToClaudeCodeExecutable: cliPath,
-        executable: 'bun',
+        executable: (process.env.BUN_EXECUTABLE || 'bun') as 'bun',
         env,
         stderr: (message: string) => {
           console.error(`[${logPrefix}] stderr:`, message);

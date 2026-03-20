@@ -1,6 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, SDKUserMessage, HookInput, HookJSONOutput, PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
-import { resizeToolImageContent } from './utils/imageResize';
+import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
@@ -649,7 +648,7 @@ class SessionRunner {
           model: config.model,
           env: buildClaudeSessionEnv(config.providerEnv),
           pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
-          executable: 'bun',
+          executable: (process.env.BUN_EXECUTABLE || 'bun') as 'bun',
           stderr: (message: string) => { console.error(`${logPrefix} SDK stderr: ${message}`); },
           settingSources: ['project'],
           // @ts-expect-error mcpServers type differs from SDK expectation

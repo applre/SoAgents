@@ -302,6 +302,7 @@ impl SidecarManager {
             .arg(SIDECAR_MARKER)
             .current_dir(&cwd)
             .env("PORT", port.to_string())
+            .env("BUN_EXECUTABLE", bun_path.to_string_lossy().as_ref())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
