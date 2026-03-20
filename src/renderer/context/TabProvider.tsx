@@ -19,6 +19,7 @@ interface Props {
   isActive?: boolean;
   onRunningSessionsChange?: (sessionId: string, running: boolean) => void;
   onGeneratingChange?: (isGenerating: boolean) => void;
+  onUnreadChange?: (hasUnread: boolean) => void;
   onSessionIdChange?: (sessionId: string) => void;
   children: ReactNode;
 }
@@ -26,7 +27,7 @@ interface Props {
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const IDLE_CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds
 
-export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActive = true, onRunningSessionsChange, onGeneratingChange, onSessionIdChange, children }: Props) {
+export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActive = true, onRunningSessionsChange, onGeneratingChange, onUnreadChange, onSessionIdChange, children }: Props) {
   // ── Streaming split: history (stable during streaming) + streaming (updates per SSE chunk) ──
   const [historyMessages, setHistoryMessages] = useState<Message[]>([]);
   const [streamingMessage, setStreamingMessage] = useState<Message | null>(null);
@@ -63,6 +64,8 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       multiSelect: boolean;
     }>;
   } | null>(null);
+  const [pendingExitPlanMode, setPendingExitPlanMode] = useState<{ requestId: string; plan?: string } | null>(null);
+  const [pendingEnterPlanMode, setPendingEnterPlanMode] = useState<{ requestId: string } | null>(null);
   const [sidecarReady, setSidecarReady] = useState(false);
   const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -81,6 +84,16 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   const sessionCreatedInternallyRef = useRef(false);
 
   const sessionId = propSessionId ?? null;
+
+  // Refs for SSE handler closures (avoid stale closures)
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  const onUnreadChangeRef = useRef(onUnreadChange);
+  onUnreadChangeRef.current = onUnreadChange;
+  const onGeneratingChangeRef = useRef(onGeneratingChange);
+  onGeneratingChangeRef.current = onGeneratingChange;
+  const onRunningSessionsChangeRef = useRef(onRunningSessionsChange);
+  onRunningSessionsChangeRef.current = onRunningSessionsChange;
 
   // Keep refs in sync
   useEffect(() => {
@@ -275,6 +288,16 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       setPendingQuestion({ toolUseId: req.toolUseId, questions: req.questions });
     });
 
+    sse.on('exit-plan-mode:request', (data) => {
+      const req = data as { requestId: string; plan?: string };
+      setPendingExitPlanMode({ requestId: req.requestId, plan: req.plan });
+    });
+
+    sse.on('enter-plan-mode:request', (data) => {
+      const req = data as { requestId: string };
+      setPendingEnterPlanMode({ requestId: req.requestId });
+    });
+
     sse.on('chat:message-complete', (data) => {
       const evt = data as {
         model?: string;
@@ -315,6 +338,11 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       setIsLoading(false);
       setSessionState('idle');
       lastActivityRef.current = Date.now();
+
+      // 非活跃 tab 收到完成事件 → 标记未读
+      if (!isActiveRef.current) {
+        onUnreadChangeRef.current?.(true);
+      }
     });
 
     sse.on('chat:message-error', () => {
@@ -451,7 +479,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
           setHistoryMessages(formatted);
           historyMessagesRef.current = formatted;
         }
-      } catch { /* global sidecar may not be ready */ }
+      } catch { /* sidecar may not be ready */ }
 
       // 2. 发现运行中的 sidecar 并重连
       try {
@@ -515,7 +543,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   useEffect(() => {
     if (!sessionId) return;
     const unlisteners: Array<() => void> = [];
-    listen<{ sessionId: string; workingDirectory: string }>('scheduler:session-started', (event) => {
+    listen<{ sessionId: string; workingDirectory: string }>('cron:session-started', (event) => {
       if (event.payload.sessionId !== sessionId) return;
       // 发现并连接定时任务的 sidecar
       (async () => {
@@ -538,7 +566,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         } catch { /* sidecar may not be ready yet */ }
       })();
     }).then(fn => unlisteners.push(fn));
-    listen<{ sessionId: string; workingDirectory: string }>('scheduler:session-finished', (event) => {
+    listen<{ sessionId: string; workingDirectory: string }>('cron:session-finished', (event) => {
       if (event.payload.sessionId !== sessionId) return;
       isRunningRef.current = false;
       setIsRunning(false);
@@ -568,10 +596,10 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   // ── isRunning 变化时通知父组件 ──
   useEffect(() => {
     if (sessionId) {
-      onRunningSessionsChange?.(sessionId, isRunning);
+      onRunningSessionsChangeRef.current?.(sessionId, isRunning);
     }
-    onGeneratingChange?.(isRunning);
-  }, [isRunning, sessionId, onRunningSessionsChange, onGeneratingChange]);
+    onGeneratingChangeRef.current?.(isRunning);
+  }, [isRunning, sessionId]);
 
   // ── 空闲回收 ──
   useEffect(() => {
@@ -745,7 +773,6 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   }, [getGlobalUrl]);
 
   const apiGet = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function<T>(path: string): Promise<T> {
       return getGlobalUrl().then((url) => apiGetJson<T>(url, path));
     },
@@ -753,7 +780,6 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   );
 
   const apiPost = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function<T>(path: string, body: unknown): Promise<T> {
       return getGlobalUrl().then((url) => apiPostJson<T>(url, path, body));
     },
@@ -779,10 +805,10 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     return resp.ok;
   }, []);
 
-  const respondPermission = useCallback(async (toolUseId: string, allow: boolean) => {
+  const respondPermission = useCallback(async (toolUseId: string, decision: 'deny' | 'allow_once' | 'always_allow') => {
     const url = serverUrlRef.current;
     if (!url) return;
-    await apiPostJson(url, '/chat/permission-response', { toolUseId, allow });
+    await apiPostJson(url, '/chat/permission-response', { toolUseId, decision });
     setPendingPermission(null);
   }, []);
 
@@ -791,6 +817,20 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     if (!url) return;
     await apiPostJson(url, '/question/respond', { toolUseId, answers });
     setPendingQuestion(null);
+  }, []);
+
+  const respondExitPlanMode = useCallback(async (requestId: string, approved: boolean) => {
+    const url = serverUrlRef.current;
+    if (!url) return;
+    await apiPostJson(url, '/chat/exit-plan-mode-response', { requestId, approved });
+    setPendingExitPlanMode(null);
+  }, []);
+
+  const respondEnterPlanMode = useCallback(async (requestId: string, approved: boolean) => {
+    const url = serverUrlRef.current;
+    if (!url) return;
+    await apiPostJson(url, '/chat/enter-plan-mode-response', { requestId, approved });
+    setPendingEnterPlanMode(null);
   }, []);
 
   // ── TabApiContext: lightweight, stable during streaming ──
@@ -819,6 +859,10 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       pendingQuestion,
       respondPermission,
       respondQuestion,
+      pendingExitPlanMode,
+      pendingEnterPlanMode,
+      respondExitPlanMode,
+      respondEnterPlanMode,
       deleteSession,
       updateSessionTitle,
       unifiedLogs,
@@ -827,7 +871,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       cancelQueuedMessage,
       forceExecuteQueuedMessage,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, deleteSession, updateSessionTitle, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage]
+    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, deleteSession, updateSessionTitle, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage]
   );
 
   return (

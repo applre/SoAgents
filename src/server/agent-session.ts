@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKUserMessage, HookInput, HookJSONOutput, PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { resizeToolImageContent } from './utils/imageResize';
 import { broadcast } from './sse';
 import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
@@ -21,6 +22,24 @@ export interface OpenAiBridgeConfig {
   apiKey: string;
   maxOutputTokens?: number;
   upstreamFormat?: 'chat_completions' | 'responses';
+}
+
+// ===== System Prompt 组装 =====
+
+/**
+ * 组装 system prompt。
+ * 当前只有桌面场景（L1 身份 + 工作目录约束）。
+ * 未来接入 Cron / IM 等场景时，在此扩展为多层架构。
+ */
+function buildSystemPrompt(agentDir: string): string {
+  return [
+    '<soagents-identity>',
+    '你正运行在 SoAgents —— 一款基于 Claude Agent SDK 的桌面端 AI Agent 应用中。',
+    '</soagents-identity>',
+    '',
+    `当前工作目录为：${agentDir}`,
+    '所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。',
+  ].join('\n');
 }
 
 /** 当前 OpenAI bridge 配置（模块级，供 bridge handler 读取） */
@@ -67,7 +86,7 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string,
     switch (authType) {
       case 'auth_token':
         env.ANTHROPIC_AUTH_TOKEN = providerEnv.apiKey;
-        delete env.ANTHROPIC_API_KEY;
+        env.ANTHROPIC_API_KEY = providerEnv.apiKey;
         break;
       case 'api_key':
         delete env.ANTHROPIC_AUTH_TOKEN;
@@ -157,6 +176,58 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string,
   return env;
 }
 
+// ── 权限规则（按权限模式动态控制工具可用性）──
+
+interface PermissionRules {
+  allowedTools: string[];    // 自动放行的工具（支持 glob 模式）
+  deniedTools: string[];     // 始终禁止的工具
+  // 两个列表都不匹配的工具 → 弹窗请求用户确认
+}
+
+function getPermissionRules(mode: PermissionMode): PermissionRules {
+  switch (mode) {
+    case 'acceptEdits':
+      return {
+        allowedTools: [
+          'Read', 'Glob', 'Grep', 'LS',               // 读操作
+          'Edit', 'Write', 'MultiEdit',                // 写操作
+          'NotebookEdit', 'TodoRead', 'TodoWrite',     // Notebook/Todo
+          'Skill',                                     // 技能调用
+        ],
+        deniedTools: [],
+        // Bash, Task, WebFetch, WebSearch, mcp__* → 需用户确认
+      };
+    case 'plan':
+      return {
+        allowedTools: ['Read', 'Glob', 'Grep', 'LS'],  // 只读
+        deniedTools: [],
+      };
+    case 'bypassPermissions':
+      return {
+        allowedTools: ['*'],  // 全部放行
+        deniedTools: [],
+      };
+    default:
+      return {
+        allowedTools: ['Read', 'Glob', 'Grep', 'LS'],
+        deniedTools: [],
+      };
+  }
+}
+
+function matchesPattern(pattern: string, toolName: string): boolean {
+  if (pattern === '*') return true;
+  if (pattern === toolName) return true;
+  if (pattern.endsWith('*')) {
+    return toolName.startsWith(pattern.slice(0, -1));
+  }
+  return false;
+}
+
+function isToolInList(toolName: string, list: string[]): boolean {
+  return list.some(pattern => matchesPattern(pattern, toolName));
+}
+
 // ── SessionRunner: 持久会话模式 ──
 // subprocess 在首条消息时启动，后续消息通过队列投递，无需重启。
 // Provider/Model/PermissionMode 变更时自动重启子进程。
@@ -194,10 +265,16 @@ class SessionRunner {
   private turnToolCount = 0;
 
   // ── 权限/问题处理 ──
-  private pendingPermissions = new Map<string, (allow: boolean) => void>();
+  private sessionAlwaysAllowed = new Set<string>();
+  private pendingPermissions = new Map<string, { resolve: (decision: 'deny' | 'allow_once' | 'always_allow') => void; toolName: string }>();
   private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
   private pendingPermissionData = new Map<string, { toolName: string; toolUseId: string; toolInput: Record<string, unknown> }>();
   private pendingQuestionData = new Map<string, { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }>();
+
+  // ── Plan 模式 ──
+  private pendingExitPlanMode = new Map<string, { resolve: (approved: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+  private pendingEnterPlanMode = new Map<string, { resolve: (approved: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+  private prePlanPermissionMode: PermissionMode | null = null;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -336,6 +413,7 @@ class SessionRunner {
     if (this.sessionActive) return;
 
     this.shouldAbort = false;
+    this.sessionAlwaysAllowed.clear();
     this.sessionActive = true;
     this.sessionConfig = config;
 
@@ -403,68 +481,154 @@ class SessionRunner {
 
       const resolvedPermissionMode = config.permissionMode;
 
-      // ── 权限处理回调 ──
-      const canUseTool = resolvedPermissionMode !== 'bypassPermissions'
-        ? async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
-            if (toolName === 'AskUserQuestion') {
-              const questionData = {
-                toolUseId: toolUseID,
-                questions: toolInput.questions as Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>,
-              };
-              this.pendingQuestionData.set(toolUseID, questionData);
-              broadcast('question:request', {
-                sessionId: activeSessionId,
-                toolUseId: toolUseID,
-                questions: toolInput.questions,
-              });
-              const answers = await new Promise<Record<string, string>>((resolve) => {
-                const timeout = setTimeout(() => {
-                  this.pendingQuestions.delete(toolUseID);
-                  this.pendingQuestionData.delete(toolUseID);
-                  resolve({});
-                }, 120000);
-                signal?.addEventListener('abort', () => {
-                  clearTimeout(timeout);
-                  this.pendingQuestions.delete(toolUseID);
-                  this.pendingQuestionData.delete(toolUseID);
-                  resolve({});
-                });
-                this.pendingQuestions.set(toolUseID, (ans: Record<string, string>) => {
-                  clearTimeout(timeout);
-                  this.pendingQuestions.delete(toolUseID);
-                  this.pendingQuestionData.delete(toolUseID);
-                  resolve(ans);
-                });
-              });
-              return { behavior: 'allow' as const, updatedInput: { ...toolInput, answers } };
-            }
+      // ── MCP 工具权限检查（在 canUseTool 内最先调用）──
+      const enabledMcpServerIds = new Set(mcpFiltered.map(s => s.id));
+      const checkMcpToolPermission = (toolName: string): { allowed: true } | { allowed: false; reason: string } => {
+        if (!toolName.startsWith('mcp__')) return { allowed: true };
+        const parts = toolName.split('__');
+        if (parts.length < 3) return { allowed: false, reason: '无效的 MCP 工具名称' };
+        const serverId = parts[1];
+        if (enabledMcpServerIds.size === 0) return { allowed: false, reason: 'MCP 工具已被禁用' };
+        if (enabledMcpServerIds.has(serverId)) return { allowed: true };
+        return { allowed: false, reason: `MCP 服务「${serverId}」未启用` };
+      };
 
-            this.pendingPermissionData.set(toolUseID, { toolName, toolUseId: toolUseID, toolInput });
-            broadcast('permission:request', { sessionId: activeSessionId, toolName, toolUseId: toolUseID, toolInput });
-            const allowed = await new Promise<boolean>((resolve) => {
-              const timeout = setTimeout(() => {
-                this.pendingPermissions.delete(toolUseID);
-                this.pendingPermissionData.delete(toolUseID);
-                resolve(true);
-              }, 30000);
-              signal?.addEventListener('abort', () => {
-                clearTimeout(timeout);
-                this.pendingPermissions.delete(toolUseID);
-                this.pendingPermissionData.delete(toolUseID);
-                resolve(false);
-              });
-              this.pendingPermissions.set(toolUseID, (allow: boolean) => {
-                clearTimeout(timeout);
-                this.pendingPermissions.delete(toolUseID);
-                this.pendingPermissionData.delete(toolUseID);
-                resolve(allow);
-              });
+      // ── 权限处理回调（基于权限模式动态控制）──
+      const canUseTool = async (toolName: string, toolInput: Record<string, unknown>, { toolUseID, signal }: { toolUseID: string; signal?: AbortSignal }) => {
+        // AskUserQuestion 始终需要用户交互
+        if (toolName === 'AskUserQuestion') {
+          const questionData = {
+            toolUseId: toolUseID,
+            questions: toolInput.questions as Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>,
+          };
+          this.pendingQuestionData.set(toolUseID, questionData);
+          broadcast('question:request', {
+            sessionId: activeSessionId,
+            toolUseId: toolUseID,
+            questions: toolInput.questions,
+          });
+          const answers = await new Promise<Record<string, string>>((resolve) => {
+            const timeout = setTimeout(() => {
+              this.pendingQuestions.delete(toolUseID);
+              this.pendingQuestionData.delete(toolUseID);
+              resolve({});
+            }, 120000);
+            signal?.addEventListener('abort', () => {
+              clearTimeout(timeout);
+              this.pendingQuestions.delete(toolUseID);
+              this.pendingQuestionData.delete(toolUseID);
+              resolve({});
             });
-            return allowed
-              ? { behavior: 'allow' as const, updatedInput: toolInput }
-              : { behavior: 'deny' as const, message: '用户拒绝' };
+            this.pendingQuestions.set(toolUseID, (ans: Record<string, string>) => {
+              clearTimeout(timeout);
+              this.pendingQuestions.delete(toolUseID);
+              this.pendingQuestionData.delete(toolUseID);
+              resolve(ans);
+            });
+          });
+          return { behavior: 'allow' as const, updatedInput: { ...toolInput, answers } };
+        }
+
+        // 0. MCP 工具权限检查：未启用的 MCP server 直接拒绝
+        const mcpCheck = checkMcpToolPermission(toolName);
+        if (!mcpCheck.allowed) {
+          return { behavior: 'deny' as const, message: mcpCheck.reason };
+        }
+
+        // 0.5 ExitPlanMode — 用户审批计划
+        if (toolName === 'ExitPlanMode') {
+          const requestId = `exit_plan_${Date.now()}`;
+          const plan = (toolInput as Record<string, unknown>).plan as string | undefined;
+          broadcast('exit-plan-mode:request', { sessionId: activeSessionId, requestId, plan });
+          const approved = await new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => { this.pendingExitPlanMode.delete(requestId); resolve(false); }, 10 * 60 * 1000);
+            signal?.addEventListener('abort', () => { clearTimeout(timer); this.pendingExitPlanMode.delete(requestId); resolve(false); });
+            this.pendingExitPlanMode.set(requestId, { resolve, timer });
+          });
+          if (approved && this.prePlanPermissionMode) {
+            this.currentPermissionMode = this.prePlanPermissionMode;
+            this.prePlanPermissionMode = null;
           }
-        : undefined;
+          return approved
+            ? { behavior: 'allow' as const, updatedInput: toolInput }
+            : { behavior: 'deny' as const, message: '用户拒绝了方案' };
+        }
+
+        // 0.6 EnterPlanMode — 用户确认进入计划模式
+        if (toolName === 'EnterPlanMode') {
+          const requestId = `enter_plan_${Date.now()}`;
+          broadcast('enter-plan-mode:request', { sessionId: activeSessionId, requestId });
+          const approved = await new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => { this.pendingEnterPlanMode.delete(requestId); resolve(false); }, 10 * 60 * 1000);
+            signal?.addEventListener('abort', () => { clearTimeout(timer); this.pendingEnterPlanMode.delete(requestId); resolve(false); });
+            this.pendingEnterPlanMode.set(requestId, { resolve, timer });
+          });
+          if (approved) {
+            this.prePlanPermissionMode = this.currentPermissionMode;
+            this.currentPermissionMode = 'plan';
+          }
+          return approved
+            ? { behavior: 'allow' as const, updatedInput: toolInput }
+            : { behavior: 'deny' as const, message: '用户拒绝进入计划模式' };
+        }
+
+        // 1. 检查权限规则：是否自动放行
+        const rules = getPermissionRules(resolvedPermissionMode);
+        if (isToolInList(toolName, rules.allowedTools)) {
+          return { behavior: 'allow' as const, updatedInput: toolInput };
+        }
+
+        // 2. 检查权限规则：是否禁止
+        if (isToolInList(toolName, rules.deniedTools)) {
+          return { behavior: 'deny' as const, message: `工具 ${toolName} 在当前权限模式下不可用` };
+        }
+
+        // 3. 检查 session 级"始终允许"
+        if (this.sessionAlwaysAllowed.has(toolName)) {
+          return { behavior: 'allow' as const, updatedInput: toolInput };
+        }
+
+        // 4. 不在自动放行/禁止/始终允许列表 → 弹窗请求用户确认
+        this.pendingPermissionData.set(toolUseID, { toolName, toolUseId: toolUseID, toolInput });
+        broadcast('permission:request', { sessionId: activeSessionId, toolName, toolUseId: toolUseID, toolInput });
+        const decision = await new Promise<'deny' | 'allow_once' | 'always_allow'>((resolve) => {
+          const timeout = setTimeout(() => {
+            this.pendingPermissions.delete(toolUseID);
+            this.pendingPermissionData.delete(toolUseID);
+            resolve('allow_once');
+          }, 30000);
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timeout);
+            this.pendingPermissions.delete(toolUseID);
+            this.pendingPermissionData.delete(toolUseID);
+            resolve('deny');
+          });
+          this.pendingPermissions.set(toolUseID, {
+            resolve: (d: 'deny' | 'allow_once' | 'always_allow') => {
+              clearTimeout(timeout);
+              this.pendingPermissions.delete(toolUseID);
+              this.pendingPermissionData.delete(toolUseID);
+              resolve(d);
+            },
+            toolName,
+          });
+        });
+
+        if (decision === 'always_allow') {
+          this.sessionAlwaysAllowed.add(toolName);
+          // 级联放行：同名工具的其他 pending 请求自动放行
+          for (const [otherId, other] of this.pendingPermissions) {
+            if (other.toolName === toolName) {
+              this.pendingPermissionData.delete(otherId);
+              other.resolve('always_allow');
+            }
+          }
+        }
+
+        return decision === 'deny'
+          ? { behavior: 'deny' as const, message: '用户拒绝' }
+          : { behavior: 'allow' as const, updatedInput: toolInput };
+      };
 
       console.log(`${logPrefix} Starting subprocess, cwd=${config.agentDir}, mode=${resolvedPermissionMode}, model=${config.model ?? 'default'}, provider=${config.providerEnv?.baseUrl ?? 'default(subscription)'}, resume=${this.sdkSessionId ? 'yes' : 'no'}`);
 
@@ -472,9 +636,12 @@ class SessionRunner {
       const q = query({
         prompt: this.messageGenerator(),
         options: {
-          allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
           cwd: config.agentDir,
-          systemPrompt: `当前工作目录为：${config.agentDir}\n所有创建、修改或写入的文件，必须放置在此目录或其子目录内，不得操作此目录之外的文件。`,
+          systemPrompt: {
+            type: 'preset' as const,
+            preset: 'claude_code' as const,
+            append: buildSystemPrompt(config.agentDir),
+          },
           permissionMode: resolvedPermissionMode,
           ...(resolvedPermissionMode === 'bypassPermissions'
             ? { allowDangerouslySkipPermissions: true } : {}),
@@ -484,11 +651,30 @@ class SessionRunner {
           executable: 'bun',
           stderr: (message: string) => { console.error(`${logPrefix} SDK stderr: ${message}`); },
           settingSources: ['project'],
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          mcpServers: mcpServers as any,
+          // @ts-expect-error mcpServers type differs from SDK expectation
+          mcpServers,
           includePartialMessages: true,
           resume: this.sdkSessionId ?? undefined,
           canUseTool,
+          hooks: {
+            PostToolUse: [{
+              hooks: [
+                async (input: HookInput, _toolUseId: string | undefined, _options: { signal: AbortSignal }): Promise<HookJSONOutput> => {
+                  const postInput = input as PostToolUseHookInput;
+                  const resized = await resizeToolImageContent(postInput.tool_response);
+                  if (resized) {
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: 'PostToolUse' as const,
+                        updatedMCPToolOutput: resized,
+                      },
+                    };
+                  }
+                  return { continue: true };
+                },
+              ],
+            }],
+          },
         },
       });
       this.querySession = q;
@@ -823,11 +1009,9 @@ class SessionRunner {
     return { ok: true, queued: false };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private buildMessageContent(text: string, images?: ChatImage[]): { role: 'user'; content: any } {
+  private buildMessageContent(text: string, images?: ChatImage[]): { role: 'user'; content: string | Array<Record<string, unknown>> } {
     if (images && images.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const contentBlocks: any[] = [];
+      const contentBlocks: Array<Record<string, unknown>> = [];
       if (text) {
         contentBlocks.push({ type: 'text', text });
       }
@@ -875,11 +1059,11 @@ class SessionRunner {
     this.abortSession();
   }
 
-  respondPermission(toolUseId: string, allow: boolean): boolean {
-    const resolve = this.pendingPermissions.get(toolUseId);
-    if (resolve) {
+  respondPermission(toolUseId: string, decision: 'deny' | 'allow_once' | 'always_allow'): boolean {
+    const pending = this.pendingPermissions.get(toolUseId);
+    if (pending) {
       this.pendingPermissionData.delete(toolUseId);
-      resolve(allow);
+      pending.resolve(decision);
       return true;
     }
     return false;
@@ -895,9 +1079,33 @@ class SessionRunner {
     return false;
   }
 
+  respondExitPlanMode(requestId: string, approved: boolean): boolean {
+    const pending = this.pendingExitPlanMode.get(requestId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingExitPlanMode.delete(requestId);
+      pending.resolve(approved);
+      return true;
+    }
+    return false;
+  }
+
+  respondEnterPlanMode(requestId: string, approved: boolean): boolean {
+    const pending = this.pendingEnterPlanMode.get(requestId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingEnterPlanMode.delete(requestId);
+      pending.resolve(approved);
+      return true;
+    }
+    return false;
+  }
+
   getPendingState(): {
     permission: { toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null;
     question: { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> } | null;
+    exitPlanMode: { requestId: string; plan?: string } | null;
+    enterPlanMode: { requestId: string } | null;
   } {
     const permission = this.pendingPermissionData.size > 0
       ? this.pendingPermissionData.values().next().value ?? null
@@ -905,7 +1113,18 @@ class SessionRunner {
     const question = this.pendingQuestionData.size > 0
       ? this.pendingQuestionData.values().next().value ?? null
       : null;
-    return { permission, question };
+    // Plan mode: we don't store plan text in the pending map, so just return requestId
+    let exitPlanMode: { requestId: string; plan?: string } | null = null;
+    if (this.pendingExitPlanMode.size > 0) {
+      const requestId = this.pendingExitPlanMode.keys().next().value;
+      if (requestId) exitPlanMode = { requestId };
+    }
+    let enterPlanMode: { requestId: string } | null = null;
+    if (this.pendingEnterPlanMode.size > 0) {
+      const requestId = this.pendingEnterPlanMode.keys().next().value;
+      if (requestId) enterPlanMode = { requestId };
+    }
+    return { permission, question, exitPlanMode, enterPlanMode };
   }
 }
 
@@ -1002,5 +1221,13 @@ export function setProxyConfig(proxySettings: {
 }
 
 export function getPendingState() {
-  return runner?.getPendingState() ?? { permission: null, question: null };
+  return runner?.getPendingState() ?? { permission: null, question: null, exitPlanMode: null, enterPlanMode: null };
+}
+
+export function respondExitPlanMode(requestId: string, approved: boolean) {
+  return runner?.respondExitPlanMode(requestId, approved) ?? false;
+}
+
+export function respondEnterPlanMode(requestId: string, approved: boolean) {
+  return runner?.respondEnterPlanMode(requestId, approved) ?? false;
 }

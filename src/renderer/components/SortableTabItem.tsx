@@ -49,7 +49,10 @@ export default function SortableTabItem({ tab, isActive, onActivate, onClose }: 
 
       {/* Tab 生成中指示点 */}
       {tab.isGenerating && (
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)] animate-pulse" />
+        <span className="relative flex h-2 w-2 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--running-light)] opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--running)]" />
+        </span>
       )}
 
       {/* Tab 标题 */}

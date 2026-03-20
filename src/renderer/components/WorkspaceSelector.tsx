@@ -47,25 +47,27 @@ export default function WorkspaceSelector({ workspaces, selectedPath, onSelect, 
   return (
     <div
       ref={ref}
-      className="absolute z-50 mt-2 w-full rounded-xl border border-[var(--border)] bg-[var(--paper)] py-2"
-      style={{ maxWidth: 360, minWidth: 280, boxShadow: '0 8px 32px rgba(0,0,0,0.12)' }}
+      className="absolute z-50 mt-2 w-full flex flex-col rounded-xl border border-[var(--border)] bg-[var(--paper)] py-2"
+      style={{ maxWidth: 360, minWidth: 280, maxHeight: 320, boxShadow: '0 8px 32px rgba(0,0,0,0.12)' }}
     >
-      <p className="px-4 pb-2 text-[12px] font-medium text-[var(--ink-tertiary)]">选择你的工作区</p>
-      {workspaces.map((ws) => (
-        <button
-          key={ws.path}
-          onClick={() => { onSelect(ws.path); onClose(); }}
-          className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-[var(--hover)] transition-colors"
-        >
-          <Folder size={16} className="shrink-0 text-[var(--ink-tertiary)]" />
-          <div className="flex-1 min-w-0">
-            <span className="block truncate text-[14px] text-[var(--ink)]">{dirName(ws.path)}</span>
-            <span className="block truncate text-[11px] text-[var(--ink-tertiary)]">{ws.path}</span>
-          </div>
-          {ws.path === selectedPath && <Check size={16} className="shrink-0 text-[var(--accent)]" />}
-        </button>
-      ))}
-      <div className="mt-1 border-t border-[var(--border)] pt-1">
+      <p className="px-4 pb-2 text-[12px] font-medium text-[var(--ink-tertiary)] shrink-0">选择你的工作区</p>
+      <div className="overflow-y-auto flex-1 min-h-0">
+        {workspaces.map((ws) => (
+          <button
+            key={ws.path}
+            onClick={() => { onSelect(ws.path); onClose(); }}
+            className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-[var(--hover)] transition-colors"
+          >
+            <Folder size={16} className="shrink-0 text-[var(--ink-tertiary)]" />
+            <div className="flex-1 min-w-0">
+              <span className="block truncate text-[14px] text-[var(--ink)]">{dirName(ws.path)}</span>
+              <span className="block truncate text-[11px] text-[var(--ink-tertiary)]">{ws.path}</span>
+            </div>
+            {ws.path === selectedPath && <Check size={16} className="shrink-0 text-[var(--accent)]" />}
+          </button>
+        ))}
+      </div>
+      <div className="mt-1 border-t border-[var(--border)] pt-1 shrink-0">
         <button
           onClick={handleAddWorkspace}
           className="flex w-full items-center gap-3 px-4 py-2 text-left text-[var(--accent)] hover:bg-[var(--hover)] transition-colors"

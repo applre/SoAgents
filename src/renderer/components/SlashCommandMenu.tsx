@@ -30,9 +30,11 @@ export default function SlashCommandMenu({ query, onSelect, onClose, skillComman
     c.name.toLowerCase().includes(query.toLowerCase())
   );
 
-  useEffect(() => {
+  const [prevQuery, setPrevQuery] = useState(query);
+  if (prevQuery !== query) {
+    setPrevQuery(query);
     setActiveIdx(0);
-  }, [query]);
+  }
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

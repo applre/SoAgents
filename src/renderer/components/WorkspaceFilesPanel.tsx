@@ -325,7 +325,7 @@ interface TreeNodeProps {
   entry: FileEntry;
   depth: number;
   expanded: boolean;
-  children: FileEntry[] | undefined;
+  childEntries: FileEntry[] | undefined;
   onToggleDir: (path: string) => void;
   onOpenFile?: (path: string) => void;
   expandedDirs: Set<string>;
@@ -333,7 +333,7 @@ interface TreeNodeProps {
   onContextMenu?: (e: React.MouseEvent, entry: FileEntry) => void;
 }
 
-function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, expandedDirs, dirChildren, onContextMenu }: TreeNodeProps) {
+function TreeNode({ entry, depth, expanded, childEntries, onToggleDir, onOpenFile, expandedDirs, dirChildren, onContextMenu }: TreeNodeProps) {
   const indent = depth * 12 + 16; // px-4 (16) + 每层 12px
 
   if (entry.type === 'dir') {
@@ -354,13 +354,13 @@ function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, e
           }
           <span className="text-[13px] text-[var(--ink)] truncate">{entry.name}</span>
         </div>
-        {expanded && children && children.map((child) => (
+        {expanded && childEntries && childEntries.map((child) => (
           <TreeNode
             key={child.path}
             entry={child}
             depth={depth + 1}
             expanded={expandedDirs.has(child.path)}
-            children={dirChildren[child.path]}
+            childEntries={dirChildren[child.path]}
             onToggleDir={onToggleDir}
             onOpenFile={onOpenFile}
             expandedDirs={expandedDirs}
@@ -368,7 +368,7 @@ function TreeNode({ entry, depth, expanded, children, onToggleDir, onOpenFile, e
             onContextMenu={onContextMenu}
           />
         ))}
-        {expanded && children && children.length === 0 && (
+        {expanded && childEntries && childEntries.length === 0 && (
           <div className="py-1 text-[12px] text-[var(--ink-tertiary)] italic" style={{ paddingLeft: indent + 28 }}>
             空目录
           </div>
@@ -937,7 +937,7 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
                 entry={f}
                 depth={0}
                 expanded={expandedDirs.has(f.path)}
-                children={dirChildren[f.path]}
+                childEntries={dirChildren[f.path]}
                 onToggleDir={handleToggleDir}
                 onOpenFile={onOpenFile}
                 expandedDirs={expandedDirs}

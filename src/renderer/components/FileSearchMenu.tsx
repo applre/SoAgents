@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { FileText, Folder, ChevronRight } from 'lucide-react';
 import { globalApiGetJson } from '../api/apiFetch';
 
@@ -14,21 +14,49 @@ interface Props {
   onClose: () => void;
 }
 
+interface FlatItem {
+  file: FileSearchResult;
+  isChild: boolean;
+}
+
 export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<FileSearchResult[]>([]);
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [isSearching, setIsSearching] = useState(false);
   const [dirFiles, setDirFiles] = useState<FileSearchResult[]>([]);
-  const [dirPath, setDirPath] = useState('');
-  const [previewFiles, setPreviewFiles] = useState<FileSearchResult[]>([]);
-  const [previewPath, setPreviewPath] = useState('');
+  const [expandedDir, setExpandedDir] = useState<string | null>(null);
+  const [expandedChildren, setExpandedChildren] = useState<FileSearchResult[]>([]);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const expandedDirRef = useRef<string | null>(null);
+  const pendingExpandRef = useRef<string | null>(null);
+
+  // Build flat visible list (browse: root items + inline expanded children; search: flat results)
+  const flatItems: FlatItem[] = useMemo(() => {
+    if (query) return results.map(file => ({ file, isChild: false }));
+    const items: FlatItem[] = [];
+    for (const file of dirFiles) {
+      items.push({ file, isChild: false });
+      if (file.type === 'dir' && file.path === expandedDir) {
+        for (const child of expandedChildren) {
+          items.push({ file: child, isChild: true });
+        }
+      }
+    }
+    return items;
+  }, [query, results, dirFiles, expandedDir, expandedChildren]);
+
+  // Derive selectedIndex from selectedPath (stable across expansion changes)
+  const selectedIndex = useMemo(() => {
+    if (!selectedPath) return 0;
+    const idx = flatItems.findIndex(item => item.file.path === selectedPath);
+    return idx >= 0 ? idx : 0;
+  }, [flatItems, selectedPath]);
 
   // Focus input on mount
   useEffect(() => {
@@ -38,8 +66,23 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
   // Load root directory on mount
   useEffect(() => {
     if (!agentDir) return;
-    loadDir(agentDir);
-    loadPreview(agentDir);
+    (async () => {
+      try {
+        const files = await globalApiGetJson<FileSearchResult[]>(
+          `/api/dir-files?path=${encodeURIComponent(agentDir)}`
+        );
+        setDirFiles(files);
+        if (files.length > 0) {
+          setSelectedPath(files[0].path);
+          if (files[0].type === 'dir') {
+            expandDir(files[0].path);
+          }
+        }
+      } catch {
+        setDirFiles([]);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentDir]);
 
   // Scroll selected item into view
@@ -58,29 +101,46 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const loadDir = useCallback(async (path: string) => {
+  const expandDir = useCallback(async (dirPath: string) => {
+    if (expandedDirRef.current === dirPath) return;
+    expandedDirRef.current = dirPath;
+    pendingExpandRef.current = dirPath;
+    setExpandedDir(dirPath);
+    setExpandedChildren([]);
     try {
       const files = await globalApiGetJson<FileSearchResult[]>(
-        `/api/dir-files?path=${encodeURIComponent(path)}`
+        `/api/dir-files?path=${encodeURIComponent(dirPath)}`
       );
-      setDirFiles(files);
-      setDirPath(path);
+      if (pendingExpandRef.current === dirPath) {
+        setExpandedChildren(files);
+      }
     } catch {
-      setDirFiles([]);
+      if (pendingExpandRef.current === dirPath) {
+        setExpandedDir(null);
+        setExpandedChildren([]);
+        expandedDirRef.current = null;
+      }
     }
   }, []);
 
-  const loadPreview = useCallback(async (path: string) => {
-    try {
-      const files = await globalApiGetJson<FileSearchResult[]>(
-        `/api/dir-files?path=${encodeURIComponent(path)}`
-      );
-      setPreviewFiles(files);
-      setPreviewPath(path);
-    } catch {
-      setPreviewFiles([]);
-    }
+  const collapseDir = useCallback(() => {
+    expandedDirRef.current = null;
+    pendingExpandRef.current = null;
+    setExpandedDir(null);
+    setExpandedChildren([]);
   }, []);
+
+  // Handle hover/selection: expand dirs inline, collapse when moving to files
+  const handleItemFocus = useCallback((item: FlatItem) => {
+    setSelectedPath(item.file.path);
+    if (query) return;
+    if (!item.isChild && item.file.type === 'dir') {
+      expandDir(item.file.path);
+    } else if (!item.isChild) {
+      collapseDir();
+    }
+    // Children: don't change expansion
+  }, [query, expandDir, collapseDir]);
 
   const searchFiles = useCallback(async (q: string) => {
     if (!agentDir || q.length < 1) {
@@ -94,34 +154,13 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
         `/api/search-files?agentDir=${encodeURIComponent(agentDir)}&q=${encodeURIComponent(q)}`
       );
       setResults(res.slice(0, 20));
-      setSelectedIndex(0);
+      setSelectedPath(res[0]?.path ?? null);
     } catch {
       setResults([]);
     } finally {
       setIsSearching(false);
     }
   }, [agentDir]);
-
-  // Update right preview panel when selection changes
-  useEffect(() => {
-    if (query && results.length > 0 && selectedIndex < results.length) {
-      // Search mode: preview the selected item's directory (or itself if dir)
-      const selected = results[selectedIndex];
-      const previewDir = selected.type === 'dir'
-        ? selected.path
-        : selected.path.substring(0, selected.path.lastIndexOf('/')) || agentDir;
-      loadPreview(previewDir);
-    } else if (!query && dirFiles.length > 0 && selectedIndex < dirFiles.length) {
-      // Browse mode: if selected item is a dir, preview its contents
-      const selected = dirFiles[selectedIndex];
-      if (selected?.type === 'dir') {
-        loadPreview(selected.path);
-      } else {
-        // Selected a file — preview the current directory
-        loadPreview(dirPath);
-      }
-    }
-  }, [selectedIndex, results, dirFiles, query, agentDir, dirPath, loadPreview]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -130,45 +169,41 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
     if (val.length === 0) {
       setResults([]);
       setIsSearching(false);
-      loadDir(agentDir);
+      collapseDir();
+      // Reset browse mode selection
+      if (dirFiles.length > 0) {
+        setSelectedPath(dirFiles[0].path);
+        if (dirFiles[0].type === 'dir') {
+          expandDir(dirFiles[0].path);
+        }
+      }
       return;
     }
+    collapseDir();
     timerRef.current = setTimeout(() => searchFiles(val), 200);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    const items = query ? results : dirFiles;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex(i => Math.min(i + 1, items.length - 1));
+      const nextIdx = Math.min(selectedIndex + 1, flatItems.length - 1);
+      const nextItem = flatItems[nextIdx];
+      if (nextItem) handleItemFocus(nextItem);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex(i => Math.max(i - 1, 0));
-    } else if (e.key === 'Enter' && items.length > 0) {
+      const prevIdx = Math.max(selectedIndex - 1, 0);
+      const prevItem = flatItems[prevIdx];
+      if (prevItem) handleItemFocus(prevItem);
+    } else if (e.key === 'Enter' && flatItems.length > 0) {
       e.preventDefault();
-      const item = items[selectedIndex];
-      if (item) {
-        if (!query && item.type === 'dir') {
-          // In browse mode, enter directory
-          loadDir(item.path);
-          setSelectedIndex(0);
-        } else {
-          onSelect(item);
-        }
-      }
+      const item = flatItems[selectedIndex];
+      if (item) onSelect(item.file);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       onClose();
-    } else if (e.key === 'Backspace' && query === '' && dirPath !== agentDir) {
-      // Navigate up in browse mode
-      e.preventDefault();
-      const parentPath = dirPath.substring(0, dirPath.lastIndexOf('/')) || agentDir;
-      loadDir(parentPath);
-      setSelectedIndex(0);
     }
   };
 
-  // Relative path display helper
   const relativePath = (fullPath: string) => {
     if (fullPath.startsWith(agentDir)) {
       const rel = fullPath.slice(agentDir.length);
@@ -176,11 +211,6 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
     }
     return fullPath;
   };
-
-  const relDirPath = relativePath(dirPath) || '.';
-  const relPreviewPath = relativePath(previewPath) || '.';
-
-  const leftItems = query ? results : dirFiles;
 
   return (
     <div
@@ -205,114 +235,51 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
         />
       </div>
 
-      {/* Two-panel body */}
-      <div className="flex" style={{ height: '280px' }}>
-        {/* Left panel: search results or directory listing */}
-        <div ref={listRef} className="w-[55%] overflow-y-auto border-r border-[var(--border)]">
-          {query.length === 0 && dirFiles.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-[var(--ink-tertiary)]">加载中...</div>
-          ) : isSearching ? (
-            <div className="px-3 py-6 text-center text-xs text-[var(--ink-tertiary)]">搜索中...</div>
-          ) : query && results.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-[var(--ink-tertiary)]">未找到文件</div>
-          ) : (
-            <>
-              {/* Breadcrumb for browse mode */}
-              {!query && dirPath !== agentDir && (
-                <button
-                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs text-[var(--ink-tertiary)] hover:bg-[var(--paper-dark)]"
-                  onClick={() => {
-                    const parentPath = dirPath.substring(0, dirPath.lastIndexOf('/')) || agentDir;
-                    loadDir(parentPath);
-                    setSelectedIndex(0);
-                  }}
-                >
-                  <ChevronRight size={10} className="rotate-180" />
-                  <span>.. 返回上级</span>
-                </button>
-              )}
-              {leftItems.map((file, i) => (
-                <button
-                  key={file.path}
-                  ref={i === selectedIndex ? selectedRef : null}
-                  className={[
-                    'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm',
-                    i === selectedIndex
-                      ? 'bg-[var(--accent-warm)] text-white'
-                      : 'text-[var(--ink)] hover:bg-[var(--paper-dark)]',
-                  ].join(' ')}
-                  onClick={() => {
-                    if (!query && file.type === 'dir') {
-                      loadDir(file.path);
-                      setSelectedIndex(0);
-                    } else {
-                      onSelect(file);
-                    }
-                  }}
-                  onMouseEnter={() => setSelectedIndex(i)}
-                >
-                  {file.type === 'dir'
-                    ? <Folder size={14} className="shrink-0 opacity-60" />
-                    : <FileText size={14} className="shrink-0 opacity-60" />
-                  }
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px]">{file.name}</div>
-                    {query && (
-                      <div className={`truncate text-[10px] ${i === selectedIndex ? 'text-white/70' : 'text-[var(--ink-tertiary)]'}`}>
-                        {relativePath(file.path)}
-                      </div>
-                    )}
+      {/* Single panel file list with inline expansion */}
+      <div ref={listRef} className="overflow-y-auto" style={{ maxHeight: '280px' }}>
+        {query.length === 0 && dirFiles.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-[var(--ink-tertiary)]">加载中...</div>
+        ) : isSearching ? (
+          <div className="px-3 py-6 text-center text-xs text-[var(--ink-tertiary)]">搜索中...</div>
+        ) : query && results.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-[var(--ink-tertiary)]">未找到文件</div>
+        ) : (
+          flatItems.map((item, i) => (
+            <button
+              key={`${item.file.path}-${item.isChild ? 'child' : 'root'}`}
+              ref={i === selectedIndex ? selectedRef : null}
+              className={[
+                'flex w-full items-center gap-2 text-left text-[13px]',
+                item.isChild ? 'pl-7 pr-3 py-1.5' : 'px-3 py-1.5',
+                i === selectedIndex
+                  ? 'bg-[var(--accent-warm)] text-white'
+                  : 'text-[var(--ink)] hover:bg-[var(--hover)]',
+              ].join(' ')}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onSelect(item.file)}
+              onMouseEnter={() => handleItemFocus(item)}
+            >
+              {item.file.type === 'dir'
+                ? <Folder size={14} className="shrink-0 opacity-60" />
+                : <FileText size={14} className="shrink-0 opacity-60" />
+              }
+              <div className="min-w-0 flex-1">
+                <div className="truncate">{item.file.name}</div>
+                {query && (
+                  <div className={`truncate text-[10px] ${i === selectedIndex ? 'text-white/70' : 'text-[var(--ink-tertiary)]'}`}>
+                    {relativePath(item.file.path)}
                   </div>
-                  {!query && file.type === 'dir' && (
-                    <ChevronRight size={12} className="shrink-0 opacity-40" />
-                  )}
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-
-        {/* Right panel: directory preview */}
-        <div className="w-[45%] overflow-y-auto bg-[var(--paper-dark)]/30">
-          <div className="sticky top-0 bg-[var(--paper-dark)]/60 px-3 py-1.5 text-[10px] font-medium text-[var(--ink-tertiary)] backdrop-blur-sm">
-            {relPreviewPath}
-          </div>
-          {previewFiles.length === 0 ? (
-            <div className="px-3 py-4 text-center text-xs text-[var(--ink-tertiary)]">空目录</div>
-          ) : (
-            previewFiles.map((file) => {
-              const isHighlighted = query && results[selectedIndex]?.path === file.path;
-              return (
-                <button
-                  key={file.path}
-                  className={[
-                    'flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs',
-                    isHighlighted
-                      ? 'bg-[var(--accent-warm)]/15 text-[var(--accent-warm)] font-medium'
-                      : 'text-[var(--ink-secondary)] hover:bg-[var(--paper-dark)]',
-                  ].join(' ')}
-                  onClick={() => {
-                    if (file.type === 'dir') {
-                      loadDir(file.path);
-                      loadPreview(file.path);
-                      setSelectedIndex(0);
-                      setQuery('');
-                      setResults([]);
-                    } else {
-                      onSelect(file);
-                    }
-                  }}
-                >
-                  {file.type === 'dir'
-                    ? <Folder size={12} className="shrink-0 opacity-50" />
-                    : <FileText size={12} className="shrink-0 opacity-50" />
-                  }
-                  <span className="truncate">{file.name}</span>
-                </button>
-              );
-            })
-          )}
-        </div>
+                )}
+              </div>
+              {!query && !item.isChild && item.file.type === 'dir' && (
+                <ChevronRight
+                  size={12}
+                  className={`shrink-0 opacity-40 transition-transform ${expandedDir === item.file.path ? 'rotate-90' : ''}`}
+                />
+              )}
+            </button>
+          ))
+        )}
       </div>
 
       {/* Bottom hint bar */}

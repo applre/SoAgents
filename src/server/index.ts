@@ -1,5 +1,5 @@
 import { createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -13,6 +13,7 @@ import type { AppConfig, ProviderEnv, Provider, ProviderAuthType } from '../shar
 import { PROVIDERS, getEffectiveModelAliases } from '../shared/providers';
 import type { LogEntry } from '../shared/types/log';
 import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, copyFileSync, renameSync, rmSync, unlinkSync } from 'fs';
+import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 
@@ -48,7 +49,7 @@ const port = parseInt(process.env.PORT || "3000", 10);
 
 const sseHandler = createSseHandler();
 
-const server = Bun.serve({
+Bun.serve({
   port,
   idleTimeout: 0, // 禁用超时，SSE 长连接需要
   async fetch(req) {
@@ -156,14 +157,26 @@ const server = Bun.serve({
     }
 
     if (req.method === 'POST' && url.pathname === '/chat/permission-response') {
-      const body = await req.json() as { toolUseId: string; allow: boolean };
-      getRunner()?.respondPermission(body.toolUseId, body.allow);
+      const body = await req.json() as { toolUseId: string; decision: 'deny' | 'allow_once' | 'always_allow' };
+      getRunner()?.respondPermission(body.toolUseId, body.decision);
       return Response.json({ ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/question/respond') {
       const body = await req.json() as { toolUseId: string; answers: Record<string, string> };
       getRunner()?.respondQuestion(body.toolUseId, body.answers);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/chat/exit-plan-mode-response') {
+      const body = await req.json() as { requestId: string; approved: boolean };
+      respondExitPlanMode(body.requestId, body.approved);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/chat/enter-plan-mode-response') {
+      const body = await req.json() as { requestId: string; approved: boolean };
+      respondEnterPlanMode(body.requestId, body.approved);
       return Response.json({ ok: true });
     }
 
@@ -321,6 +334,13 @@ const server = Bun.serve({
     if (req.method === 'PUT' && url.pathname === '/api/preset-custom-models') {
       const body = await req.json() as { providerId: string; models: Array<{ model: string; modelName: string; modelSeries: string }> };
       ConfigStore.savePresetCustomModels(body.providerId, body.models);
+      return Response.json({ ok: true });
+    }
+
+    // Provider Model Aliases 管理
+    if (req.method === 'PUT' && url.pathname === '/api/provider-model-aliases') {
+      const body = await req.json() as { providerId: string; aliases: { sonnet?: string; opus?: string; haiku?: string } };
+      ConfigStore.saveProviderModelAliases(body.providerId, body.aliases);
       return Response.json({ ok: true });
     }
 
@@ -502,7 +522,6 @@ const server = Bun.serve({
       if (server.type === 'stdio' && server.command) {
         try {
           await new Promise<void>((resolve, reject) => {
-            const { spawn } = require('child_process') as typeof import('child_process');
             const proc = spawn(server.command!, ['--version'], {
               timeout: 5000,
               stdio: 'ignore',

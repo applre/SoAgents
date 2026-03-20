@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import type { AppConfig, Provider, ModelEntity, ProviderVerifyStatus } from '../shared/types/config';
+import type { AppConfig, Provider, ModelEntity, ModelAliases, ProviderVerifyStatus } from '../shared/types/config';
 import { DEFAULT_CONFIG, PROVIDERS } from '../shared/providers';
 import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
@@ -127,6 +127,20 @@ export function saveProviderVerifyStatus(
 export function getProviderVerifyStatus(): Record<string, ProviderVerifyStatus> {
   const config = readConfig();
   return config.providerVerifyStatus ?? {};
+}
+
+export function saveProviderModelAliases(providerId: string, aliases: ModelAliases): void {
+  const config = readConfig();
+  if (!config.providerModelAliases) {
+    config.providerModelAliases = {};
+  }
+  const hasValue = aliases.sonnet || aliases.opus || aliases.haiku;
+  if (hasValue) {
+    config.providerModelAliases[providerId] = aliases;
+  } else {
+    delete config.providerModelAliases[providerId];
+  }
+  writeConfig(config);
 }
 
 /** 将 presetCustomModels 合并到预设 Provider 的模型列表中 */

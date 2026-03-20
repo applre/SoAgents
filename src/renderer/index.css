@@ -14,9 +14,28 @@
   --accent-warm: #C4956A;
   --border: #E8E6E3;
 
+  --running: #22c55e;
+  --running-light: #4ade80;
   --success: #2e6f5e;
+  --success-bg: #e6f0ec;
   --error: #c25a3a;
+  --error-bg: #fce8e3;
   --warning: #c29a3a;
+  --warning-bg: #faf3e3;
+  --info: #4a7ab5;
+  --info-bg: #e4ecf4;
+}
+
+/* Toast slide-down animation */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 body {

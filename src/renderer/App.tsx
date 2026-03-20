@@ -33,6 +33,7 @@ import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
 import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
 import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
+import { useToast } from './components/Toast';
 import { useUpdater } from './hooks/useUpdater';
 import { useSidebarSessions } from './hooks/useSidebarSessions';
 import type { SessionMetadata } from '../shared/types/session';
@@ -127,6 +128,7 @@ function SortableFileTab({ file, isActive, onActivate, onClose }: {
 }
 
 export default function App() {
+  const toast = useToast();
   const [tabs, setTabs] = useState<Tab[]>([INITIAL_TAB]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB.id);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -161,12 +163,14 @@ export default function App() {
   const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
 
   // Independent session fetch for sidebar (all workspaces)
-  const { sessions: allSessions } = useSidebarSessions();
+  const { sessions: allSessions, refresh: refreshSidebarSessions } = useSidebarSessions();
 
   useEffect(() => {
     initFrontendLogger();
     // 必须等 global sidecar 就绪后再设置 agentDir，否则 refreshSessions 会因 sidecar 未启动而静默失败
     Promise.all([startGlobalSidecar(), getDefaultWorkspace()]).then(([, dir]) => {
+      // sidecar 就绪后立即刷新 session 列表，不等 10s 轮询
+      refreshSidebarSessions();
       if (!dir) return;
       setTabs((prev) => prev.map((t) =>
         t.id === INITIAL_TAB.id && !t.agentDir
@@ -174,7 +178,14 @@ export default function App() {
           : t
       ));
     }).catch(console.error);
-  }, []);
+  }, [refreshSidebarSessions]);
+
+  // 切换 tab 时清除未读标记
+  useEffect(() => {
+    setTabs((prev) => prev.map((t) =>
+      t.id === activeTabId && t.hasUnread ? { ...t, hasUnread: false } : t
+    ));
+  }, [activeTabId]);
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     // 停止 sidecar + 调用全局 API 删除 session
@@ -210,6 +221,18 @@ export default function App() {
       else next.delete(sessionId);
       return next;
     });
+  }, []);
+
+  const updateTabGenerating = useCallback((tabId: string, isGenerating: boolean) => {
+    setTabs((prev) => prev.map((t) =>
+      t.id === tabId ? { ...t, isGenerating } : t
+    ));
+  }, []);
+
+  const updateTabUnread = useCallback((tabId: string, hasUnread: boolean) => {
+    setTabs((prev) => prev.map((t) =>
+      t.id === tabId ? { ...t, hasUnread } : t
+    ));
   }, []);
 
   const handleSessionIdChange = useCallback((tabId: string, newSessionId: string) => {
@@ -309,6 +332,11 @@ export default function App() {
   const handleCloseTab = useCallback((tabId: string) => {
     setTabs((prev) => {
       if (prev.length <= 1) return prev;
+      const tab = prev.find((t) => t.id === tabId);
+      // 正在生成时关闭 → toast 提示后台继续
+      if (tab?.isGenerating && tab.sessionId) {
+        toast.info('AI 继续在后台完成任务');
+      }
       const newTabs = prev.filter((t) => t.id !== tabId);
       if (activeTabId === tabId) {
         const idx = prev.findIndex((t) => t.id === tabId);
@@ -317,7 +345,7 @@ export default function App() {
       }
       return newTabs;
     });
-  }, [activeTabId]);
+  }, [activeTabId, toast]);
 
   const handleAgentDirChange = useCallback((tabId: string, agentDir: string) => {
     setActiveSessionId(null);
@@ -657,6 +685,8 @@ export default function App() {
                         sessionId={t.sessionId}
                         isActive={activeTabId === t.id}
                         onRunningSessionsChange={handleRunningSessionsChange}
+                        onGeneratingChange={(g) => updateTabGenerating(t.id, g)}
+                        onUnreadChange={(u) => updateTabUnread(t.id, u)}
                         onSessionIdChange={(sid: string) => handleSessionIdChange(t.id, sid)}
                       >
                         <Chat
@@ -791,6 +821,16 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
               <span className={`text-[13px] font-semibold truncate ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`}>
                 {label}
               </span>
+              {/* 状态圆点：生成中(绿色脉冲) / 未读(暖色静态，仅非活跃 tab) */}
+              {tab.isGenerating && (
+                <span className="relative ml-0.5 flex h-1.5 w-1.5 shrink-0">
+                  <span className="absolute inset-0 rounded-full bg-[var(--success)]" />
+                  <span className="absolute inset-0 rounded-full bg-[var(--success)] animate-ping" />
+                </span>
+              )}
+              {!isActive && !tab.isGenerating && tab.hasUnread && (
+                <span className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
+              )}
               {isActive && (isSettings || isScheduledTasks || tabs.length > 1) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}

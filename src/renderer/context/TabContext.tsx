@@ -31,8 +31,12 @@ export interface TabState {
       multiSelect: boolean;
     }>;
   } | null;
-  respondPermission: (toolUseId: string, allow: boolean) => Promise<void>;
+  respondPermission: (toolUseId: string, decision: 'deny' | 'allow_once' | 'always_allow') => Promise<void>;
   respondQuestion: (toolUseId: string, answers: Record<string, string>) => Promise<void>;
+  pendingExitPlanMode: { requestId: string; plan?: string } | null;
+  pendingEnterPlanMode: { requestId: string } | null;
+  respondExitPlanMode: (requestId: string, approved: boolean) => Promise<void>;
+  respondEnterPlanMode: (requestId: string, approved: boolean) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   unifiedLogs: LogEntry[];

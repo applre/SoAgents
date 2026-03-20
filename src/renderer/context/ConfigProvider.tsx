@@ -49,7 +49,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     loadWorkspaces()
       .then((ws) => setWorkspaces(ws))
       .catch((err) => console.error('[ConfigProvider] Failed to load workspaces:', err));
-    void loadProviders();
+    void loadProviders(); // eslint-disable-line react-hooks/set-state-in-effect
   }, [loadProviders]);
 
   const currentProvider = useMemo<Provider>(() => {
@@ -87,6 +87,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
   const refreshConfig = useCallback(async () => {
     await loadProviders();
+    loadWorkspaces()
+      .then((ws) => setWorkspaces(ws))
+      .catch((err) => console.error('[ConfigProvider] Failed to refresh workspaces:', err));
   }, [loadProviders]);
 
   // ── Provider Verify Status ──

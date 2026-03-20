@@ -15,6 +15,7 @@ export interface Tab {
   agentDir: string | null;
   sessionId: string | null;
   isGenerating?: boolean;
+  hasUnread?: boolean;
   openFiles: OpenFile[];
   activeSubTab: 'chat' | string; // string = filePath
 }

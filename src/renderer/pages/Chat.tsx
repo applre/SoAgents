@@ -5,6 +5,7 @@ import MessageList from '../components/MessageList';
 import ChatInput from '../components/ChatInput';
 import PermissionPrompt from '../components/PermissionPrompt';
 import AskUserQuestionPrompt from '../components/AskUserQuestionPrompt';
+import { ExitPlanModePrompt, EnterPlanModePrompt } from '../components/PlanModePrompt';
 import UnifiedLogsPanel from '../components/UnifiedLogsPanel';
 import QueuedMessagesPanel from '../components/QueuedMessagesPanel';
 import WorkspaceSelector from '../components/WorkspaceSelector';
@@ -57,7 +58,7 @@ export function WorkspaceTrigger({ agentDir, onAgentDirChange }: { agentDir: str
 }
 
 export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, onOpenUrl }: Props) {
-  const { messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
+  const { messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
   const { config } = useConfig();
   const [showLogs, setShowLogs] = useState(false);
 
@@ -88,8 +89,14 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
             toolName={pendingPermission.toolName}
             toolUseId={pendingPermission.toolUseId}
             toolInput={pendingPermission.toolInput}
-            onRespond={(allow) => respondPermission(pendingPermission.toolUseId, allow)}
+            onRespond={(decision) => respondPermission(pendingPermission.toolUseId, decision)}
           />
+        )}
+        {pendingExitPlanMode && (
+          <ExitPlanModePrompt requestId={pendingExitPlanMode.requestId} plan={pendingExitPlanMode.plan} onRespond={(approved) => respondExitPlanMode(pendingExitPlanMode.requestId, approved)} />
+        )}
+        {pendingEnterPlanMode && (
+          <EnterPlanModePrompt requestId={pendingEnterPlanMode.requestId} onRespond={(approved) => respondEnterPlanMode(pendingEnterPlanMode.requestId, approved)} />
         )}
       </div>
     );
@@ -141,8 +148,14 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
           toolName={pendingPermission.toolName}
           toolUseId={pendingPermission.toolUseId}
           toolInput={pendingPermission.toolInput}
-          onRespond={(allow) => respondPermission(pendingPermission.toolUseId, allow)}
+          onRespond={(decision) => respondPermission(pendingPermission.toolUseId, decision)}
         />
+      )}
+      {pendingExitPlanMode && (
+        <ExitPlanModePrompt requestId={pendingExitPlanMode.requestId} plan={pendingExitPlanMode.plan} onRespond={(approved) => respondExitPlanMode(pendingExitPlanMode.requestId, approved)} />
+      )}
+      {pendingEnterPlanMode && (
+        <EnterPlanModePrompt requestId={pendingEnterPlanMode.requestId} onRespond={(approved) => respondEnterPlanMode(pendingEnterPlanMode.requestId, approved)} />
       )}
 
       {/* 统一日志面板 */}

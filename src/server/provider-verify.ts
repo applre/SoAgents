@@ -4,9 +4,12 @@
  */
 
 import { randomUUID } from 'crypto';
+import { createRequire } from 'module';
 import { homedir } from 'os';
 import { join } from 'path';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
+
+const requireModule = createRequire(import.meta.url);
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildClaudeSessionEnv } from './agent-session';
 import type { ProviderAuthType } from '../shared/types/config';
@@ -30,17 +33,28 @@ export interface SubscriptionStatus {
  * 解析 Claude Code CLI 路径
  */
 export function resolveClaudeCodeCli(): string {
-  // 尝试通过 require.resolve 找到 SDK 的 cli.js
+  const t0 = Date.now();
+  // Check bundled path FIRST to avoid bun's auto-install behavior.
+  // In production builds, require.resolve() can't find the SDK in node_modules
+  // (it doesn't exist in the app bundle). Bun then attempts to auto-install
+  // the package from npm, which blocks the event loop for 10+ minutes.
+  // By checking the bundled path first, we skip the costly require.resolve entirely.
+  const cwd = process.cwd();
+  const bundledPath = join(cwd, 'claude-agent-sdk', 'cli.js');
+  if (existsSync(bundledPath)) {
+    console.log(`[sdk] CLI resolved via bundled path in ${Date.now() - t0}ms: ${bundledPath}`);
+    return bundledPath;
+  }
+  console.warn(`[sdk] Bundled SDK not found at ${bundledPath} (cwd=${cwd}), falling back to require.resolve`);
+
+  // Development: resolve from node_modules
   try {
-    const cliPath = require.resolve('@anthropic-ai/claude-agent-sdk/cli.js');
+    const cliPath = requireModule.resolve('@anthropic-ai/claude-agent-sdk/cli.js');
+    console.log(`[sdk] CLI resolved via require.resolve in ${Date.now() - t0}ms: ${cliPath}`);
     return cliPath;
-  } catch {
-    // Fallback: 从 cwd 下查找
-    const bundledPath = join(process.cwd(), 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'cli.js');
-    if (existsSync(bundledPath)) {
-      return bundledPath;
-    }
-    throw new Error('Cannot resolve @anthropic-ai/claude-agent-sdk/cli.js');
+  } catch (error) {
+    console.error(`[sdk] CLI resolve FAILED in ${Date.now() - t0}ms. Bundled: ${bundledPath}, cwd: ${cwd}`, error);
+    throw error;
   }
 }
 

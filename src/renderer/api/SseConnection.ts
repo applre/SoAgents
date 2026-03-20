@@ -30,6 +30,8 @@ export class SseConnection {
         'chat:status',
         'permission:request',
         'question:request',
+        'exit-plan-mode:request',
+        'enter-plan-mode:request',
         'chat:log',
       ];
 
