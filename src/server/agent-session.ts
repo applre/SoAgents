@@ -637,11 +637,7 @@ class SessionRunner {
         prompt: this.messageGenerator(),
         options: {
           cwd: config.agentDir,
-          systemPrompt: {
-            type: 'preset' as const,
-            preset: 'claude_code' as const,
-            append: buildSystemPrompt(config.agentDir),
-          },
+          systemPrompt: buildSystemPrompt(config.agentDir),
           permissionMode: resolvedPermissionMode,
           ...(resolvedPermissionMode === 'bypassPermissions'
             ? { allowDangerouslySkipPermissions: true } : {}),
@@ -656,25 +652,6 @@ class SessionRunner {
           includePartialMessages: true,
           resume: this.sdkSessionId ?? undefined,
           canUseTool,
-          hooks: {
-            PostToolUse: [{
-              hooks: [
-                async (input: HookInput, _toolUseId: string | undefined, _options: { signal: AbortSignal }): Promise<HookJSONOutput> => {
-                  const postInput = input as PostToolUseHookInput;
-                  const resized = await resizeToolImageContent(postInput.tool_response);
-                  if (resized) {
-                    return {
-                      hookSpecificOutput: {
-                        hookEventName: 'PostToolUse' as const,
-                        updatedMCPToolOutput: resized,
-                      },
-                    };
-                  }
-                  return { continue: true };
-                },
-              ],
-            }],
-          },
         },
       });
       this.querySession = q;
