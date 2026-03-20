@@ -8,6 +8,52 @@
 
 ---
 
+## [0.1.7] - 2026-03-20
+
+### 新增
+
+#### 权限系统重构
+- **三档权限决策**：权限弹窗从布尔值改为 deny / allow_once / always_allow 三档
+- **按模式自动放行**：acceptEdits 模式自动放行读写工具，plan 模式仅允许只读，bypassPermissions 全部放行
+- **Session 级始终允许**：选择「始终允许」后同名工具自动放行，级联处理 pending 请求
+- **MCP 工具权限检查**：未启用的 MCP server 工具直接拒绝
+
+#### Plan 模式
+- **EnterPlanMode / ExitPlanMode**：工具拦截与用户审批流程
+- **PlanModePrompt 组件**：方案预览 + 批准/拒绝 UI
+- **权限联动**：进入 Plan 模式时切换为只读权限，退出后恢复原权限
+
+#### SDK 集成优化
+- **Preset System Prompt**：使用 claude_code preset + SoAgents 身份追加
+- **PostToolUse Hook**：自动缩放工具返回的图片内容
+- **Bundled SDK 路径优先**：CLI 解析优先检查 bundled path，避免 bun auto-install 阻塞
+- **ESM 兼容修复**：import.meta.url / createRequire 替代 __dirname / require
+
+#### UI 改进
+- **FileSearchMenu 重写**：从双面板改为单面板内联展开模式
+- **UsageStatsPanel 厂商筛选**：按 vendor 过滤模型用量分布
+- **Toast 通知组件**：全局轻量提示
+- **运行指示灯统一**：CSS 变量 --running / --running-light
+- **WorkspaceSelector 滚动**：工作区列表支持滚动，限高 320px
+
+#### Rust 层
+- **scheduler → cron_task**：模块、状态、命令全部重命名
+- **TCP 健康检查**：Sidecar 从 HTTP 改为 TCP 级别检查，启动更快更可靠
+- **进程退出检测**：启动后立即检测进程是否异常退出
+- **claude-agent-sdk 打包**：作为 Tauri resource 分发
+
+#### 工程化
+- **ESLint 配置**：新增 eslint.config.js + react/react-hooks/typescript-eslint 插件
+- **Provider Model Aliases API**：`PUT /api/provider-model-aliases` 接口
+- **post-build-server 脚本**：构建后处理流程
+
+### 改进
+- **React 稳定性**：useEffect 改为状态同步模式，依赖数组修正，消除不必要的重渲染
+- **类型安全**：verify-providers 脚本消除 any 类型，WorkspaceFilesPanel children prop 重命名为 childEntries
+- **SkillsStore**：bundled-skills 路径查找兼容 ESM
+
+---
+
 ## [0.1.5] - 2026-03-15
 
 ### 新增
@@ -270,7 +316,8 @@
 
 ---
 
-[Unreleased]: https://github.com/applre/SoAgents/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/applre/SoAgents/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/applre/SoAgents/compare/v0.1.5...v0.1.7
 [0.1.5]: https://github.com/applre/SoAgents/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/applre/SoAgents/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/applre/SoAgents/compare/v0.1.2...v0.1.3
