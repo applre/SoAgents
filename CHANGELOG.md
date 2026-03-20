@@ -52,6 +52,10 @@
 - **类型安全**：verify-providers 脚本消除 any 类型，WorkspaceFilesPanel children prop 重命名为 childEntries
 - **SkillsStore**：bundled-skills 路径查找兼容 ESM
 
+### 修复
+- **Release 构建对话卡死**：macOS GUI 应用 PATH 不含 bun，SDK 子进程 `spawn("bun")` 静默失败导致对话永远停在「思考中」。Rust 层通过 `BUN_EXECUTABLE` 环境变量传递内置 bun 完整路径
+- **构建安全检测**：`post-build-server.sh` 新增 `BUN_EXECUTABLE` 引用检测，缺失则构建失败
+
 ---
 
 ## [0.1.5] - 2026-03-15
