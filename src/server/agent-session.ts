@@ -633,9 +633,14 @@ class SessionRunner {
       console.log(`${logPrefix} Starting subprocess, cwd=${config.agentDir}, mode=${resolvedPermissionMode}, model=${config.model ?? 'default'}, provider=${config.providerEnv?.baseUrl ?? 'default(subscription)'}, resume=${this.sdkSessionId ? 'yes' : 'no'}`);
 
       // ── 创建 query（子进程在此启动）──
+      const resolvedCanUseTool = resolvedPermissionMode !== 'bypassPermissions'
+        ? canUseTool
+        : undefined;
+
       const q = query({
         prompt: this.messageGenerator(),
         options: {
+          allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
           cwd: config.agentDir,
           systemPrompt: buildSystemPrompt(config.agentDir),
           permissionMode: resolvedPermissionMode,
@@ -651,7 +656,7 @@ class SessionRunner {
           mcpServers,
           includePartialMessages: true,
           resume: this.sdkSessionId ?? undefined,
-          canUseTool,
+          canUseTool: resolvedCanUseTool,
         },
       });
       this.querySession = q;
