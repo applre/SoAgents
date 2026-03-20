@@ -23,6 +23,18 @@ if grep -qE 'var __dirname = "/Users/[^"]+' "$DIST"; then
 fi
 echo -e "${GREEN}  ✓ 无硬编码路径${NC}"
 
+# ── 1.5 BUN_EXECUTABLE 检测 ──────────────────────────────────────
+# macOS GUI 应用的 PATH 不含 bun，SDK 子进程 MUST 通过 BUN_EXECUTABLE 获取完整路径。
+# 若 server-dist.js 不包含 BUN_EXECUTABLE，说明有人把 executable 写死为 "bun"。
+echo -e "  ${CYAN}检查 BUN_EXECUTABLE 环境变量引用...${NC}"
+if ! grep -q 'BUN_EXECUTABLE' "$DIST"; then
+    echo -e "${RED}✗ 错误: server-dist.js 未引用 BUN_EXECUTABLE 环境变量!${NC}"
+    echo -e "${YELLOW}  SDK 子进程的 executable 必须使用 process.env.BUN_EXECUTABLE || 'bun'${NC}"
+    echo -e "${YELLOW}  否则 macOS release 构建会因 PATH 找不到 bun 而静默挂起${NC}"
+    exit 1
+fi
+echo -e "${GREEN}  ✓ BUN_EXECUTABLE 引用存在${NC}"
+
 # ── 2. 复制 SDK 依赖 ─────────────────────────────────────────────
 echo -e "  ${CYAN}复制 SDK 依赖...${NC}"
 SDK_SRC="node_modules/@anthropic-ai/claude-agent-sdk"
