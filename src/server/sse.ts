@@ -12,8 +12,8 @@ export function setLogHistoryProvider(fn: () => LogEntry[]): void {
   _replayHistory = fn;
 }
 
-export function createSseHandler(): (req: Request) => Response {
-  return (req: Request) => {
+export function createSseHandler(): (_req: Request) => Response {
+  return (_req: Request) => {
     const clientId = String(++_clientCounter);
 
     let controller: ReadableStreamDefaultController<Uint8Array>;
@@ -29,7 +29,7 @@ export function createSseHandler(): (req: Request) => Response {
             controller.enqueue(encoder.encode(chunk));
           },
           close() {
-            try { controller.close(); } catch {}
+            try { controller.close(); } catch { /* already closed */ }
             clients.delete(clientId);
           },
         };

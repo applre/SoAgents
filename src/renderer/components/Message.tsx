@@ -135,10 +135,7 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
   return (
     <div className="group/assistant flex flex-col items-start">
       <div
-        className={[
-          'max-w-[80%] rounded-2xl px-4 py-3 text-sm',
-          'bg-[var(--surface)] text-[var(--ink)] border border-[var(--border)]',
-        ].join(' ')}
+        className="w-full text-sm text-[var(--ink)]"
       >
         {message.blocks.map((block, i) => {
           if (block.type === 'thinking') {
@@ -231,18 +228,17 @@ function ThinkingBlock({ text, defaultOpen, isActive }: { text: string; defaultO
   const [open, setOpen] = useState(defaultOpen ?? false);
   const contentRef = useRef<HTMLDivElement>(null);
 
-  const wasActiveRef = useRef(isActive);
-
-  useEffect(() => {
-    if (isActive && !wasActiveRef.current) {
+  const [prevIsActive, setPrevIsActive] = useState(isActive);
+  if (prevIsActive !== isActive) {
+    setPrevIsActive(isActive);
+    if (isActive) {
       // 思考开始 → 自动展开
       setOpen(true);
-    } else if (!isActive && wasActiveRef.current) {
+    } else {
       // 思考结束（text 开始输出）→ 自动折叠
       setOpen(false);
     }
-    wasActiveRef.current = isActive;
-  }, [isActive]);
+  }
 
   return (
     <div className="mb-2 text-xs">

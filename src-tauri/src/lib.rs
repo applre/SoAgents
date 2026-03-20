@@ -7,7 +7,7 @@ mod proxy;
 mod proxy_config;
 mod sse_proxy;
 mod updater;
-mod scheduler;
+mod cron_task;
 mod local_http;
 pub mod logger;
 
@@ -19,12 +19,12 @@ use tokio::sync::RwLock;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let sidecar_state: SidecarState = Arc::new(Mutex::new(sidecar::SidecarManager::new()));
-    let scheduler_state: scheduler::SchedulerState = Arc::new(RwLock::new(scheduler::SchedulerManager::new()));
+    let cron_task_state: cron_task::CronTaskState = Arc::new(RwLock::new(cron_task::CronTaskManager::new()));
 
     // 保存一份 Arc clone 用于退出清理
     let cleanup_state = Arc::clone(&sidecar_state);
-    let scheduler_cleanup = scheduler_state.clone();
-    let scheduler_setup = scheduler_state.clone();
+    let cron_task_cleanup = cron_task_state.clone();
+    let cron_task_setup = cron_task_state.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
@@ -34,7 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(sidecar_state)
-        .manage(scheduler_state)
+        .manage(cron_task_state)
         .manage(sse_proxy::SseProxyState::new())
         .invoke_handler(tauri::generate_handler![
             commands::cmd_start_session_sidecar,
@@ -53,14 +53,14 @@ pub fn run() {
             updater::restart_app,
             updater::test_update_connectivity,
             updater::cmd_shutdown_for_update,
-            scheduler::cmd_scheduler_list_tasks,
-            scheduler::cmd_scheduler_create_task,
-            scheduler::cmd_scheduler_update_task,
-            scheduler::cmd_scheduler_delete_task,
-            scheduler::cmd_scheduler_toggle_task,
-            scheduler::cmd_scheduler_run_task,
-            scheduler::cmd_scheduler_list_runs,
-            scheduler::cmd_scheduler_list_all_runs,
+            cron_task::cmd_cron_list_tasks,
+            cron_task::cmd_cron_create_task,
+            cron_task::cmd_cron_update_task,
+            cron_task::cmd_cron_delete_task,
+            cron_task::cmd_cron_toggle_task,
+            cron_task::cmd_cron_run_task,
+            cron_task::cmd_cron_list_runs,
+            cron_task::cmd_cron_list_all_runs,
         ])
         .setup(|app| {
             // Initialize logging
@@ -101,15 +101,15 @@ pub fn run() {
                 updater::check_update_on_startup(app_handle).await;
             });
 
-            // Start scheduler
-            let scheduler_app_handle = app.handle().clone();
+            // Start cron task scheduler
+            let cron_task_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 {
-                    let mut mgr = scheduler_setup.write().await;
-                    mgr.set_app_handle(scheduler_app_handle);
+                    let mut mgr = cron_task_setup.write().await;
+                    mgr.set_app_handle(cron_task_app_handle);
                     mgr.start().await;
                 }
-                scheduler::scheduler_loop(scheduler_setup).await;
+                cron_task::cron_task_loop(cron_task_setup).await;
             });
 
             Ok(())
@@ -121,9 +121,9 @@ pub fn run() {
                     manager.stop_all();
                 }
 
-                let scheduler_clone = scheduler_cleanup.clone();
+                let cron_task_clone = cron_task_cleanup.clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut mgr = scheduler_clone.write().await;
+                    let mut mgr = cron_task_clone.write().await;
                     mgr.stop();
                 });
             }

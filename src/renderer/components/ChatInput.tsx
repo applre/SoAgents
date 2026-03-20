@@ -6,7 +6,7 @@ import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
-import { useTabState } from '../context/TabContext';
+import { useTabApi } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
 import type { ModelEntity, Provider, ProviderEnv } from '../../shared/types/config';
@@ -55,9 +55,9 @@ interface AttachedFile {
 }
 
 export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed }: Props) {
-  const { config, allProviders, currentProvider, currentModel, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
-  const { apiGet, messages } = useTabState();
-  const isProviderLocked = messages.length > 0;
+  const { config, allProviders, currentProvider, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
+  const { apiGet, hasMessages } = useTabApi();
+  const isProviderLocked = hasMessages;
 
   // Provider 可用性检查：subscription 类型暂时放行，api 类型需要有 key
   const isProviderAvailable = useCallback((p: Provider): boolean => {
@@ -72,7 +72,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const [showSlash, setShowSlash] = useState(false);
   const [slashPosition, setSlashPosition] = useState<number | null>(null);
   const [slashSearchQuery, setSlashSearchQuery] = useState('');
-  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [_selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   // @ 文件搜索
   const [showFileSearch, setShowFileSearch] = useState(false);
   const [atPosition, setAtPosition] = useState<number | null>(null);
@@ -81,9 +81,11 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const [skillSearchQuery, setSkillSearchQuery] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(wsEntry?.permissionMode ?? 'acceptEdits');
   // Sync permissionMode when workspace entry changes (e.g. workspace switch)
-  useEffect(() => {
+  const [prevWsPermMode, setPrevWsPermMode] = useState(wsEntry?.permissionMode);
+  if (prevWsPermMode !== wsEntry?.permissionMode) {
+    setPrevWsPermMode(wsEntry?.permissionMode);
     setPermissionMode(wsEntry?.permissionMode ?? 'acceptEdits');
-  }, [wsEntry?.permissionMode]);
+  }
   const [skillCommands, setSkillCommands] = useState<CommandItem[]>([]);
   const [showSkillPopover, setShowSkillPopover] = useState(false);
   const [showMCPPopover, setShowMCPPopover] = useState(false);
@@ -105,7 +107,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const effectiveProvider = useMemo(() => {
     if (!wsEntry?.providerId || allProviders.length === 0) return currentProvider;
     return allProviders.find((p) => p.id === wsEntry.providerId) ?? currentProvider;
-  }, [wsEntry?.providerId, allProviders, currentProvider]);
+  }, [wsEntry, allProviders, currentProvider]);
   const effectiveModel = useMemo<ModelEntity | null>(() => {
     if (!effectiveProvider.models?.length) return null;
     if (wsEntry?.modelId) {
@@ -117,7 +119,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       if (found) return found;
     }
     return effectiveProvider.models[0];
-  }, [effectiveProvider, wsEntry?.modelId]);
+  }, [effectiveProvider, wsEntry]);
   const isCurrentProviderAvailable = useMemo(() => isProviderAvailable(effectiveProvider), [isProviderAvailable, effectiveProvider]);
 
   // 文件注入：从编辑器「去对话」时以附件卡片形式带入文件，同步获取真实文件大小
@@ -150,7 +152,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   useEffect(() => {
     if (!injectRefText) return;
     onRefTextConsumed?.();
-    setText((prev) => {
+    setText((prev) => { // eslint-disable-line react-hooks/set-state-in-effect
       const separator = prev && !prev.endsWith('\n') ? '\n' : '';
       return prev + separator + injectRefText + ' ';
     });
@@ -218,15 +220,11 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     // 检测新输入的字符（简单比较：长度+1 且光标在末尾附近）
     const addedChar = newValue.length === text.length + 1 ? newValue[cursorPos - 1] : null;
 
-    let nextShowFileSearch = showFileSearch;
-    let nextAtPosition = atPosition;
     let nextShowSlash = showSlash;
     let nextSlashPosition = slashPosition;
 
     // 检测 @ 触发
     if (addedChar === '@') {
-      nextShowFileSearch = true;
-      nextAtPosition = cursorPos - 1;
       setShowFileSearch(true);
       setAtPosition(cursorPos - 1);
       // 关闭 / 菜单
@@ -245,8 +243,6 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       setSlashSearchQuery('');
       setSelectedSlashIndex(0);
       // 关闭 @ 浮层
-      nextShowFileSearch = false;
-      nextAtPosition = null;
       setShowFileSearch(false);
       setAtPosition(null);
     }
@@ -274,7 +270,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-  }, [text, showFileSearch, atPosition, showSlash, slashPosition]);
+  }, [text, showSlash, slashPosition]);
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
@@ -416,7 +412,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setShowSlash(false);
     setSlashPosition(null);
     textareaRef.current?.focus();
-  }, [agentDir, slashPosition, text, slashSearchQuery, addSkill]);
+  }, [slashPosition, text, slashSearchQuery, addSkill]);
 
   const handleSkillToggle = useCallback(async (name: string) => {
     if (selectedSkills.some((s) => s.name === name)) {
@@ -444,7 +440,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     );
     setAttachedFiles((prev) => [...prev, ...newFiles]);
     textareaRef.current?.focus();
-  }, []);
+  }, [apiGet]);
 
   const removeFile = useCallback((path: string) => {
     setAttachedFiles((prev) => prev.filter((f) => f.path !== path));
@@ -610,7 +606,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const workspaceMcpCount = mcpServers.filter((s) => workspaceMcpEnabled.has(s.id)).length;
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    <div className="px-6 pb-4 pt-2 mx-auto w-full" style={{ maxWidth: 860 }}>
       <div
         className="relative rounded-2xl border border-[var(--border)] bg-white"
         style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}

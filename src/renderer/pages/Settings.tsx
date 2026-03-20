@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Brain, Settings2, BarChart2,
   KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Puzzle, Wrench, X,
-  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle,
+  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle, ChevronDown,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
-import type { Provider, ProviderAuthType, ApiProtocol, ModelEntity, ProxyProtocol, ProxySettings, ProviderVerifyStatus } from '../../shared/types/config';
+import type { Provider, ProviderAuthType, ApiProtocol, ModelEntity, ModelAliases, ProxyProtocol } from '../../shared/types/config';
 import { PROXY_DEFAULTS, isValidProxyHost, isVerifyExpired } from '../../shared/types/config';
 import { PROVIDERS, getModelsDisplay } from '../../shared/providers';
 import {
@@ -19,6 +19,7 @@ import CustomSelect from '../components/CustomSelect';
 import { ExternalLink } from '../components/ExternalLink';
 import { openExternal } from '../utils/openExternal';
 import { useAutostart } from '../hooks/useAutostart';
+import { atomicModifyWorkspaces } from '../config/workspaceService';
 import { isTauri } from '../utils/env';
 import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
 import UsageStatsPanel from '../components/UsageStatsPanel';
@@ -297,6 +298,7 @@ function ProviderEditModal({
   onSavePresetModels,
   onDelete,
   onSaveKey,
+  onSaveModelAliases,
   onClose,
 }: {
   provider: Provider | null;
@@ -304,6 +306,7 @@ function ProviderEditModal({
   onSavePresetModels?: (providerId: string, models: ModelEntity[]) => Promise<void>;
   onDelete?: () => Promise<void>;
   onSaveKey?: (id: string, key: string) => Promise<void>;
+  onSaveModelAliases?: (providerId: string, aliases: ModelAliases) => Promise<void>;
   onClose: () => void;
 }) {
   const isNew = !provider;
@@ -324,6 +327,13 @@ function ProviderEditModal({
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [editModelAliases, setEditModelAliases] = useState<ModelAliases>({
+    opus: provider?.modelAliases?.opus ?? '',
+    sonnet: provider?.modelAliases?.sonnet ?? '',
+    haiku: provider?.modelAliases?.haiku ?? '',
+  });
+  const isAnthropicProvider = provider?.id === 'anthropic-sub' || provider?.id === 'anthropic-api';
 
   const addModel = () => {
     const model = form.newModelInput.trim();
@@ -371,6 +381,10 @@ function ProviderEditModal({
           .filter((m) => !presetModelIds.has(m))
           .map((m) => ({ model: m, modelName: m, modelSeries: 'custom' }));
         await onSavePresetModels(provider.id, customModels);
+        // 保存模型别名
+        if (onSaveModelAliases && !isAnthropicProvider) {
+          await onSaveModelAliases(provider.id, editModelAliases);
+        }
         onClose();
         return;
       }
@@ -394,6 +408,8 @@ function ProviderEditModal({
           baseUrl: form.baseUrl.trim() || undefined,
         },
         models: form.models.map((m) => ({ model: m, modelName: m, modelSeries: 'custom' })),
+        modelAliases: (editModelAliases.sonnet || editModelAliases.opus || editModelAliases.haiku)
+          ? editModelAliases : undefined,
       });
       if (isNew && form.apiKey.trim() && onSaveKey) {
         await onSaveKey(providerId, form.apiKey.trim());
@@ -690,6 +706,57 @@ function ProviderEditModal({
             )}
           </div>
 
+          {/* 高级选项 — 子 Agent 模型别名映射（Anthropic 不显示） */}
+          {!isAnthropicProvider && !isNew && (
+            <div className="border-t border-[var(--border)] pt-3">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="flex w-full items-center gap-1.5 text-[12px] font-medium text-[var(--ink-secondary)] transition-colors hover:text-[var(--ink)]"
+              >
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
+                高级选项
+              </button>
+              {showAdvanced && (() => {
+                const allModels = form.models;
+                const aliasOptions = [
+                  { value: '', label: '未设置' },
+                  ...allModels.map((m) => {
+                    const displayName = provider?.models?.find((pm) => pm.model === m)?.modelName ?? m;
+                    return { value: m, label: displayName };
+                  }),
+                ];
+                const ALIAS_LABELS: Record<string, string> = {
+                  opus: 'Opus（大杯）',
+                  sonnet: 'Sonnet（中杯）',
+                  haiku: 'Haiku（小杯）',
+                };
+                return (
+                  <div className="mt-3">
+                    <label className="mb-1 block text-[12px] font-medium text-[var(--ink)]">子 Agent 模型映射</label>
+                    <p className="mb-3 text-[11px] leading-relaxed text-[var(--ink-tertiary)]">
+                      Opus 大杯、Sonnet 中杯、Haiku 小杯 — 映射到此供应商的实际模型
+                    </p>
+                    <div className="space-y-2.5">
+                      {(['opus', 'sonnet', 'haiku'] as const).map((alias) => (
+                        <div key={alias} className="flex items-center gap-2.5">
+                          <span className="w-[90px] shrink-0 text-[11px] text-[var(--ink-tertiary)]">{ALIAS_LABELS[alias]}</span>
+                          <CustomSelect
+                            value={editModelAliases[alias] ?? ''}
+                            options={aliasOptions}
+                            onChange={(v) => setEditModelAliases((prev) => ({ ...prev, [alias]: v }))}
+                            placeholder="未设置"
+                            className="flex-1"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
           {isNew && (
             <div>
               <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API Key</label>
@@ -780,7 +847,7 @@ function ProviderEditModal({
             >
               <h4 className="text-[15px] font-bold text-[var(--ink)]">确认删除</h4>
               <p className="mt-2 text-[13px] text-[var(--ink-secondary)]">
-                确定要删除供应商 "<span className="font-medium text-[var(--ink)]">{provider?.name}</span>" 吗？
+                确定要删除供应商 &quot;<span className="font-medium text-[var(--ink)]">{provider?.name}</span>&quot; 吗？
               </p>
               <p className="mt-1 text-[12px] text-[var(--ink-tertiary)]">
                 此操作不可撤销，相关的 API Key 也将被删除。
@@ -804,258 +871,6 @@ function ProviderEditModal({
             </div>
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-// ── Provider Config Modal ──────────────────────────────────────
-
-function ProviderConfigModal({
-  provider,
-  apiKey,
-  isActive,
-  subscriptionStatus,
-  onSetActive,
-  onSaveKey,
-  onReVerifySubscription,
-  onClose,
-}: {
-  provider: Provider;
-  apiKey: string;
-  isActive: boolean;
-  subscriptionStatus: SubscriptionStatusData | null;
-  onSetActive: () => Promise<void>;
-  onSaveKey: (id: string, key: string) => Promise<void>;
-  onReVerifySubscription?: () => void;
-  onClose: () => void;
-}) {
-  const [input, setInput] = useState(apiKey);
-  const [saving, setSaving] = useState(false);
-  const [validating, setValidating] = useState(false);
-  const [validResult, setValidResult] = useState<'ok' | 'fail' | null>(null);
-  const [validError, setValidError] = useState<string | null>(null);
-
-  const save = async () => {
-    if (input === apiKey) return;
-    setSaving(true);
-    await onSaveKey(provider.id, input);
-    setSaving(false);
-  };
-
-  const handleSetActive = async () => {
-    await save();
-    await onSetActive();
-    onClose();
-  };
-
-  const validate = async () => {
-    setValidating(true);
-    setValidResult(null);
-    setValidError(null);
-    try {
-      const resp = await globalApiPostJson<{ result: 'ok' | 'fail'; error?: string }>('/api/verify-provider-key', {
-        baseUrl: provider.config?.baseUrl,
-        apiKey: input,
-        model: provider.primaryModel,
-        authType: provider.authType,
-        apiProtocol: provider.apiProtocol,
-        maxOutputTokens: provider.maxOutputTokens,
-        upstreamFormat: provider.upstreamFormat,
-      });
-      setValidResult(resp.result);
-      if (resp.error) setValidError(resp.error);
-    } catch {
-      setValidResult('fail');
-    } finally {
-      setValidating(false);
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.35)' }}
-      onClick={onClose}
-    >
-      <div
-        className="relative w-[420px] rounded-2xl bg-[var(--paper)] shadow-2xl"
-        style={{ border: '1px solid var(--border)' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* 头部 */}
-        <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-[17px] font-bold text-[var(--ink)]">{provider.name}</h3>
-              {provider.websiteUrl && (
-                <a
-                  href={provider.websiteUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[11px] text-[var(--accent)] hover:underline"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  去官网
-                </a>
-              )}
-            </div>
-            {provider.models?.length > 0 && (
-              <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">{getModelsDisplay(provider)}</p>
-            )}
-          </div>
-          <button
-            onClick={onClose}
-            className="mt-0.5 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors text-xl leading-none"
-          >
-            ×
-          </button>
-        </div>
-
-        {/* 内容 */}
-        <div className="px-6 py-5 space-y-4">
-          {provider.type === 'subscription' ? (
-            <div className="rounded-xl bg-[var(--surface)] border border-[var(--border)] px-4 py-3 space-y-2">
-              <div className="flex items-center gap-2.5">
-                <CircleCheck size={16} className="text-[var(--success)] shrink-0" />
-                <div>
-                  <p className="text-[13px] font-medium text-[var(--ink)]">订阅账户</p>
-                  <p className="text-[12px] text-[var(--ink-tertiary)]">通过 Claude 官方订阅使用，无需 API Key</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 text-xs flex-wrap">
-                {subscriptionStatus?.available ? (
-                  <>
-                    <span className="text-[var(--ink-tertiary)] font-mono text-[10px]">
-                      {subscriptionStatus.info?.email}
-                    </span>
-                    {subscriptionStatus.verifyStatus === 'loading' && (
-                      <div className="flex items-center gap-1.5 text-[var(--ink-tertiary)]">
-                        <Loader2 size={14} className="animate-spin" />
-                        <span>验证中...</span>
-                      </div>
-                    )}
-                    {subscriptionStatus.verifyStatus === 'valid' && (
-                      <div className="flex items-center gap-1.5 text-[var(--success)]">
-                        <CircleCheck size={14} />
-                        <span className="font-medium">已验证</span>
-                        {onReVerifySubscription && (
-                          <button
-                            type="button"
-                            onClick={onReVerifySubscription}
-                            className="ml-1 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-                            title="重新验证"
-                          >
-                            <RefreshCw size={12} />
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {subscriptionStatus.verifyStatus === 'invalid' && (
-                      <div className="flex items-center gap-1.5 text-red-400">
-                        <AlertCircle size={14} />
-                        <span className="font-medium">验证失败</span>
-                        {onReVerifySubscription && (
-                          <button
-                            type="button"
-                            onClick={onReVerifySubscription}
-                            className="ml-1 rounded p-0.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-                            title="重新验证"
-                          >
-                            <RefreshCw size={12} />
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {subscriptionStatus.verifyStatus === 'idle' && (
-                      <div className="flex items-center gap-1.5 text-[var(--ink-tertiary)]">
-                        <span>检测中...</span>
-                      </div>
-                    )}
-                    {subscriptionStatus.verifyStatus === 'invalid' && subscriptionStatus.verifyError && (
-                      <span className="text-red-400 text-[10px] w-full mt-1">
-                        {subscriptionStatus.verifyError}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-[var(--ink-tertiary)]">
-                    未登录，请先使用 Claude Code CLI 登录 (claude --login)
-                  </span>
-                )}
-              </div>
-            </div>
-          ) : (
-            <>
-              {provider.config?.baseUrl && (
-                <div>
-                  <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API 端点</label>
-                  <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2">
-                    <span className="text-[13px] text-[var(--ink-tertiary)] font-mono">{provider.config.baseUrl}</span>
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">API Key</label>
-                <div className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 transition-colors ${
-                  saving ? 'border-[var(--accent)]/50' : 'border-[var(--border)] focus-within:border-[var(--accent)]'
-                }`}>
-                  <KeyRound size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
-                  <input
-                    type="password"
-                    placeholder="输入 API Key..."
-                    value={input}
-                    onChange={(e) => { setInput(e.target.value); setValidResult(null); }}
-                    onBlur={save}
-                    onKeyDown={(e) => e.key === 'Enter' && save()}
-                    className="flex-1 bg-transparent text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none"
-                    autoFocus
-                  />
-                  {validResult === 'ok' && <CircleCheck size={14} className="shrink-0 text-[var(--success)]" />}
-                  {validResult === 'fail' && <span className="shrink-0 text-[13px] text-red-400">✕</span>}
-                </div>
-              </div>
-
-              <button
-                onClick={validate}
-                disabled={!input || validating}
-                className="w-full rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
-              >
-                {validating ? (
-                  <><RefreshCw size={13} className="animate-spin" />验证中...</>
-                ) : validResult === 'ok' ? (
-                  <><CircleCheck size={13} className="text-[var(--success)]" />验证通过</>
-                ) : validResult === 'fail' ? (
-                  <>{validError || '验证失败，请检查 Key 是否正确'}</>
-                ) : (
-                  <>验证 API Key</>
-                )}
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* 底部操作 */}
-        <div className="flex items-center justify-between gap-3 px-6 pb-6">
-          <button
-            onClick={onClose}
-            className="flex-1 rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onClick={handleSetActive}
-            disabled={isActive}
-            className={`flex-1 rounded-lg px-4 py-2 text-[13px] font-semibold transition-colors ${
-              isActive
-                ? 'bg-[var(--accent)]/30 text-white cursor-not-allowed'
-                : 'bg-[var(--accent)] text-white hover:opacity-90'
-            }`}
-          >
-            {isActive ? '当前使用中' : '保存并使用'}
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -1190,6 +1005,8 @@ function ProviderTab() {
     const gen = (verifyGenRef.current[provider.id] ?? 0) + 1;
     verifyGenRef.current[provider.id] = gen;
 
+    console.log(`[Settings] verifyProvider: id=${provider.id}, baseUrl=${provider.config.baseUrl}, model=${provider.primaryModel}, apiKey=${apiKey.slice(0, 8)}...`);
+
     setVerifyLoading((prev) => ({ ...prev, [provider.id]: true }));
     setVerifyError((prev) => ({ ...prev, [provider.id]: '' }));
 
@@ -1203,6 +1020,8 @@ function ProviderTab() {
         maxOutputTokens: provider.maxOutputTokens,
         upstreamFormat: provider.upstreamFormat,
       });
+
+      console.log(`[Settings] verifyProvider result: id=${provider.id}, result=${resp.result}${resp.error ? `, error=${resp.error}` : ''}`);
 
       // 竞态守卫：只接受最新一次验证的结果
       if (verifyGenRef.current[provider.id] !== gen) return;
@@ -1246,10 +1065,6 @@ function ProviderTab() {
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const handleSetActive = async (providerId: string) => {
-    await updateConfig({ currentProviderId: providerId });
-  };
 
   const handleSaveKey = async (providerId: string, key: string) => {
     await updateConfig({ apiKeys: { ...config.apiKeys, [providerId]: key } });
@@ -1305,6 +1120,11 @@ function ProviderTab() {
     await refreshConfig();
   };
 
+  const handleSaveModelAliases = async (providerId: string, aliases: ModelAliases) => {
+    await globalApiPutJson('/api/provider-model-aliases', { providerId, aliases });
+    await refreshConfig();
+  };
+
   const handleDeleteProvider = async () => {
     if (!editProvider || editProvider === 'new') return;
     const providerId = editProvider.id;
@@ -1314,6 +1134,13 @@ function ProviderTab() {
       await updateConfig({ currentProviderId: 'anthropic-sub' });
     }
 
+    // 清理引用了该 Provider 的 Workspace
+    await atomicModifyWorkspaces((prev) =>
+      prev.map((w) =>
+        w.providerId === providerId ? { ...w, providerId: undefined } : w,
+      ),
+    );
+
     // 删除对应的 API Key
     const newApiKeys = { ...config.apiKeys };
     delete newApiKeys[providerId];
@@ -1322,7 +1149,7 @@ function ProviderTab() {
     // 调用后端删除 API
     await globalApiDeleteJson(`/api/providers/${providerId}`);
 
-    // 刷新列表
+    // 刷新列表（含 workspaces）
     await refreshConfig();
   };
 
@@ -1377,6 +1204,7 @@ function ProviderTab() {
           onSavePresetModels={handleSavePresetModels}
           onDelete={editProvider !== 'new' ? handleDeleteProvider : undefined}
           onSaveKey={handleSaveKey}
+          onSaveModelAliases={handleSaveModelAliases}
           onClose={() => setEditProvider(null)}
         />
       )}

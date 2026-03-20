@@ -16,22 +16,24 @@ export default function MessageList({ messages, isLoading, onOpenUrl }: Props) {
     <div
       ref={scrollRef}
       onScroll={checkAtBottom}
-      className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4"
+      className="flex-1 overflow-y-auto overflow-x-hidden"
     >
-      {messages.length === 0 && !isLoading && (
-        <div className="flex h-full items-center justify-center text-[var(--ink-tertiary)]">
-          发送消息开始对话
-        </div>
-      )}
-      {messages.map((msg, idx) => (
-        <MessageItem
-          key={msg.id}
-          message={msg}
-          isStreaming={isLoading && idx === messages.length - 1 && msg.role === 'assistant'}
-          onOpenUrl={onOpenUrl}
-        />
-      ))}
-      {isLoading && <ThinkingIndicator />}
+      <div className="mx-auto w-full space-y-4 px-6 py-4" style={{ maxWidth: 860 }}>
+        {messages.length === 0 && !isLoading && (
+          <div className="flex h-full items-center justify-center text-[var(--ink-tertiary)]">
+            发送消息开始对话
+          </div>
+        )}
+        {messages.map((msg, idx) => (
+          <MessageItem
+            key={msg.id}
+            message={msg}
+            isStreaming={isLoading && idx === messages.length - 1 && msg.role === 'assistant'}
+            onOpenUrl={onOpenUrl}
+          />
+        ))}
+        {isLoading && <ThinkingIndicator />}
+      </div>
     </div>
   );
 }

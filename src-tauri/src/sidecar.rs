@@ -3,10 +3,17 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::thread;
+use std::time::Duration;
 
 pub const GLOBAL_SIDECAR_ID: &str = "__global__";
 const BASE_PORT: u16 = 32415;
 const SIDECAR_MARKER: &str = "--soagents-sidecar";
+
+// Health check constants (TCP-level, matching MyAgents proven strategy)
+const HEALTH_CHECK_MAX_ATTEMPTS: u32 = 600;
+const HEALTH_CHECK_DELAY_MS: u64 = 500;
+const HEALTH_CHECK_TIMEOUT_MS: u64 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SidecarOwner {
@@ -347,40 +354,33 @@ impl SidecarManager {
             });
         }
 
-        // Health check
-        let client = crate::local_http::blocking_builder()
-            .build()
-            .unwrap_or_default();
-        let health_url = format!("http://127.0.0.1:{}/health", port);
-        let mut healthy = false;
-
-        for _ in 0..60 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            match client.get(&health_url).send() {
-                Ok(resp) => {
-                    if let Ok(json) = resp.json::<serde_json::Value>() {
-                        if json.get("port").and_then(|p| p.as_u64()) == Some(port as u64) {
-                            healthy = true;
-                            break;
-                        }
-                    }
-                }
-                Err(_) => {}
-            }
+        // Brief wait to check if process exits immediately (e.g. missing script, bad bun binary)
+        thread::sleep(Duration::from_millis(50));
+        if let Ok(Some(status)) = child.try_wait() {
+            thread::sleep(Duration::from_millis(100)); // let stderr thread capture output
+            log::error!("[sidecar] Process exited immediately with status: {:?}", status);
+            return Err(format!(
+                "Sidecar '{}' exited immediately with status: {:?}",
+                sidecar_id, status
+            ));
         }
 
-        if !healthy {
-            log::warn!(
-                "[sidecar] Health check failed for sidecar '{}' on port {}",
-                sidecar_id,
-                port
-            );
-        } else {
-            log::info!(
-                "[sidecar] Sidecar '{}' is healthy on port {}",
-                sidecar_id,
-                port
-            );
+        // TCP health check — faster than HTTP because Bun binds TCP before HTTP handler is ready
+        match wait_for_health(port, None) {
+            Ok(()) => {
+                log::info!(
+                    "[sidecar] Sidecar '{}' is healthy on port {}",
+                    sidecar_id,
+                    port
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "[sidecar] Health check failed for sidecar '{}': {}",
+                    sidecar_id,
+                    e
+                );
+            }
         }
 
         self.instances.insert(
@@ -481,4 +481,48 @@ impl SidecarManager {
             })
             .collect()
     }
+}
+
+/// Wait for a new sidecar to become healthy using TCP-level check.
+/// TCP check is faster than HTTP because Bun binds the TCP port before the HTTP handler is ready.
+/// Checks first, then sleeps — avoids wasting time if the port is already bound.
+///
+/// `alive_check`: optional closure that returns `true` if the sidecar process is still alive.
+/// Checked every 20 iterations to detect early crashes.
+fn wait_for_health(port: u16, alive_check: Option<Box<dyn Fn() -> bool>>) -> Result<(), String> {
+    let delay = Duration::from_millis(HEALTH_CHECK_DELAY_MS);
+
+    for attempt in 1..=HEALTH_CHECK_MAX_ATTEMPTS {
+        // Every 20 attempts, check if process is still alive
+        if attempt % 20 == 0 {
+            if let Some(ref check) = alive_check {
+                if !check() {
+                    return Err(format!(
+                        "Sidecar process exited during health check on port {} (detected at attempt {})",
+                        port, attempt
+                    ));
+                }
+            }
+        }
+
+        match std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{}", port).parse().unwrap(),
+            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+        ) {
+            Ok(_) => {
+                log::info!("[sidecar] TCP health check passed after {} attempts on port {}", attempt, port);
+                return Ok(());
+            }
+            Err(_) => {
+                if attempt < HEALTH_CHECK_MAX_ATTEMPTS {
+                    thread::sleep(delay);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Sidecar failed TCP health check after {} attempts on port {}",
+        HEALTH_CHECK_MAX_ATTEMPTS, port
+    ))
 }

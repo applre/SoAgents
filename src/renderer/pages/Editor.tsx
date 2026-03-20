@@ -237,8 +237,7 @@ export default function Editor({ filePath, mode, onSave, onDirtyChange, onAction
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  code({ className, children, ...props }: any) {
+                  code({ className, children, ...props }: React.HTMLAttributes<HTMLElement>) {
                     const match = /language-(\w+)/.exec(className || '');
                     return match ? (
                       <SyntaxHighlighter style={oneLight} language={match[1]} PreTag="div">

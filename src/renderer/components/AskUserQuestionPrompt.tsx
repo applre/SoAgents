@@ -90,7 +90,7 @@ export default function AskUserQuestionPrompt({ questions, onRespond }: Props) {
   };
 
   return (
-    <div className="border border-[var(--border)] rounded-xl bg-[var(--surface)] px-4 py-3 mx-4 mb-3">
+    <div className="border border-[var(--border)] rounded-xl bg-[var(--surface)] px-4 py-3 mx-auto mb-3 w-[calc(100%-48px)]" style={{ maxWidth: 812 }}>
       {/* 顶栏：标题 + 步骤指示器 */}
       <div className="mb-2.5 flex items-center justify-between">
         <div className="flex items-center gap-2">

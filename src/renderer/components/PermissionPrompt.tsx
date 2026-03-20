@@ -1,8 +1,10 @@
+export type PermissionDecision = 'deny' | 'allow_once' | 'always_allow';
+
 interface Props {
   toolName: string;
   toolUseId: string;
   toolInput: Record<string, unknown>;
-  onRespond: (allow: boolean) => void;
+  onRespond: (decision: PermissionDecision) => void;
 }
 
 export default function PermissionPrompt({ toolName, toolInput, onRespond }: Props) {
@@ -26,16 +28,22 @@ export default function PermissionPrompt({ toolName, toolInput, onRespond }: Pro
         )}
         <div className="flex gap-2 justify-end">
           <button
-            onClick={() => onRespond(false)}
+            onClick={() => onRespond('deny')}
             className="rounded-lg border border-[var(--border)] px-4 py-1.5 text-sm text-[var(--ink-secondary)] hover:bg-[var(--paper-dark)]"
           >
             拒绝
           </button>
           <button
-            onClick={() => onRespond(true)}
-            className="rounded-lg bg-[var(--accent-warm)] px-4 py-1.5 text-sm text-white hover:opacity-90"
+            onClick={() => onRespond('allow_once')}
+            className="rounded-lg border border-[var(--border)] px-4 py-1.5 text-sm text-[var(--ink-secondary)] hover:bg-[var(--paper-dark)]"
           >
             允许
+          </button>
+          <button
+            onClick={() => onRespond('always_allow')}
+            className="rounded-lg bg-[var(--accent)] px-4 py-1.5 text-sm text-white hover:opacity-90"
+          >
+            始终允许
           </button>
         </div>
       </div>

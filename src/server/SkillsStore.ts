@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmdirSync, statSync, copyFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const GLOBAL_SKILLS_DIR = join(homedir(), '.soagents', 'skills');
@@ -162,7 +163,8 @@ function getBundledSkillsDir(): string {
     if (existsSync(bundledDir)) return bundledDir;
   }
   // 开发环境：从 server 文件位置向上两层找项目根目录
-  const devDir = join(dirname(dirname(__dirname)), 'bundled-skills');
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const devDir = join(dirname(dirname(scriptDir)), 'bundled-skills');
   if (existsSync(devDir)) return devDir;
   // 兜底：bun 运行 index.ts 时，cwd 可能就是项目根
   const cwdDir = join(process.cwd(), 'bundled-skills');

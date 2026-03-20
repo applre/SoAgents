@@ -152,21 +152,22 @@ async function checkDns(provider: ProviderDef): Promise<CheckResult> {
         signal: controller.signal,
         redirect: 'manual',
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const err = e as Record<string, unknown>;
       // 即使返回错误也说明 DNS 通了（如 403/404）
-      if (e?.name === 'AbortError') {
+      if (err?.name === 'AbortError') {
         return { check, pass: false, detail: '连接超时 (5s)', duration: Date.now() - start };
       }
       // fetch 可能因为非 HTTP 错误（如 ENOTFOUND）失败
-      if (e?.cause?.code === 'ENOTFOUND') {
+      if ((err?.cause as Record<string, unknown>)?.code === 'ENOTFOUND') {
         return { check, pass: false, detail: `域名无法解析: ${url.hostname}`, duration: Date.now() - start };
       }
     } finally {
       clearTimeout(timer);
     }
     return { check, pass: true, detail: `${url.hostname} 可达`, duration: Date.now() - start };
-  } catch (e: any) {
-    return { check, pass: false, detail: e.message };
+  } catch (e: unknown) {
+    return { check, pass: false, detail: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -201,11 +202,12 @@ async function checkEndpoint(provider: ProviderDef, timeoutMs: number): Promise<
     }
     // 其他
     return { check, pass: true, detail: `${url} → ${status}`, duration };
-  } catch (e: any) {
-    if (e?.name === 'AbortError') {
+  } catch (e: unknown) {
+    const err = e as Record<string, unknown>;
+    if (err?.name === 'AbortError') {
       return { check, pass: false, detail: `请求超时 (${timeoutMs}ms)` };
     }
-    return { check, pass: false, detail: e.message?.slice(0, 100) };
+    return { check, pass: false, detail: String(err?.message ?? '').slice(0, 100) };
   }
 }
 
@@ -259,11 +261,10 @@ async function checkAuth(
         const json = JSON.parse(respBody);
         const hasContent = json.content && Array.isArray(json.content);
         const hasRole = json.role === 'assistant';
-        const hasModel = !!json.model;
         const formatOk = hasContent && hasRole;
 
         if (formatOk) {
-          const text = json.content.map((b: any) => b.text ?? '').join('');
+          const text = json.content.map((b: Record<string, unknown>) => (b.text as string) ?? '').join('');
           return {
             check,
             pass: true,
@@ -296,11 +297,12 @@ async function checkAuth(
       errorMsg += `: ${respBody.slice(0, 100)}`;
     }
     return { check, pass: false, detail: errorMsg, duration };
-  } catch (e: any) {
-    if (e?.name === 'AbortError') {
+  } catch (e: unknown) {
+    const err = e as Record<string, unknown>;
+    if (err?.name === 'AbortError') {
       return { check, pass: false, detail: `请求超时 (${timeoutMs}ms)` };
     }
-    return { check, pass: false, detail: e.message?.slice(0, 100) };
+    return { check, pass: false, detail: String(err?.message ?? '').slice(0, 100) };
   }
 }
 
@@ -369,7 +371,7 @@ async function checkToolCall(
 
     try {
       const json = JSON.parse(respBody);
-      const toolUse = json.content?.find((b: any) => b.type === 'tool_use');
+      const toolUse = json.content?.find((b: Record<string, unknown>) => b.type === 'tool_use');
       if (toolUse) {
         const args = typeof toolUse.input === 'string' ? toolUse.input : JSON.stringify(toolUse.input);
         return {
@@ -380,7 +382,6 @@ async function checkToolCall(
         };
       }
       // 有些模型可能返回文本而非 tool_use
-      const textBlock = json.content?.find((b: any) => b.type === 'text');
       return {
         check,
         pass: false,
@@ -390,11 +391,12 @@ async function checkToolCall(
     } catch {
       return { check, pass: false, detail: `响应不是有效 JSON`, duration };
     }
-  } catch (e: any) {
-    if (e?.name === 'AbortError') {
+  } catch (e: unknown) {
+    const err = e as Record<string, unknown>;
+    if (err?.name === 'AbortError') {
       return { check, pass: false, detail: `请求超时 (${timeoutMs}ms)` };
     }
-    return { check, pass: false, detail: e.message?.slice(0, 100) };
+    return { check, pass: false, detail: String(err?.message ?? '').slice(0, 100) };
   }
 }
 
@@ -499,11 +501,12 @@ async function checkStreaming(
       detail: `SSE 事件不完整 (message_start=${hasMessageStart}, delta=${hasDelta})`,
       duration: Date.now() - start,
     };
-  } catch (e: any) {
-    if (e?.name === 'AbortError') {
+  } catch (e: unknown) {
+    const err = e as Record<string, unknown>;
+    if (err?.name === 'AbortError') {
       return { check, pass: false, detail: `请求超时 (${timeoutMs}ms)` };
     }
-    return { check, pass: false, detail: e.message?.slice(0, 100) };
+    return { check, pass: false, detail: String(err?.message ?? '').slice(0, 100) };
   }
 }
 

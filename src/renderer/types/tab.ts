@@ -1,4 +1,4 @@
-export type TabView = 'launcher' | 'chat' | 'settings' | 'scheduled-tasks';
+export type TabView = 'chat' | 'settings' | 'scheduled-tasks';
 
 export interface OpenFile {
   filePath: string;       // 文件路径 或 URL
@@ -15,6 +15,7 @@ export interface Tab {
   agentDir: string | null;
   sessionId: string | null;
   isGenerating?: boolean;
+  hasUnread?: boolean;
   openFiles: OpenFile[];
   activeSubTab: 'chat' | string; // string = filePath
 }

@@ -67,6 +67,7 @@
     ],
     "resources": {
       "resources/server-dist.js": "server-dist.js",
+      "resources/claude-agent-sdk": "claude-agent-sdk",
       "resources/bundled-skills": "bundled-skills"
     },
     "externalBin": [

@@ -1,8 +1,8 @@
-import { mkdirSync, existsSync, appendFileSync, readFileSync, statSync, rmdirSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, appendFileSync, readFileSync, statSync, rmdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import crypto from 'node:crypto';
-import type { SessionMetadata, SessionMessage, SessionStats, ModelUsageEntry, SessionDetailedStats, GlobalStats } from '../shared/types/session';
+import type { SessionMetadata, SessionMessage, SessionStats, SessionDetailedStats, GlobalStats } from '../shared/types/session';
 import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const SOAGENTS_DIR = join(homedir(), '.soagents');

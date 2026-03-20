@@ -74,6 +74,49 @@ jobs:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: echo -n "$APPLE_API_KEY_CONTENT" > /tmp/AuthKey.p8
 
+      - name: Pre-sign Bun sidecar binary
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          BUN_BINARY="src-tauri/binaries/bun-aarch64-apple-darwin"
+          ENTITLEMENTS="src-tauri/Entitlements.plist"
+
+          echo "Removing quarantine attribute..."
+          xattr -d com.apple.quarantine "$BUN_BINARY" 2>/dev/null || true
+
+          echo "Pre-signing bun with app identity and JIT entitlements..."
+          codesign --force --options runtime --timestamp \
+            --entitlements "$ENTITLEMENTS" \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BUN_BINARY"
+
+          echo "Verifying signature..."
+          codesign -dvv "$BUN_BINARY"
+
+      - name: Pre-build checks
+        run: |
+          # 版本号同步检查（package.json / Cargo.toml / tauri.conf.json）
+          PKG_VER=$(node -p "require('./package.json').version")
+          CARGO_VER=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          TAURI_VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$PKG_VER" != "$CARGO_VER" ] || [ "$PKG_VER" != "$TAURI_VER" ]; then
+            echo "❌ Version mismatch: package.json=$PKG_VER Cargo.toml=$CARGO_VER tauri.conf.json=$TAURI_VER"
+            exit 1
+          fi
+          echo "✅ Version sync: $PKG_VER"
+
+          # TypeScript 类型检查
+          npm run typecheck
+          echo "✅ TypeScript typecheck passed"
+
+          # Bun sidecar 完整性校验
+          BUN_BIN="src-tauri/binaries/bun-aarch64-apple-darwin"
+          if [ ! -f "$BUN_BIN" ]; then
+            echo "❌ Bun binary not found: $BUN_BIN"
+            exit 1
+          fi
+          codesign -dvv "$BUN_BIN" 2>&1 || { echo "❌ Bun binary not signed"; exit 1; }
+          echo "✅ Bun sidecar integrity OK"
+
       - name: Get version
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT

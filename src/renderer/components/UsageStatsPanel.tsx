@@ -1,6 +1,7 @@
 import { ArrowDownLeft, ArrowUpRight, BarChart2, Database, Loader2, MessageSquare } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getGlobalStats, type GlobalStats } from '../api/statsApi';
+import { useConfigData } from '../context/ConfigContext';
 import { formatTokens } from '../utils/formatTokens';
 
 type TimeRange = '7d' | '30d' | '60d';
@@ -16,6 +17,20 @@ export default function UsageStatsPanel() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<TimeRange>('30d');
+  const { allProviders } = useConfigData();
+
+  // Build modelId → vendor mapping from providers
+  const modelVendorMap = useMemo(() => {
+    const mapping: Record<string, string> = {};
+    for (const provider of allProviders) {
+      for (const m of provider.models ?? []) {
+        if (!mapping[m.model]) {
+          mapping[m.model] = provider.vendor;
+        }
+      }
+    }
+    return mapping;
+  }, [allProviders]);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,7 +96,7 @@ export default function UsageStatsPanel() {
         <>
           <SummaryCards stats={stats} totalTokens={totalTokens} />
           <DailyTrendChart daily={stats.daily} totalTokens={totalTokens} />
-          <ModelTable byModel={stats.byModel} totalTokens={totalTokens} />
+          <ModelTable byModel={stats.byModel} totalTokens={totalTokens} modelVendorMap={modelVendorMap} />
         </>
       ) : null}
     </div>
@@ -276,7 +291,16 @@ function DailyTrendChart({ daily, totalTokens }: { daily: GlobalStats['daily']; 
 
 // ============= Model Distribution Table =============
 
-function ModelTable({ byModel, totalTokens }: { byModel: GlobalStats['byModel']; totalTokens: number }) {
+const ALL_VENDOR = '全部';
+const OTHER_VENDOR = '其他';
+
+function ModelTable({ byModel, totalTokens, modelVendorMap }: {
+  byModel: GlobalStats['byModel'];
+  totalTokens: number;
+  modelVendorMap: Record<string, string>;
+}) {
+  const [selectedVendor, setSelectedVendor] = useState(ALL_VENDOR);
+
   const models = Object.entries(byModel);
   if (models.length === 0) return null;
 
@@ -286,12 +310,56 @@ function ModelTable({ byModel, totalTokens }: { byModel: GlobalStats['byModel'];
     return totalB - totalA;
   });
 
+  // Derive vendor list from models that have data
+  const vendorSet = new Set<string>();
+  let hasOther = false;
+  for (const [modelId] of models) {
+    const vendor = modelVendorMap[modelId];
+    if (vendor) {
+      vendorSet.add(vendor);
+    } else {
+      hasOther = true;
+    }
+  }
+  const vendors = [ALL_VENDOR, ...Array.from(vendorSet).sort()];
+  if (hasOther) vendors.push(OTHER_VENDOR);
+
+  // Filter models by selected vendor
+  const filteredModels = selectedVendor === ALL_VENDOR
+    ? models
+    : models.filter(([modelId]) => {
+      const vendor = modelVendorMap[modelId];
+      if (selectedVendor === OTHER_VENDOR) return !vendor;
+      return vendor === selectedVendor;
+    });
+
+  const filteredTotal = filteredModels.reduce(
+    (sum, [, data]) => sum + data.inputTokens + data.outputTokens, 0,
+  );
+
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-[var(--ink)]">模型用量分布</h3>
-        <span className="text-xs text-[var(--ink-tertiary)]">
-          总消耗: {formatTokens(totalTokens)} tokens
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h3 className="mr-1 text-sm font-semibold text-[var(--ink)]">模型用量分布</h3>
+        {vendors.length > 2 && (
+          <div className="flex gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1">
+            {vendors.map((v) => (
+              <button
+                key={v}
+                onClick={() => setSelectedVendor(v)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                  selectedVendor === v
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+                }`}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+        )}
+        <span className="ml-auto text-xs text-[var(--ink-tertiary)]">
+          总消耗: {formatTokens(selectedVendor === ALL_VENDOR ? totalTokens : filteredTotal)} tokens
         </span>
       </div>
       <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
@@ -307,7 +375,7 @@ function ModelTable({ byModel, totalTokens }: { byModel: GlobalStats['byModel'];
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border)]">
-            {models.map(([model, data]) => (
+            {filteredModels.map(([model, data]) => (
               <tr key={model}>
                 <td className="px-4 py-2 text-[var(--ink)]">{model}</td>
                 <td className="px-4 py-2 text-right font-medium text-[var(--ink)]">

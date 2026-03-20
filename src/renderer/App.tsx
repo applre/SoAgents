@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, SquarePen, Settings2, Folder, Check, Plus, MessageSquare, MessageSquarePlus, Search, Clock, FileText, X } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, Search, Clock, FileText, X } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -20,9 +20,10 @@ import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
 import SearchModal from './components/SearchModal';
-import { startGlobalSidecar, getDefaultWorkspace } from './api/tauriClient';
-import Launcher from './pages/Launcher';
-import Chat from './pages/Chat';
+import { startGlobalSidecar, getDefaultWorkspace, stopSessionSidecar } from './api/tauriClient';
+import { globalApiDeleteJson, globalApiPutJson } from './api/apiFetch';
+import Chat, { WorkspaceTrigger } from './pages/Chat';
+import { TabProvider } from './context/TabProvider';
 import Settings from './pages/Settings';
 import { ScheduledTasksView } from './components/scheduledTasks';
 import { ScheduledTaskProvider } from './context/ScheduledTaskContext';
@@ -32,15 +33,16 @@ import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
 import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
 import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
-import { useConfig } from './context/ConfigContext';
+import { useToast } from './components/Toast';
 import { useUpdater } from './hooks/useUpdater';
+import { useSidebarSessions } from './hooks/useSidebarSessions';
 import type { SessionMetadata } from '../shared/types/session';
 
 function createTab(overrides: Partial<Tab> = {}): Tab {
   return {
     id: crypto.randomUUID(),
-    title: '新标签页',
-    view: 'launcher',
+    title: '新对话',
+    view: 'chat',
     agentDir: null,
     sessionId: null,
     isGenerating: false,
@@ -126,9 +128,9 @@ function SortableFileTab({ file, isActive, onActivate, onClose }: {
 }
 
 export default function App() {
+  const toast = useToast();
   const [tabs, setTabs] = useState<Tab[]>([INITIAL_TAB]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB.id);
-  const [tabSessions, setTabSessions] = useState<Record<string, SessionMetadata[]>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
   const [showFilesPanel, setShowFilesPanel] = useState(false);
@@ -136,9 +138,6 @@ export default function App() {
   const [showSearch, setShowSearch] = useState(false);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
   const [pendingRefText, setPendingRefText] = useState<Record<string, string>>({});
-  const resetSessionRef = useRef<(() => Promise<void>) | null>(null);
-  const deleteSessionRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
-  const updateSessionTitleRef = useRef<((sessionId: string, title: string) => Promise<void>) | null>(null);
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem('soagents:pinned-sessions');
@@ -163,41 +162,46 @@ export default function App() {
   // Auto-updater
   const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
 
+  // Independent session fetch for sidebar (all workspaces)
+  const { sessions: allSessions, refresh: refreshSidebarSessions } = useSidebarSessions();
+
   useEffect(() => {
     initFrontendLogger();
     // 必须等 global sidecar 就绪后再设置 agentDir，否则 refreshSessions 会因 sidecar 未启动而静默失败
     Promise.all([startGlobalSidecar(), getDefaultWorkspace()]).then(([, dir]) => {
+      // sidecar 就绪后立即刷新 session 列表，不等 10s 轮询
+      refreshSidebarSessions();
       if (!dir) return;
       setTabs((prev) => prev.map((t) =>
         t.id === INITIAL_TAB.id && !t.agentDir
-          ? { ...t, agentDir: dir, view: 'chat' as const, title: dir.split('/').pop() ?? dir }
+          ? { ...t, agentDir: dir, title: dir.split('/').pop() ?? dir }
           : t
       ));
     }).catch(console.error);
-  }, []);
+  }, [refreshSidebarSessions]);
 
-  const handleExposeReset = useCallback((fn: () => Promise<void>) => {
-    resetSessionRef.current = fn;
-  }, []);
+  // 切换 tab 时清除未读标记
+  useEffect(() => {
+    setTabs((prev) => prev.map((t) =>
+      t.id === activeTabId && t.hasUnread ? { ...t, hasUnread: false } : t
+    ));
+  }, [activeTabId]);
 
-  const handleExposeDeleteSession = useCallback((fn: (sessionId: string) => Promise<void>) => {
-    deleteSessionRef.current = fn;
-  }, []);
-
-  const handleExposeUpdateTitle = useCallback((fn: (sessionId: string, title: string) => Promise<void>) => {
-    updateSessionTitleRef.current = fn;
-  }, []);
-
-  const handleDeleteSession = useCallback((sessionId: string) => {
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    // 停止 sidecar + 调用全局 API 删除 session
+    await stopSessionSidecar(sessionId).catch(() => {});
+    await globalApiDeleteJson(`/chat/sessions/${sessionId}`).catch(console.error);
+    // 如果是当前活跃 session，重置 tab
     if (activeSessionId === sessionId) {
       setActiveSessionId(null);
-      resetSessionRef.current?.().catch(console.error);
+      setTabs((prev) => prev.map((t) =>
+        t.sessionId === sessionId ? { ...t, sessionId: null } : t
+      ));
     }
-    deleteSessionRef.current?.(sessionId).catch(console.error);
   }, [activeSessionId]);
 
-  const handleRenameSession = useCallback((sessionId: string, title: string) => {
-    updateSessionTitleRef.current?.(sessionId, title).catch(console.error);
+  const handleRenameSession = useCallback(async (sessionId: string, title: string) => {
+    await globalApiPutJson(`/chat/sessions/${sessionId}/title`, { title }).catch(console.error);
   }, []);
 
   const handleTogglePin = useCallback((sessionId: string) => {
@@ -210,12 +214,32 @@ export default function App() {
     });
   }, []);
 
-  const handleSessionsChange = useCallback((tabId: string, s: SessionMetadata[]) => {
-    setTabSessions((prev) => ({ ...prev, [tabId]: s }));
+  const handleRunningSessionsChange = useCallback((sessionId: string, running: boolean) => {
+    setRunningSessions((prev) => {
+      const next = new Set(prev);
+      if (running) next.add(sessionId);
+      else next.delete(sessionId);
+      return next;
+    });
   }, []);
 
-  const handleRunningSessionsChange = useCallback((rs: Set<string>) => {
-    setRunningSessions(rs);
+  const updateTabGenerating = useCallback((tabId: string, isGenerating: boolean) => {
+    setTabs((prev) => prev.map((t) =>
+      t.id === tabId ? { ...t, isGenerating } : t
+    ));
+  }, []);
+
+  const updateTabUnread = useCallback((tabId: string, hasUnread: boolean) => {
+    setTabs((prev) => prev.map((t) =>
+      t.id === tabId ? { ...t, hasUnread } : t
+    ));
+  }, []);
+
+  const handleSessionIdChange = useCallback((tabId: string, newSessionId: string) => {
+    setTabs((prev) => prev.map((t) =>
+      t.id === tabId ? { ...t, sessionId: newSessionId } : t
+    ));
+    setActiveSessionId(newSessionId);
   }, []);
 
   const activeTab = useMemo(
@@ -231,26 +255,14 @@ export default function App() {
 
   const handleNewChat = useCallback(() => {
     setActiveSessionId(null);
-    setTabs((prev) => {
-      const target = prev.find((t) => t.id === activeTabId && t.view === 'chat')
-        ?? prev.find((t) => t.view === 'chat');
-      if (!target) return prev;
-      setActiveTabId(target.id);
-      return prev.map((t) => (t.id === target.id ? { ...t, sessionId: null, activeSubTab: 'chat' } : t));
-    });
-    resetSessionRef.current?.().catch(console.error);
-  }, [activeTabId]);
-
-  const handleSelectSession = useCallback((sessionId: string) => {
-    setActiveSessionId(sessionId);
-    setTabs((prev) => {
-      const target = prev.find((t) => t.id === activeTabId && t.view === 'chat')
-        ?? prev.find((t) => t.view === 'chat');
-      if (!target) return prev;
-      setActiveTabId(target.id);
-      return prev.map((t) => (t.id === target.id ? { ...t, sessionId, activeSubTab: 'chat' } : t));
-    });
-  }, [activeTabId]);
+    const dir = activeTab?.agentDir ?? null;
+    const tab = createTab(dir ? {
+      agentDir: dir,
+      title: dir.split('/').pop() ?? '新对话',
+    } : {});
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }, [activeTab?.agentDir]);
 
   const handleOpenSettings = useCallback(() => {
     setTabs((prev) => {
@@ -279,37 +291,25 @@ export default function App() {
   }, []);
 
   const handleAddWorkspace = useCallback(() => {
-    const tab = createTab();
+    const dir = activeTab?.agentDir ?? null;
+    const tab = createTab(dir ? {
+      agentDir: dir,
+      title: dir.split('/').pop() ?? '新对话',
+    } : {});
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
-  }, []);
+  }, [activeTab?.agentDir]);
 
-  const handleOpenWorkspace = useCallback((agentDir: string) => {
+
+  const handleNavigateToSession = useCallback((agentDir: string, sessionId: string) => {
     setTabs((prev) => {
-      const existing = prev.find((t) => t.agentDir === agentDir && t.view === 'chat');
+      // Find existing tab with this session
+      const existing = prev.find((t) => t.sessionId === sessionId);
       if (existing) {
         setActiveTabId(existing.id);
         return prev;
       }
-      const tab = createTab({
-        agentDir,
-        view: 'chat',
-        title: agentDir.split('/').pop() ?? agentDir,
-        sessionId: null,
-      });
-      setActiveTabId(tab.id);
-      return [...prev, tab];
-    });
-    setActiveSessionId(null);
-  }, []);
-
-  const handleNavigateToSession = useCallback((agentDir: string, sessionId: string) => {
-    setTabs((prev) => {
-      const existing = prev.find((t) => t.agentDir === agentDir && t.view === 'chat');
-      if (existing) {
-        setActiveTabId(existing.id);
-        return prev.map((t) => t.id === existing.id ? { ...t, sessionId } : t);
-      }
+      // Create new tab for this session
       const tab = createTab({
         agentDir,
         view: 'chat',
@@ -322,10 +322,21 @@ export default function App() {
     setActiveSessionId(sessionId);
   }, []);
 
+  const handleSelectSession = useCallback((sessionId: string) => {
+    const session = allSessions.find((s) => s.id === sessionId);
+    if (session) {
+      handleNavigateToSession(session.agentDir, sessionId);
+    }
+  }, [allSessions, handleNavigateToSession]);
+
   const handleCloseTab = useCallback((tabId: string) => {
-    setTabSessions((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
     setTabs((prev) => {
       if (prev.length <= 1) return prev;
+      const tab = prev.find((t) => t.id === tabId);
+      // 正在生成时关闭 → toast 提示后台继续
+      if (tab?.isGenerating && tab.sessionId) {
+        toast.info('AI 继续在后台完成任务');
+      }
       const newTabs = prev.filter((t) => t.id !== tabId);
       if (activeTabId === tabId) {
         const idx = prev.findIndex((t) => t.id === tabId);
@@ -334,24 +345,15 @@ export default function App() {
       }
       return newTabs;
     });
-  }, [activeTabId]);
+  }, [activeTabId, toast]);
 
-  const handleSelectWorkspace = useCallback((tabId: string, agentDir: string) => {
-    setTabs((prev) => {
-      // 若目标 agentDir 已在其他 tab 打开，直接跳转
-      const existing = prev.find((t) => t.agentDir === agentDir && t.view === 'chat' && t.id !== tabId);
-      if (existing) {
-        setActiveTabId(existing.id);
-        return prev;
-      }
-      setTabSessions((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
-      setActiveSessionId(null);
-      return prev.map((t) =>
-        t.id === tabId
-          ? { ...t, agentDir, view: 'chat' as const, title: agentDir.split('/').pop() ?? agentDir, sessionId: null }
-          : t
-      );
-    });
+  const handleAgentDirChange = useCallback((tabId: string, agentDir: string) => {
+    setActiveSessionId(null);
+    setTabs((prev) => prev.map((t) =>
+      t.id === tabId
+        ? { ...t, agentDir, title: agentDir.split('/').pop() ?? agentDir, sessionId: null }
+        : t
+    ));
   }, []);
 
   // 打开文件：加入当前 workspace tab 的 openFiles，并切换 activeSubTab
@@ -479,13 +481,14 @@ export default function App() {
       <div className="flex h-screen overflow-hidden bg-[var(--paper)]">
         {showSidebar ? (
           <LeftSidebar
-            sessions={tabSessions[activeTabId] ?? []}
+            sessions={allSessions}
             activeSessionId={activeSessionId}
             agentDir={activeTab?.agentDir ?? undefined}
             pinnedSessionIds={pinnedSessionIds}
             runningSessions={runningSessions}
             onNewChat={handleNewChat}
             onSelectSession={handleSelectSession}
+            onNavigateToSession={handleNavigateToSession}
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
             onTogglePin={handleTogglePin}
@@ -556,7 +559,7 @@ export default function App() {
                   : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
               }`}
             >
-              <Settings2 size={18} />
+              <SettingsIcon size={18} />
             </button>
           </div>
         )}
@@ -572,14 +575,13 @@ export default function App() {
 
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* TopTabBar：工作区 */}
-          <WorkspaceTabBar
+          <SessionTabBar
             tabs={workspaceTabs}
             activeTabId={activeTabId}
+            allSessions={allSessions}
             onSwitchTab={setActiveTabId}
-            onAddWorkspace={handleAddWorkspace}
+            onNewTab={handleAddWorkspace}
             onCloseTab={handleCloseTab}
-            onSelectWorkspace={handleSelectWorkspace}
-            onOpenWorkspace={handleOpenWorkspace}
             showFilesPanel={showFilesPanel}
             onToggleFilesPanel={() => setShowFilesPanel((v) => !v)}
           />
@@ -607,8 +609,7 @@ export default function App() {
                 <MessageSquare size={14} className="shrink-0" />
                 <span>对话</span>
                 {(() => {
-                  const sessions = tabSessions[activeTabId] ?? [];
-                  const session = activeSessionId ? sessions.find((s) => s.id === activeSessionId) : null;
+                  const session = activeTab.sessionId ? allSessions.find((s) => s.id === activeTab.sessionId) : null;
                   return session?.title ? (
                     <span className="max-w-[120px] truncate text-[var(--ink-tertiary)] font-normal" title={session.title}>
                       {session.title}
@@ -663,7 +664,7 @@ export default function App() {
           {/* 内容区：chat / editor */}
           <main className="flex-1 overflow-hidden flex flex-col">
             {tabs
-              .filter((t) => t.view === 'chat' && t.agentDir)
+              .filter((t) => t.view === 'chat')
               .map((t) => {
                 const chatVisible = activeTab?.id === t.id && t.activeSubTab === 'chat';
                 return (
@@ -677,20 +678,41 @@ export default function App() {
                       flex: 1,
                     }}
                   >
-                    <Chat
-                      tab={t}
-                      onSessionsChange={handleSessionsChange}
-                      onRunningSessionsChange={t.id === activeTabId ? handleRunningSessionsChange : undefined}
-                      onActiveSessionChange={t.id === activeTabId ? setActiveSessionId : undefined}
-                      onExposeReset={t.id === activeTabId ? handleExposeReset : undefined}
-                      onExposeDeleteSession={t.id === activeTabId ? handleExposeDeleteSession : undefined}
-                      onExposeUpdateTitle={t.id === activeTabId ? handleExposeUpdateTitle : undefined}
-                      injectText={pendingInjects[t.id] ?? null}
-                      onInjectConsumed={() => setPendingInjects((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
-                      injectRefText={pendingRefText[t.id] ?? null}
-                      onRefTextConsumed={() => setPendingRefText((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
-                      onOpenUrl={openUrl}
-                    />
+                    {t.agentDir ? (
+                      <TabProvider
+                        tabId={t.id}
+                        agentDir={t.agentDir}
+                        sessionId={t.sessionId}
+                        isActive={activeTabId === t.id}
+                        onRunningSessionsChange={handleRunningSessionsChange}
+                        onGeneratingChange={(g) => updateTabGenerating(t.id, g)}
+                        onUnreadChange={(u) => updateTabUnread(t.id, u)}
+                        onSessionIdChange={(sid: string) => handleSessionIdChange(t.id, sid)}
+                      >
+                        <Chat
+                          agentDir={t.agentDir}
+                          onAgentDirChange={(dir) => handleAgentDirChange(t.id, dir)}
+                          injectText={pendingInjects[t.id] ?? null}
+                          onInjectConsumed={() => setPendingInjects((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
+                          injectRefText={pendingRefText[t.id] ?? null}
+                          onRefTextConsumed={() => setPendingRefText((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
+                          onOpenUrl={openUrl}
+                        />
+                      </TabProvider>
+                    ) : (
+                      <div className="flex h-full flex-col bg-[var(--paper)]">
+                        <div className="flex flex-1 flex-col items-center justify-center">
+                          <div className="w-full px-8" style={{ maxWidth: 660 }}>
+                            <div className="mb-6 text-center">
+                              <h1 className="text-[26px] font-semibold text-[var(--ink)]">👋 有什么可以帮你的？</h1>
+                              <div className="mt-2">
+                                <WorkspaceTrigger agentDir={null} onAgentDirChange={(dir) => handleAgentDirChange(t.id, dir)} />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -727,9 +749,6 @@ export default function App() {
                 })
               )}
 
-            {activeTab?.view === 'launcher' && (
-              <Launcher tabId={activeTab.id} onSelectWorkspace={handleSelectWorkspace} />
-            )}
             {activeTab?.view === 'settings' && (
               <Settings
                 checkForUpdate={checkForUpdate}
@@ -757,29 +776,20 @@ export default function App() {
   );
 }
 
-// ── WorkspaceTabBar ───────────────────────────────────────────────────
+// ── SessionTabBar ─────────────────────────────────────────────────────
 
-interface WorkspaceTabBarProps {
+interface SessionTabBarProps {
   tabs: Tab[];
   activeTabId: string;
+  allSessions: SessionMetadata[];
   onSwitchTab: (tabId: string) => void;
-  onAddWorkspace: () => void;
+  onNewTab: () => void;
   onCloseTab: (tabId: string) => void;
-  onSelectWorkspace: (tabId: string, agentDir: string) => void;
-  onOpenWorkspace: (agentDir: string) => void;
   showFilesPanel: boolean;
   onToggleFilesPanel: () => void;
 }
 
-function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onCloseTab, onSelectWorkspace, onOpenWorkspace, showFilesPanel, onToggleFilesPanel }: WorkspaceTabBarProps) {
-  const [openDropdownTabId, setOpenDropdownTabId] = useState<string | null>(null);
-  const { workspaces, touchWorkspace } = useConfig();
-  // Sort by lastOpenedAt descending for recent dirs display
-  const recentDirs = useMemo(
-    () => [...workspaces].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt).map((w) => w.path),
-    [workspaces]
-  );
-
+function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, onCloseTab, showFilesPanel, onToggleFilesPanel }: SessionTabBarProps) {
   return (
     <div
       className="relative flex items-center justify-between px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
@@ -787,103 +797,56 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
       onMouseDown={startWindowDrag}
       onDoubleClick={toggleMaximize}
     >
-      {openDropdownTabId && (
-        <div className="fixed inset-0 z-40" onClick={() => setOpenDropdownTabId(null)} />
-      )}
-
-      <div className="flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="flex items-center gap-1 min-w-0 overflow-x-auto scrollbar-hide" onMouseDown={(e) => e.stopPropagation()}>
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           const isSettings = tab.view === 'settings';
           const isScheduledTasks = tab.view === 'scheduled-tasks';
-          const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : (tab.agentDir?.split('/').filter(Boolean).pop() ?? '新工作区');
-          const isDropdownOpen = openDropdownTabId === tab.id;
+          const sessionMeta = tab.sessionId ? allSessions.find((s) => s.id === tab.sessionId) : null;
+          const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : (sessionMeta?.title || '新对话');
 
           return (
-            <div key={tab.id} className="relative">
-              <div
-                onClick={() => onSwitchTab(tab.id)}
-                className="flex items-center gap-1 rounded-lg px-2.5 cursor-pointer select-none"
-                style={{
-                  height: 34,
-                  background: isActive ? '#F0EDE8' : 'transparent',
-                  borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-                }}
-              >
-                <span className={`text-[13px] font-semibold ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`}>
-                  {label}
+            <div
+              key={tab.id}
+              onClick={() => onSwitchTab(tab.id)}
+              className="flex items-center gap-1 rounded-lg px-2.5 cursor-pointer select-none shrink-0"
+              style={{
+                height: 34,
+                maxWidth: 180,
+                background: isActive ? '#F0EDE8' : 'transparent',
+                borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+              }}
+            >
+              {isSettings && <SettingsIcon size={14} className={`shrink-0 ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`} />}
+              <span className={`text-[13px] font-semibold truncate ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`}>
+                {label}
+              </span>
+              {/* 状态圆点：生成中(绿色脉冲) / 未读(暖色静态，仅非活跃 tab) */}
+              {tab.isGenerating && (
+                <span className="relative ml-0.5 flex h-1.5 w-1.5 shrink-0">
+                  <span className="absolute inset-0 rounded-full bg-[var(--success)]" />
+                  <span className="absolute inset-0 rounded-full bg-[var(--success)] animate-ping" />
                 </span>
-                {isActive && (
-                  <>
-                    {!isSettings && !isScheduledTasks && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setOpenDropdownTabId(isDropdownOpen ? null : tab.id);
-                        }}
-                        className="text-[12px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors px-0.5"
-                      >
-                        {isDropdownOpen ? '⌄' : '›'}
-                      </button>
-                    )}
-                    {(isSettings || isScheduledTasks || tabs.length > 1) && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
-                        className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 text-center"
-                      >
-                        ×
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {isDropdownOpen && (
-                <div
-                  className="absolute left-0 top-full mt-1 z-50 min-w-[280px] rounded-xl border border-[var(--border)] bg-white py-1.5"
-                  style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
+              )}
+              {!isActive && !tab.isGenerating && tab.hasUnread && (
+                <span className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
+              )}
+              {isActive && (isSettings || isScheduledTasks || tabs.length > 1) && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
+                  className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 text-center shrink-0"
                 >
-                  {recentDirs.length === 0 ? (
-                    <div className="px-3 py-2 text-[13px] text-[var(--ink-tertiary)]">暂无最近工作区</div>
-                  ) : (
-                    recentDirs.map((dir) => {
-                      const isCurrentDir = dir === tab.agentDir;
-                      const name = dir.split('/').filter(Boolean).pop() ?? dir;
-                      return (
-                        <button
-                          key={dir}
-                          onClick={() => { touchWorkspace(dir); onOpenWorkspace(dir); setOpenDropdownTabId(null); }}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
-                        >
-                          <Folder className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" />
-                          <div className="flex-1 min-w-0 text-left">
-                            <p className="text-[13px] font-medium text-[var(--ink)] truncate">{name}</p>
-                            <p className="text-[11px] text-[var(--ink-tertiary)] truncate">{dir}</p>
-                          </div>
-                          {isCurrentDir && (
-                            <Check className="h-4 w-4 shrink-0 text-[var(--accent)]" />
-                          )}
-                        </button>
-                      );
-                    })
-                  )}
-                  <div className="mx-2 my-1 border-t border-[var(--border)]" />
-                  <button
-                    onClick={() => { onAddWorkspace(); setOpenDropdownTabId(null); }}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
-                  >
-                    <Plus className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" />
-                    <span className="text-[13px] text-[var(--ink)]">添加工作区</span>
-                  </button>
-                </div>
+                  ×
+                </button>
               )}
             </div>
           );
         })}
 
         <button
-          onClick={onAddWorkspace}
-          className="text-[18px] font-medium leading-none text-[var(--ink-tertiary)] hover:text-[var(--ink)] w-7 h-7 flex items-center justify-center rounded transition-colors"
+          onClick={onNewTab}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="text-[18px] font-medium leading-none text-[var(--ink-tertiary)] hover:text-[var(--ink)] w-7 h-7 flex items-center justify-center rounded transition-colors shrink-0"
         >
           +
         </button>
@@ -895,7 +858,7 @@ function WorkspaceTabBar({ tabs, activeTabId, onSwitchTab, onAddWorkspace, onClo
           onClick={onToggleFilesPanel}
           onMouseDown={(e) => e.stopPropagation()}
           title="工作区文件"
-          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors shrink-0 ${
             showFilesPanel
               ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
               : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'

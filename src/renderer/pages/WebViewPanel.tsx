@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import type { Webview } from '@tauri-apps/api/webview';
 import { RefreshCw, ExternalLink } from 'lucide-react';
 import { isTauri } from '../utils/env';
 
@@ -32,8 +33,7 @@ let labelCounter = 0;
 
 function TauriWebView({ url, visible }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const webviewRef = useRef<any>(null);
+  const webviewRef = useRef<Webview | null>(null);
   const [ready, setReady] = useState(false);
   // 每次 effect 生成唯一 label，避免 StrictMode 下 close 未完成时 label 冲突
   const [refreshKey, setRefreshKey] = useState(0);
@@ -41,8 +41,7 @@ function TauriWebView({ url, visible }: Props) {
   // 创建 WebView
   useEffect(() => {
     let cancelled = false;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let wv: any = null;
+    let wv: Webview | null = null;
     const label = `wv-${++labelCounter}`;
 
     (async () => {
@@ -64,8 +63,8 @@ function TauriWebView({ url, visible }: Props) {
 
       // 等待 tauri://created 或 tauri://error
       await new Promise<void>((resolve, reject) => {
-        wv.once('tauri://created', () => resolve());
-        wv.once('tauri://error', (e: unknown) => reject(e));
+        wv!.once('tauri://created', () => resolve());
+        wv!.once('tauri://error', (e: unknown) => reject(e));
       });
 
       if (cancelled) { wv.close().catch(() => {}); return; }

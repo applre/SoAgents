@@ -126,7 +126,7 @@ export function RichTextToolbar({ mode, onAction }: RichTextToolbarProps) {
       {btn('无序列表', 'ul', <span>≡</span>)}
       {btn('有序列表', 'ol', <span>①</span>)}
       {sep}
-      {btn('引用', 'quote', <span>"</span>)}
+      {btn('引用', 'quote', <span>&quot;</span>)}
       {btn('代码块', 'codeblock', <code style={{ fontSize: 10 }}>```</code>)}
       {btn('分割线', 'divider', <span>—</span>)}
       {sep}
