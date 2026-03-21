@@ -489,10 +489,14 @@ Bun.serve({
 
     // MCP 路由
     if (req.method === 'GET' && url.pathname === '/api/mcp') {
-      return Response.json({
-        servers: MCPConfigStore.getAll(),
-        enabledIds: MCPConfigStore.getEnabledIds(),
-      });
+      const servers = MCPConfigStore.getAll();
+      const enabledIds = MCPConfigStore.getEnabledIds();
+      const enabledSet = new Set(enabledIds);
+      const serversWithStatus = servers.map((s) => ({
+        ...s,
+        status: enabledSet.has(s.id) ? 'enabled' as const : 'disabled' as const,
+      }));
+      return Response.json({ servers: serversWithStatus, enabledIds });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/mcp/set') {
@@ -606,6 +610,23 @@ Bun.serve({
             message = `连接失败：${error.message}`;
           }
           return Response.json({ ok: false, error: { type: 'connection_failed', message } });
+        }
+      }
+
+      // stdio 预热：启用时，如果 command 包含 npx/bunx，后台预下载
+      if (server.type === 'stdio' && server.command) {
+        const cmd = server.command;
+        const args = server.args ?? [];
+        if (cmd === 'npx' || cmd === 'bunx' || cmd.endsWith('/npx') || cmd.endsWith('/bunx')) {
+          const pkg = args.find((a) => !a.startsWith('-'));
+          if (pkg) {
+            console.log(`[MCP] Pre-warming stdio package: ${pkg}`);
+            Bun.spawn(['npm', 'cache', 'add', pkg], {
+              stdout: 'ignore',
+              stderr: 'ignore',
+              env: { ...process.env, ...(server.env ?? {}), ...MCPConfigStore.getServerEnv(server.id) },
+            }).exited.catch(() => {});
+          }
         }
       }
 

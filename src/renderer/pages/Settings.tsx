@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Brain, Settings2, BarChart2,
   KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Puzzle, Wrench, X,
-  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle, ChevronDown,
+  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle, ChevronDown, Download,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
@@ -41,6 +41,7 @@ interface McpServerDefinition {
   requiresConfig?: string[];
   configHint?: string;
   websiteUrl?: string;
+  status?: 'enabled' | 'connecting' | 'error' | 'disabled';
 }
 
 interface MCPServerConfig {
@@ -1595,6 +1596,22 @@ function MCPTab() {
     }
   };
 
+  const handleExportMcpJson = useCallback(async () => {
+    try {
+      const data = await globalApiGetJson<{ servers: unknown[]; enabledIds: string[] }>('/api/mcp');
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'soagents-mcp-config.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[Settings] Failed to export MCP config:', err);
+    }
+  }, []);
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -1603,6 +1620,13 @@ function MCPTab() {
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理 MCP Server 配置，开关控制全局启用</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleExportMcpJson}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] text-[var(--ink-secondary)] border border-[var(--border)] rounded-lg hover:bg-[var(--hover)] transition-colors"
+          >
+            <Download size={14} />
+            导出 JSON
+          </button>
           <button
             onClick={() => { setShowJsonImport(true); setJsonError(''); }}
             className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-[13px] font-semibold text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors"
@@ -1644,6 +1668,20 @@ function MCPTab() {
                         免费
                       </span>
                     )}
+                    <span className={`inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-full ${
+                      srv.status === 'enabled'
+                        ? 'bg-[var(--success)]/10 text-[var(--success)]'
+                        : srv.status === 'error'
+                          ? 'bg-[var(--error)]/10 text-[var(--error)]'
+                          : 'bg-[var(--surface)] text-[var(--ink-tertiary)]'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        srv.status === 'enabled' ? 'bg-[var(--success)]'
+                          : srv.status === 'error' ? 'bg-[var(--error)]'
+                          : 'bg-[var(--ink-tertiary)]'
+                      }`} />
+                      {srv.status === 'enabled' ? '已启用' : srv.status === 'error' ? '错误' : '未启用'}
+                    </span>
                   </div>
                   <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">
                     {srv.description ?? ''}

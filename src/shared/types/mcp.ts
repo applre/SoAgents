@@ -32,3 +32,11 @@ export interface McpEnableError {
   runtimeName?: string;
   downloadUrl?: string;
 }
+
+/** MCP 服务器运行时状态 */
+export type McpServerStatus = 'enabled' | 'connecting' | 'error' | 'disabled';
+
+export interface McpServerWithStatus extends McpServerDefinition {
+  status: McpServerStatus;
+  errorMessage?: string;
+}
