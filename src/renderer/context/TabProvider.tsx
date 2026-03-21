@@ -752,6 +752,13 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       createdAt: Date.now(),
     };
 
+    // Track user message for auto-title generation (FIFO queue for queued sends)
+    if (!autoTitleAttemptedRef.current && text) {
+      pendingUserMessagesRef.current.push(text);
+    }
+    lastModelRef.current = model;
+    lastProviderEnvRef.current = providerEnv;
+
     // Optimistic queue entry: show immediately when AI is busy
     const localQueueId = wasRunning ? `opt-${crypto.randomUUID()}` : null;
     if (localQueueId) {
@@ -925,11 +932,19 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     setIsLoading(false);
     setSessionState('idle');
     isRunningRef.current = false;
+    isStreamingRef.current = false;
     setIsRunning(false);
     setPendingPermission(null);
     setPendingQuestion(null);
     queuedMessagesRef.current = [];
     setQueuedMessages([]);
+    // Reset auto-title state
+    autoTitleAttemptedRef.current = false;
+    titleRoundsRef.current = [];
+    pendingUserMessagesRef.current = [];
+    lastCompletedTextRef.current = '';
+    lastModelRef.current = undefined;
+    lastProviderEnvRef.current = undefined;
   }, [updateStreamingMessage]);
 
   const deleteSession = useCallback(async (sessionIdToDelete: string) => {
