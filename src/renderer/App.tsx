@@ -331,6 +331,34 @@ export default function App() {
     setActiveTabId(tab.id);
   }, [activeTab?.agentDir]);
 
+  const handleNewChatInDir = useCallback((agentDir: string) => {
+    setActiveSessionId(null);
+    const tab = createTab({
+      agentDir,
+      title: agentDir.split('/').pop() ?? '新对话',
+    });
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }, []);
+
+  const handleNewWorkspace = useCallback(async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string' && selected) {
+        setActiveSessionId(null);
+        const tab = createTab({
+          agentDir: selected,
+          title: selected.split('/').pop() ?? selected,
+        });
+        setTabs((prev) => [...prev, tab]);
+        setActiveTabId(tab.id);
+      }
+    } catch (e) {
+      console.error('[App] Failed to open folder dialog:', e);
+    }
+  }, []);
+
   const handleOpenSettings = useCallback(() => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.view === 'settings');
@@ -567,6 +595,8 @@ export default function App() {
             pinnedSessionIds={pinnedSessionIds}
             runningSessions={runningSessions}
             onNewChat={handleNewChat}
+            onNewChatInDir={handleNewChatInDir}
+            onNewWorkspace={handleNewWorkspace}
             onSelectSession={handleSelectSession}
             onNavigateToSession={handleNavigateToSession}
             onArchiveSession={handleArchiveSession}

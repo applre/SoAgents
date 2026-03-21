@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, LayoutList, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Settings } from 'lucide-react';
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, FolderPlus, LayoutList, ListFilter, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, RefreshCw, Settings } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
@@ -12,6 +12,8 @@ interface Props {
   pinnedSessionIds: Set<string>;
   runningSessions?: Set<string>;
   onNewChat: () => void;
+  onNewChatInDir: (agentDir: string) => void;
+  onNewWorkspace: () => void;
   onSelectSession: (sessionId: string) => void;
   onNavigateToSession: (agentDir: string, sessionId: string) => void;
   onArchiveSession: (sessionId: string) => void;
@@ -45,6 +47,8 @@ export default function LeftSidebar({
   pinnedSessionIds,
   runningSessions,
   onNewChat,
+  onNewChatInDir,
+  onNewWorkspace,
   onSelectSession: _onSelectSession,
   onNavigateToSession,
   onArchiveSession,
@@ -212,23 +216,29 @@ export default function LeftSidebar({
         </div>
       </div>
 
-      {/* 对话标题 + 筛选下拉（固定） */}
+      {/* 最近对话标题 + 新建 + 筛选（固定） */}
       {!isSettingsActive && sessions.length > 0 && (
         <div className="shrink-0 flex items-center justify-between" style={{ padding: '12px 22px 6px' }}>
-          <div className="relative flex items-center gap-1">
-            <span className="text-[13px] font-semibold text-[var(--ink-secondary)]">对话</span>
+          <span className="text-[13px] font-semibold text-[var(--ink-secondary)]">最近对话</span>
+          <div className="relative flex items-center gap-2">
+            <button onClick={onNewWorkspace} title="新建工作区">
+              <FolderPlus size={16} className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors" />
+            </button>
             <button
               onClick={() => setShowFilterMenu(v => !v)}
-              className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink-secondary)] transition-colors"
+              className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                sessionFilter !== 'active'
+                  ? 'text-[var(--accent)]'
+                  : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+              }`}
             >
-              {filterLabel[sessionFilter]}
-              <ChevronDown size={10} />
+              <ListFilter size={14} />
             </button>
             {showFilterMenu && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowFilterMenu(false)} />
                 <div
-                  className="absolute left-0 top-full mt-1 z-50 min-w-[100px] rounded-xl border border-[var(--border)] bg-white py-1"
+                  className="absolute right-0 top-full mt-1 z-50 min-w-[100px] rounded-xl border border-[var(--border)] bg-white py-1"
                   style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
                 >
                   {(['active', 'archived', 'all'] as SessionFilter[]).map(key => (
@@ -248,9 +258,6 @@ export default function LeftSidebar({
               </>
             )}
           </div>
-          <button onClick={onNewChat}>
-            <Plus size={16} className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors" />
-          </button>
         </div>
       )}
 
@@ -266,22 +273,31 @@ export default function LeftSidebar({
               return (
                 <div key={agentDirKey}>
                   {/* Group header */}
-                  <button
-                    onClick={() => toggleGroup(agentDirKey)}
-                    className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--hover)] transition-colors"
-                  >
-                    {isCollapsed
-                      ? <ChevronRight size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
-                      : <ChevronDown size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
-                    }
-                    {isCollapsed
-                      ? <Folder size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
-                      : <FolderOpen size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
-                    }
-                    <span className="text-[14px] font-normal text-[var(--ink-secondary)]">
-                      {dirName(agentDirKey)}
-                    </span>
-                  </button>
+                  <div className="group/gh flex items-center">
+                    <button
+                      onClick={() => toggleGroup(agentDirKey)}
+                      className="flex flex-1 min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--hover)] transition-colors"
+                    >
+                      {isCollapsed
+                        ? <ChevronRight size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
+                        : <ChevronDown size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
+                      }
+                      {isCollapsed
+                        ? <Folder size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+                        : <FolderOpen size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+                      }
+                      <span className="truncate text-[14px] font-normal text-[var(--ink-secondary)]">
+                        {dirName(agentDirKey)}
+                      </span>
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onNewChatInDir(agentDirKey); }}
+                      title="新建对话"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded opacity-0 group-hover/gh:opacity-100 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-all"
+                    >
+                      <MessageSquarePlus size={14} />
+                    </button>
+                  </div>
 
                   {/* Session items */}
                   {!isCollapsed && (
@@ -372,7 +388,7 @@ export default function LeftSidebar({
                                 ) : (
                                   <button
                                     onClick={() => { onArchiveSession(s.id); setMenuOpenId(null); }}
-                                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--accent)] hover:bg-[var(--hover)] transition-colors"
+                                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink)] hover:bg-[var(--hover)] transition-colors"
                                   >
                                     <Archive size={14} />
                                     归档
