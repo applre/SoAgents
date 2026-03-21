@@ -1,12 +1,14 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, Square, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap, Search } from 'lucide-react';
+import type { QueuedMessageInfo } from '../../shared/types/queue';
+import QueuedMessagesPanel from './QueuedMessagesPanel';
 import type { LucideIcon } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
-import { globalApiGetJson } from '../api/apiFetch';
+import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { useConfig } from '../context/ConfigContext';
-import { useTabApi } from '../context/TabContext';
+import { useTabApi, useTabActive } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
 import type { PermissionMode } from '../../shared/types/permission';
 import type { ModelEntity, Provider, ProviderEnv } from '../../shared/types/config';
@@ -28,7 +30,7 @@ interface SkillPayload {
 }
 
 interface Props {
-  onSend: (text: string, permissionMode?: string, skills?: SkillPayload[], images?: ChatImage[], model?: string, providerEnv?: import('../../shared/types/config').ProviderEnv, mcpEnabledServerIds?: string[]) => void;
+  onSend: (text: string, permissionMode?: string, skills?: SkillPayload[], images?: ChatImage[], model?: string, providerEnv?: import('../../shared/types/config').ProviderEnv, mcpEnabledServerIds?: string[]) => Promise<boolean> | boolean | void;
   onStop: () => void;
   isLoading: boolean;
   agentDir?: string;
@@ -36,6 +38,9 @@ interface Props {
   onInjectConsumed?: () => void;
   injectRefText?: string | null;
   onRefTextConsumed?: () => void;
+  queuedMessages?: QueuedMessageInfo[];
+  onCancelQueued?: (queueId: string) => Promise<string | null>;
+  onForceExecuteQueued?: (queueId: string) => Promise<boolean>;
 }
 
 interface MCPServerItem {
@@ -54,9 +59,12 @@ interface AttachedFile {
   base64?: string; // 图片的 base64 数据
 }
 
-export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed }: Props) {
+const MAX_FRONTEND_QUEUE = 5;
+
+export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, queuedMessages = [], onCancelQueued, onForceExecuteQueued }: Props) {
   const { config, allProviders, currentProvider, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
   const { apiGet, hasMessages } = useTabApi();
+  const isActive = useTabActive();
   const isProviderLocked = hasMessages;
 
   // Provider 可用性检查：subscription 类型暂时放行，api 类型需要有 key
@@ -67,6 +75,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
 
   // Per-workspace entry (must be before permissionMode state init)
   const wsEntry = agentDir ? workspaces.find((w) => w.path === agentDir) : undefined;
+  const wsEntryRef = useRef(wsEntry);
+  wsEntryRef.current = wsEntry;
 
   const [text, setText] = useState('');
   const [showSlash, setShowSlash] = useState(false);
@@ -100,6 +110,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const skillBtnRef = useRef<HTMLButtonElement>(null);
   const skillPopoverRef = useRef<HTMLDivElement>(null);
   const mcpBtnRef = useRef<HTMLButtonElement>(null);
+  const mcpPopoverRef = useRef<HTMLDivElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modeBtnRef = useRef<HTMLButtonElement>(null);
@@ -152,7 +163,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   useEffect(() => {
     if (!injectRefText) return;
     onRefTextConsumed?.();
-    setText((prev) => { // eslint-disable-line react-hooks/set-state-in-effect
+    setText((prev) => {
       const separator = prev && !prev.endsWith('\n') ? '\n' : '';
       return prev + separator + injectRefText + ' ';
     });
@@ -179,15 +190,65 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
 
   // @ 文件搜索 API — 搜索逻辑已下沉到 FileSearchMenu 内部
 
-  // 加载全局已启用的 MCP servers
+  // 加载全局已启用的 MCP servers（含错误处理、重试、初始同步）
   useEffect(() => {
+    let cancelled = false;
+    const syncToBackend = (globalEnabled: MCPServerItem[]) => {
+      const wsIds = wsEntryRef.current?.mcpEnabledServers;
+      const effective = wsIds !== undefined
+        ? globalEnabled.filter((s) => new Set(wsIds).has(s.id))
+        : globalEnabled;
+      globalApiPostJson('/api/mcp/set', { servers: effective }).catch(() => {});
+    };
+    const load = () => {
+      globalApiGetJson<{ servers: Array<{ id: string; name: string; description?: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
+        .then((data) => {
+          if (cancelled) return;
+          const enabledSet = new Set(data.enabledIds);
+          const globalEnabled = data.servers.filter((s) => enabledSet.has(s.id));
+          setMcpServers(globalEnabled);
+          syncToBackend(globalEnabled);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // Sidecar 可能还没准备好，3 秒后重试一次
+          setTimeout(() => {
+            if (cancelled) return;
+            globalApiGetJson<{ servers: Array<{ id: string; name: string; description?: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
+              .then((data) => {
+                if (cancelled) return;
+                const enabledSet = new Set(data.enabledIds);
+                const globalEnabled = data.servers.filter((s) => enabledSet.has(s.id));
+                setMcpServers(globalEnabled);
+                syncToBackend(globalEnabled);
+              })
+              .catch(() => { /* 静默：Settings 页面仍可管理 MCP */ });
+          }, 3000);
+        });
+    };
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Tab 激活时重新同步 MCP 到后端（用户可能在 Settings 中修改过）
+  const prevActiveRef = useRef(false);
+  useEffect(() => {
+    const wasInactive = !prevActiveRef.current;
+    prevActiveRef.current = isActive;
+    if (!isActive || !wasInactive) return;
+
     globalApiGetJson<{ servers: Array<{ id: string; name: string; description?: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
       .then((data) => {
         const enabledSet = new Set(data.enabledIds);
-        setMcpServers(data.servers.filter((s) => enabledSet.has(s.id)));
+        const globalEnabled = data.servers.filter((s) => enabledSet.has(s.id));
+        setMcpServers(globalEnabled);
+        const wsIds = wsEntryRef.current?.mcpEnabledServers;
+        const wsSet = wsIds !== undefined ? new Set(wsIds) : null;
+        const effective = wsSet ? globalEnabled.filter((s) => wsSet.has(s.id)) : globalEnabled;
+        globalApiPostJson('/api/mcp/set', { servers: effective }).catch(() => {});
       })
       .catch(() => {});
-  }, []);
+  }, [isActive]);
 
   // 点外部关闭 popover
   useEffect(() => {
@@ -197,6 +258,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         !skillBtnRef.current?.contains(target) &&
         !skillPopoverRef.current?.contains(target) &&
         !mcpBtnRef.current?.contains(target) &&
+        !mcpPopoverRef.current?.contains(target) &&
         !modelBtnRef.current?.contains(target) &&
         !modelPopoverRef.current?.contains(target) &&
         !modeContainerRef.current?.contains(target)
@@ -272,7 +334,10 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
   }, [text, showSlash, slashPosition]);
 
-  const handleSend = useCallback(() => {
+  // Guard against double-fire of handleSend (e.g. rapid Enter + click)
+  const sendingRef = useRef(false);
+
+  const handleSend = useCallback(async () => {
     const trimmed = text.trim();
     // 分离图片和普通文件
     const imageFiles = attachedFiles.filter((f) => f.isImage && f.base64);
@@ -283,43 +348,56 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     // skills 信息单独传递
     const skills = selectedSkills.length > 0 ? selectedSkills : undefined;
     if (!userText && !skills && imageFiles.length === 0) return;
-    if (isLoading) return;
-    // 提取图片的 mimeType 和纯 base64 数据
-    const images: ChatImage[] = imageFiles.map((f) => {
-      const parts = f.base64!.split(',');
-      const mimeMatch = parts[0].match(/data:(.*?);/);
-      return {
-        name: f.name,
-        mimeType: mimeMatch?.[1] ?? 'image/png',
-        data: parts[1] ?? '',
-      };
-    });
-    // Build providerEnv from effective provider (assembled here, not in TabProvider)
-    const selectedModel = effectiveModel?.model ?? effectiveProvider.primaryModel;
-    const providerEnv: ProviderEnv | undefined = effectiveProvider && effectiveProvider.type === 'api'
-      ? {
-          baseUrl: effectiveProvider.config?.baseUrl,
-          apiKey: config.apiKeys[effectiveProvider.id] ?? '',
-          authType: effectiveProvider.authType,
-          apiProtocol: effectiveProvider.apiProtocol,
-          timeout: effectiveProvider.config?.timeout,
-          disableNonessential: effectiveProvider.config?.disableNonessential,
-          maxOutputTokens: effectiveProvider.maxOutputTokens,
-          upstreamFormat: effectiveProvider.upstreamFormat,
-          modelAliases: getEffectiveModelAliases(effectiveProvider, config.providerModelAliases),
-        }
-      : undefined;
-    const mcpEnabledServerIds = wsEntry?.mcpEnabledServers;
-    onSend(userText, permissionMode, skills, images.length > 0 ? images : undefined, selectedModel, providerEnv, mcpEnabledServerIds);
-    setText('');
-    setAttachedFiles([]);
-    setSelectedSkills([]);
-    setShowSlash(false);
-    setSlashPosition(null);
-    setShowFileSearch(false);
-    setAtPosition(null);
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [text, attachedFiles, selectedSkills, isLoading, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
+    // Allow sending while AI is responding (messages will be queued by backend)
+    if (isLoading && queuedMessages.length >= MAX_FRONTEND_QUEUE) return;
+    // Prevent double-fire
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+
+    try {
+      // 提取图片的 mimeType 和纯 base64 数据
+      const images: ChatImage[] = imageFiles.map((f) => {
+        const parts = f.base64!.split(',');
+        const mimeMatch = parts[0].match(/data:(.*?);/);
+        return {
+          name: f.name,
+          mimeType: mimeMatch?.[1] ?? 'image/png',
+          data: parts[1] ?? '',
+        };
+      });
+      // Build providerEnv from effective provider (assembled here, not in TabProvider)
+      const selectedModel = effectiveModel?.model ?? effectiveProvider.primaryModel;
+      const providerEnv: ProviderEnv | undefined = effectiveProvider && effectiveProvider.type === 'api'
+        ? {
+            baseUrl: effectiveProvider.config?.baseUrl,
+            apiKey: config.apiKeys[effectiveProvider.id] ?? '',
+            authType: effectiveProvider.authType,
+            apiProtocol: effectiveProvider.apiProtocol,
+            timeout: effectiveProvider.config?.timeout,
+            disableNonessential: effectiveProvider.config?.disableNonessential,
+            maxOutputTokens: effectiveProvider.maxOutputTokens,
+            upstreamFormat: effectiveProvider.upstreamFormat,
+            modelAliases: getEffectiveModelAliases(effectiveProvider, config.providerModelAliases),
+          }
+        : undefined;
+      const mcpEnabledServerIds = wsEntry?.mcpEnabledServers;
+      const result = onSend(userText, permissionMode, skills, images.length > 0 ? images : undefined, selectedModel, providerEnv, mcpEnabledServerIds);
+      const accepted = result instanceof Promise ? await result : result;
+      // Only clear input if not explicitly rejected
+      if (accepted !== false) {
+        setText('');
+        setAttachedFiles([]);
+        setSelectedSkills([]);
+        setShowSlash(false);
+        setSlashPosition(null);
+        setShowFileSearch(false);
+        setAtPosition(null);
+        if (textareaRef.current) textareaRef.current.style.height = 'auto';
+      }
+    } finally {
+      sendingRef.current = false;
+    }
+  }, [text, attachedFiles, selectedSkills, isLoading, queuedMessages.length, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
 
   const handleFileSelect = useCallback((file: FileSearchResult) => {
     if (atPosition === null) return;
@@ -602,11 +680,36 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     const current = wsEntry?.mcpEnabledServers ?? [];
     const next = enabled ? [...current, serverId] : current.filter((id) => id !== serverId);
     updateWorkspaceConfig(agentDir, { mcpEnabledServers: next });
-  }, [agentDir, wsEntry?.mcpEnabledServers, updateWorkspaceConfig]);
+    // 立即同步到后端
+    const wsSet = new Set(next);
+    const effectiveServers = mcpServers.filter((s) => wsSet.has(s.id));
+    globalApiPostJson('/api/mcp/set', { servers: effectiveServers }).catch((err) => {
+      console.error('[ChatInput] Failed to sync MCP to backend:', err);
+    });
+  }, [agentDir, wsEntry?.mcpEnabledServers, updateWorkspaceConfig, mcpServers]);
   const workspaceMcpCount = mcpServers.filter((s) => workspaceMcpEnabled.has(s.id)).length;
+
+  // Cancel a queued message and restore its text to input
+  const handleCancelQueued = useCallback(async (queueId: string) => {
+    const cancelledText = await onCancelQueued?.(queueId);
+    if (cancelledText) {
+      setText(cancelledText);
+      textareaRef.current?.focus();
+    }
+  }, [onCancelQueued]);
+
+  const handleForceExecuteQueued = useCallback(async (queueId: string) => {
+    await onForceExecuteQueued?.(queueId);
+  }, [onForceExecuteQueued]);
 
   return (
     <div className="px-6 pb-4 pt-2 mx-auto w-full" style={{ maxWidth: 860 }}>
+      {/* Queued messages floating above the input */}
+      <QueuedMessagesPanel
+        queuedMessages={queuedMessages}
+        onCancel={handleCancelQueued}
+        onForceExecute={handleForceExecuteQueued}
+      />
       <div
         className="relative rounded-2xl border border-[var(--border)] bg-white"
         style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}
@@ -751,7 +854,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
 
         {/* MCP Popover */}
         {showMCPPopover && (
-          <div className="absolute bottom-full mb-2 left-12 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-lg">
+          <div ref={mcpPopoverRef} className="absolute bottom-full mb-2 left-12 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-lg">
             <div className="px-3 py-2 text-xs font-medium text-[var(--ink-secondary)] border-b border-[var(--border)]">
               工具 (在此工作区启用)
             </div>
@@ -1122,18 +1225,30 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               <ChevronDown size={12} className="shrink-0" />
             </button>
 
-            <button
-              onClick={isLoading ? onStop : handleSend}
-              disabled={!isLoading && (!canSend || !isCurrentProviderAvailable)}
-              className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
-              style={{
-                background: isLoading || (canSend && isCurrentProviderAvailable) ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
-                cursor: isLoading || (canSend && isCurrentProviderAvailable) ? 'pointer' : 'default',
-              }}
-              title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : isLoading ? '停止' : '发送 (Enter)'}
-            >
-              {isLoading ? <Square size={12} color="white" fill="white" /> : <Send size={14} color="white" strokeWidth={2} />}
-            </button>
+            {/* Streaming: show stop button; Normal: show send button */}
+            {isLoading ? (
+              <button
+                onClick={onStop}
+                className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
+                style={{ background: 'var(--error, #c25a3a)', cursor: 'pointer' }}
+                title="停止"
+              >
+                <Square size={12} color="white" fill="white" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!canSend || !isCurrentProviderAvailable}
+                className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
+                style={{
+                  background: canSend && isCurrentProviderAvailable ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
+                  cursor: canSend && isCurrentProviderAvailable ? 'pointer' : 'default',
+                }}
+                title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : '发送 (Enter)'}
+              >
+                <Send size={14} color="white" strokeWidth={2} />
+              </button>
+            )}
           </div>
         </div>
       </div>
