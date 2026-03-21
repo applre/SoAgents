@@ -12,44 +12,78 @@ const BASE_PORT: u16 = 32415;
 const PORT_RANGE: u16 = 500;
 const SIDECAR_MARKER: &str = "--soagents-sidecar";
 
-// Health check constants (TCP-level, matching MyAgents proven strategy)
+// Health check constants (TCP-level)
 const HEALTH_CHECK_MAX_ATTEMPTS: u32 = 600;
 const HEALTH_CHECK_DELAY_MS: u64 = 500;
 const HEALTH_CHECK_TIMEOUT_MS: u64 = 100;
 
+// Graceful shutdown: SIGTERM then background thread waits before SIGKILL
+const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+
+// Background completion polling
+const BG_POLL_INTERVAL_SECS: u64 = 2;
+const BG_MAX_DURATION_SECS: u64 = 3600; // 60 minutes safety timeout
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SidecarOwner {
     Session(String),
+    BackgroundCompletion(String),
 }
 
-/// Kill a child process and its entire process group (Unix).
-/// SIGTERM first for graceful shutdown, SIGKILL after 2s timeout.
+/// Kill a child process and its entire process group.
+/// Non-blocking: sends SIGTERM, then spawns a background thread to wait and SIGKILL if needed.
+/// This avoids blocking the caller (important for Drop and UI responsiveness).
 fn kill_process(child: &mut Child) -> Result<(), String> {
+    let pid = child.id();
+
     #[cfg(unix)]
     {
-        let pgid = child.id() as i32;
         // Kill entire process group (sidecar + SDK/MCP children)
-        unsafe { libc::kill(-pgid, libc::SIGTERM); }
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => return Ok(()),
-                Ok(None) if std::time::Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(50));
-                }
-                _ => break,
-            }
-        }
-        // Force kill
-        unsafe { libc::kill(-pgid, libc::SIGKILL); }
-        let _ = child.wait(); // reap zombie
+        unsafe { libc::kill(-(pid as i32), libc::SIGTERM); }
     }
     #[cfg(not(unix))]
     {
         let _ = child.kill();
-        let _ = child.wait();
     }
+
+    // Spawn background thread to wait for graceful shutdown, then force kill
+    std::thread::spawn(move || {
+        #[cfg(unix)]
+        {
+            let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+            let start = std::time::Instant::now();
+
+            loop {
+                let mut status: i32 = 0;
+                let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+
+                if result > 0 {
+                    // Direct child exited; give group members a brief grace period then SIGKILL the group
+                    log::debug!("[sidecar] Process {} exited gracefully, cleaning up process group", pid);
+                    std::thread::sleep(Duration::from_millis(500));
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+                    return;
+                } else if result < 0 {
+                    log::debug!("[sidecar] Process {} already gone or error", pid);
+                    return;
+                }
+
+                if start.elapsed() > timeout {
+                    log::warn!("[sidecar] Process {} didn't exit after SIGTERM, force killing process group", pid);
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+                    return;
+                }
+
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = pid; // suppress unused
+        }
+    });
+
     Ok(())
 }
 
@@ -429,6 +463,15 @@ impl SidecarManager {
         ports
     }
 
+    pub fn get_background_session_ids(&self) -> Vec<String> {
+        self.instances.iter()
+            .filter(|(_, inst)| {
+                inst.owners.iter().any(|o| matches!(o, SidecarOwner::BackgroundCompletion(_)))
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     pub fn list_running(&mut self) -> Vec<(String, Option<String>, u16)> {
         let mut result = Vec::new();
         for (id, inst) in self.instances.iter_mut() {
@@ -596,8 +639,23 @@ pub fn start_sidecar(
     // Drop lock before blocking health check
     drop(guard);
 
+    // Build alive_check closure that re-acquires the lock to check process liveness
+    let liveness_manager = manager.clone();
+    let liveness_id = sidecar_id.clone();
+    let alive_check: Box<dyn Fn() -> bool> = Box::new(move || {
+        if let Ok(mut guard) = liveness_manager.lock() {
+            if let Some(instance) = guard.get_instance_mut(&liveness_id) {
+                matches!(instance.process.try_wait(), Ok(None))
+            } else {
+                false
+            }
+        } else {
+            true // can't acquire lock, assume alive
+        }
+    });
+
     // TCP health check (runs without holding the lock)
-    match wait_for_health(port, None) {
+    match wait_for_health(port, Some(alive_check)) {
         Ok(()) => {
             let mut guard = manager.lock().map_err(|e| e.to_string())?;
             if let Some(inst) = guard.get_instance_mut(&sidecar_id) {
@@ -818,4 +876,240 @@ pub async fn monitor_global_sidecar(
             );
         }
     }
+}
+
+// ── Background Session Completion ─────────────────────────────────
+// Keeps a Sidecar alive in the background while AI finishes responding,
+// even after the Session owner releases its ownership.
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundCompletionResult {
+    pub started: bool,
+    pub session_id: String,
+}
+
+/// Check if a Sidecar's session is currently in "running" state
+/// by calling GET /agent/state
+fn check_sidecar_running(port: u16) -> Option<bool> {
+    let url = format!("http://127.0.0.1:{}/agent/state", port);
+    let client = crate::local_http::blocking_builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().ok()?;
+    json.get("isRunning").and_then(|v| v.as_bool())
+}
+
+/// Start background completion for a session.
+/// Adds a BackgroundCompletion owner and spawns a polling thread.
+/// Returns { started: true } if AI is actively running, { started: false } if idle.
+pub fn start_background_completion(
+    app_handle: &tauri::AppHandle,
+    manager: &ManagedSidecarState,
+    session_id: &str,
+) -> Result<BackgroundCompletionResult, String> {
+    let result_id = session_id.to_string();
+
+    // Phase 1: Check if sidecar exists and get port (with lock)
+    let port = {
+        let mut guard = manager.lock().map_err(|e| e.to_string())?;
+        if let Some(instance) = guard.get_instance_mut(session_id) {
+            if instance.is_running() {
+                Some(instance.port)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    let port = match port {
+        Some(p) => p,
+        None => {
+            log::debug!("[bg-completion] No running sidecar for session {}", session_id);
+            return Ok(BackgroundCompletionResult { started: false, session_id: result_id });
+        }
+    };
+
+    // Phase 2: Check session state (without lock — HTTP call)
+    let is_running = check_sidecar_running(port).unwrap_or(false);
+
+    if !is_running {
+        log::info!("[bg-completion] Session {} is not running, no background completion needed", session_id);
+        return Ok(BackgroundCompletionResult { started: false, session_id: result_id });
+    }
+
+    // Phase 3: Add BackgroundCompletion owner (with lock)
+    {
+        let mut guard = manager.lock().map_err(|e| e.to_string())?;
+        if let Some(instance) = guard.get_instance_mut(session_id) {
+            let bg_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
+            if instance.owners.contains(&bg_owner) {
+                log::info!("[bg-completion] Session {} already has a BackgroundCompletion owner", session_id);
+                return Ok(BackgroundCompletionResult { started: true, session_id: result_id });
+            }
+            instance.owners.insert(bg_owner);
+            log::info!("[bg-completion] Added BackgroundCompletion owner to session {} (port {})", session_id, port);
+        } else {
+            log::warn!("[bg-completion] Sidecar disappeared during state check for session {}", session_id);
+            return Ok(BackgroundCompletionResult { started: false, session_id: result_id });
+        }
+    }
+
+    // Phase 4: Spawn polling thread
+    let manager_clone = Arc::clone(manager);
+    let session_id_clone = session_id.to_string();
+    let app_handle_clone = app_handle.clone();
+
+    thread::spawn(move || {
+        poll_background_completion(&app_handle_clone, &manager_clone, &session_id_clone, port);
+    });
+
+    Ok(BackgroundCompletionResult { started: true, session_id: result_id })
+}
+
+/// Polling loop that runs in a background thread.
+/// Checks session state every BG_POLL_INTERVAL_SECS until AI finishes,
+/// then removes the BackgroundCompletion owner (which may stop the Sidecar).
+fn poll_background_completion(
+    app_handle: &tauri::AppHandle,
+    manager: &ManagedSidecarState,
+    session_id: &str,
+    port: u16,
+) {
+    use tauri::Emitter;
+
+    log::info!("[bg-completion] Starting polling for session {} on port {}", session_id, port);
+    let start_time = std::time::Instant::now();
+    let max_duration = Duration::from_secs(BG_MAX_DURATION_SECS);
+    let poll_interval = Duration::from_secs(BG_POLL_INTERVAL_SECS);
+    let bg_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
+    let mut consecutive_http_failures: u32 = 0;
+    const MAX_HTTP_FAILURES: u32 = 3;
+
+    loop {
+        thread::sleep(poll_interval);
+
+        // Safety timeout
+        if start_time.elapsed() > max_duration {
+            log::warn!("[bg-completion] Session {} hit safety timeout ({} min), stopping",
+                session_id, BG_MAX_DURATION_SECS / 60);
+            break;
+        }
+
+        // Check owner still exists + sidecar process still alive
+        {
+            let mut guard = match manager.lock() {
+                Ok(g) => g,
+                Err(_) => break,
+            };
+            match guard.get_instance_mut(session_id) {
+                Some(instance) => {
+                    // Owner removed externally (e.g., user reconnected)
+                    if !instance.owners.contains(&bg_owner) {
+                        log::info!("[bg-completion] BackgroundCompletion owner removed for session {} (user reconnected?), exiting poll", session_id);
+                        return; // Don't remove owner — it's already gone
+                    }
+                    // Process died
+                    if !instance.is_running() {
+                        log::warn!("[bg-completion] Sidecar process died for session {}", session_id);
+                        break;
+                    }
+                }
+                None => {
+                    log::info!("[bg-completion] Sidecar removed for session {}, exiting poll", session_id);
+                    return; // Sidecar already gone
+                }
+            }
+        }
+
+        // Check session state via HTTP (lock released)
+        match check_sidecar_running(port) {
+            Some(true) => {
+                consecutive_http_failures = 0;
+                log::debug!("[bg-completion] Session {} still running, continuing poll", session_id);
+                continue;
+            }
+            Some(false) => {
+                log::info!("[bg-completion] Session {} finished", session_id);
+                break;
+            }
+            None => {
+                consecutive_http_failures += 1;
+                if consecutive_http_failures >= MAX_HTTP_FAILURES {
+                    log::warn!("[bg-completion] Session {} HTTP unreachable {} consecutive times, giving up",
+                        session_id, consecutive_http_failures);
+                    break;
+                }
+                log::warn!("[bg-completion] Session {} HTTP unreachable ({}/{}), retrying...",
+                    session_id, consecutive_http_failures, MAX_HTTP_FAILURES);
+                continue;
+            }
+        }
+    }
+
+    // Remove BackgroundCompletion owner (may stop sidecar if no other owners)
+    let mut guard = match manager.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let sidecar_stopped = if let Some(instance) = guard.get_instance_mut(session_id) {
+        instance.owners.remove(&bg_owner);
+        if instance.owners.is_empty() {
+            drop(guard);
+            if let Ok(mut g) = manager.lock() {
+                let _ = g.stop_sidecar(session_id);
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    log::info!("[bg-completion] Session {} background completion finished, sidecar_stopped: {}",
+        session_id, sidecar_stopped);
+
+    let _ = app_handle.emit("session:background-complete", serde_json::json!({
+        "sessionId": session_id,
+        "sidecarStopped": sidecar_stopped,
+    }));
+}
+
+/// Cancel background completion for a session (e.g., when user reconnects).
+/// Simply removes the BackgroundCompletion owner; the polling thread will detect this and exit.
+pub fn cancel_background_completion(
+    manager: &ManagedSidecarState,
+    session_id: &str,
+) -> Result<bool, String> {
+    let mut guard = manager.lock().map_err(|e| e.to_string())?;
+    if let Some(instance) = guard.get_instance_mut(session_id) {
+        let bg_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
+        if instance.owners.contains(&bg_owner) {
+            instance.owners.remove(&bg_owner);
+            log::info!("[bg-completion] Cancelled background completion for session {}", session_id);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    } else {
+        Ok(false)
+    }
+}
+
+/// Get session IDs that have active background completions
+pub fn get_background_session_ids(manager: &ManagedSidecarState) -> Vec<String> {
+    let guard = match manager.lock() {
+        Ok(g) => g,
+        Err(_) => return Vec::new(),
+    };
+    guard.get_background_session_ids()
 }

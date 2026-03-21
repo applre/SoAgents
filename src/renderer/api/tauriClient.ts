@@ -81,3 +81,25 @@ export function getCachedGlobalServerUrl(): string | null {
 export function clearCachedGlobalServerUrl(): void {
   _globalServerUrl = null;
 }
+
+// ── Background Completion API ──
+
+export interface BackgroundCompletionResult {
+  started: boolean;
+  sessionId: string;
+}
+
+export async function startBackgroundCompletion(sessionId: string): Promise<BackgroundCompletionResult> {
+  if (!isTauri()) return { started: false, sessionId };
+  return invoke<BackgroundCompletionResult>('cmd_start_background_completion', { sessionId });
+}
+
+export async function cancelBackgroundCompletion(sessionId: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  return invoke<boolean>('cmd_cancel_background_completion', { sessionId });
+}
+
+export async function getBackgroundSessions(): Promise<string[]> {
+  if (!isTauri()) return [];
+  return invoke<string[]>('cmd_get_background_sessions');
+}

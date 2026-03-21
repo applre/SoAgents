@@ -841,7 +841,7 @@ async fn execute_with_sidecar(
     // Step 1: Create session via global sidecar to get sessionId first
     let global_port = {
         let sidecar_state: tauri::State<SidecarState> = app_handle.state();
-        let mgr = sidecar_state.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut mgr = sidecar_state.lock().map_err(|e| format!("Lock error: {}", e))?;
         mgr.get_port(sidecar::GLOBAL_SIDECAR_ID)
             .ok_or_else(|| "Global sidecar not running".to_string())?
     };
@@ -889,9 +889,9 @@ async fn execute_with_sidecar(
     let owner_clone = owner.clone();
     let bun_path_clone = bun_path.clone();
     let script_path_clone = script_path.clone();
-    let port = tokio::task::spawn_blocking(move || {
-        let mut mgr = sidecar_arc.lock().map_err(|e| format!("Lock error: {}", e))?;
-        mgr.start_sidecar(
+    let port = tokio::task::spawn_blocking(move || -> Result<u16, String> {
+        sidecar::start_sidecar(
+            &sidecar_arc,
             sid,
             Some(wd),
             &bun_path_clone,

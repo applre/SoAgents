@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { TabContext, TabApiContext, TabActiveContext, type TabState, type TabApiContextValue } from './TabContext';
 import { SseConnection } from '../api/SseConnection';
-import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl, listRunningSidecars } from '../api/tauriClient';
+import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl, listRunningSidecars, cancelBackgroundCompletion, startBackgroundCompletion } from '../api/tauriClient';
 import { apiGetJson, apiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import type { Message, ContentBlock, ChatImage, TurnMeta } from '../types/chat';
@@ -532,6 +532,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   // ── stopSidecarCleanup: 停止 sidecar 并清理 ──
   const stopSidecarCleanup = useCallback(async () => {
     const sid = sessionIdRef.current;
+    const wasRunning = isRunningRef.current;
     if (sseRef.current) {
       sseRef.current.disconnect();
       sseRef.current = null;
@@ -541,6 +542,10 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     isRunningRef.current = false;
     setIsRunning(false);
     if (sid) {
+      // AI 正在运行时，启动后台完成而非直接停止
+      if (wasRunning) {
+        await startBackgroundCompletion(sid).catch(() => {});
+      }
       await stopSessionSidecar(sid).catch(() => {});
     }
   }, []);
@@ -561,9 +566,17 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     setIsRunning(false);
     historyMessagesRef.current = [];
     isRunningRef.current = false;
+    isStreamingRef.current = false;
     sseRef.current = null;
     serverUrlRef.current = null;
     lastActivityRef.current = 0;
+    // Reset auto-title state for new session
+    autoTitleAttemptedRef.current = false;
+    titleRoundsRef.current = [];
+    pendingUserMessagesRef.current = [];
+    lastCompletedTextRef.current = '';
+    lastModelRef.current = undefined;
+    lastProviderEnvRef.current = undefined;
 
     if (!sessionId) return;
 
@@ -589,6 +602,9 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
 
       // 2. 发现运行中的 sidecar 并重连
       try {
+        // 取消后台完成（如果有），因为用户重新打开了这个 session
+        await cancelBackgroundCompletion(sessionId).catch(() => {});
+
         const sidecars = await listRunningSidecars();
         const sc = sidecars.find((s) => s.sessionId === sessionId && s.agentDir === agentDir);
         if (!sc || sessionIdRef.current !== sessionId) return;

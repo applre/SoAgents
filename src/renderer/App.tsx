@@ -20,7 +20,7 @@ import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
 import TaskCenterView from './pages/TaskCenterView';
-import { startGlobalSidecar, getDefaultWorkspace, stopSessionSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, updateGlobalServerUrl } from './api/tauriClient';
+import { startGlobalSidecar, getDefaultWorkspace, stopSessionSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, updateGlobalServerUrl, startBackgroundCompletion } from './api/tauriClient';
 import { listen } from '@tauri-apps/api/event';
 import { globalApiPutJson } from './api/apiFetch';
 import Chat, { WorkspaceTrigger } from './pages/Chat';
@@ -223,10 +223,19 @@ export default function App() {
       refreshSidebarSessions();
     }).then((fn) => { unlistenRestarted = fn; });
 
+    // Listen for background completion events
+    let unlistenBgComplete: (() => void) | undefined;
+    listen<{ session_id: string }>('session:background-complete', (event) => {
+      if (!mountedRef.current) return;
+      console.log('[App] Background completion finished:', event.payload.session_id);
+      refreshSidebarSessions();
+    }).then((fn) => { unlistenBgComplete = fn; });
+
     return () => {
       mountedRef.current = false;
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
       unlistenRestarted?.();
+      unlistenBgComplete?.();
     };
   }, [refreshSidebarSessions]);
 
@@ -441,9 +450,10 @@ export default function App() {
     setTabs((prev) => {
       if (prev.length <= 1) return prev;
       const tab = prev.find((t) => t.id === tabId);
-      // 正在生成时关闭 → toast 提示后台继续
+      // 正在生成时关闭 → 启动后台完成 + toast 提示
       if (tab?.isGenerating && tab.sessionId) {
         toast.info('AI 继续在后台完成任务');
+        startBackgroundCompletion(tab.sessionId).catch(console.error);
       }
       const newTabs = prev.filter((t) => t.id !== tabId);
       if (activeTabId === tabId) {
