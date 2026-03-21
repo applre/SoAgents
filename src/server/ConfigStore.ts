@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG, PROVIDERS } from '../shared/providers';
 import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const DATA_DIR = join(homedir(), '.soagents');
+export const CONFIG_DIR = DATA_DIR;
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 
 function ensureDataDir() {
@@ -29,12 +30,31 @@ export function readConfig(): AppConfig {
     providerVerifyStatus: parsed.providerVerifyStatus,
     providerModelAliases: parsed.providerModelAliases,
     mcpServerArgs: parsed.mcpServerArgs,
+    // ── MCP 统一存储字段 ──
+    mcpServers: parsed.mcpServers,
+    mcpEnabledServers: parsed.mcpEnabledServers,
+    mcpServerEnv: parsed.mcpServerEnv,
+    // ── 其他持久化字段 ──
+    minimizeToTray: parsed.minimizeToTray,
+    defaultWorkspacePath: parsed.defaultWorkspacePath,
+    proxySettings: parsed.proxySettings,
+    showDevTools: parsed.showDevTools,
   };
 }
 
 export function writeConfig(config: AppConfig): void {
   ensureDataDir();
   safeWriteJsonSync(CONFIG_PATH, config);
+}
+
+/**
+ * Disk-first 部分更新：读取最新配置 → 合并 → 写入。
+ * 遵循 CLAUDE.md "Config 持久化" 约束。
+ */
+export function updateConfig(partial: Partial<AppConfig>): void {
+  const current = readConfig();
+  const merged = { ...current, ...partial };
+  writeConfig(merged);
 }
 
 function isValidCustomProviderId(id: string): boolean {

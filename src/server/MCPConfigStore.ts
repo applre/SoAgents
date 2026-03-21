@@ -1,14 +1,52 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import type { McpServerDefinition } from '../shared/types/mcp';
 import { PRESET_MCP_SERVERS } from '../shared/mcp-presets';
+import { readConfig, updateConfig, CONFIG_DIR } from './ConfigStore';
 
-const MCP_CONFIG_PATH = join(homedir(), '.soagents', 'mcp.json');
-const MCP_STATE_PATH = join(homedir(), '.soagents', 'mcp-state.json');
-const MCP_ENV_PATH = join(homedir(), '.soagents', 'mcp-env.json');
+// ── 旧文件迁移 ──
 
-// 保留旧接口用于文件读写（向后兼容 mcp.json 格式）
+const MIGRATION_FLAG = join(CONFIG_DIR, 'mcp-migrated');
+let migrationDone = false;
+
+function ensureMigration(): void {
+  if (migrationDone) return;
+  migrationDone = true;
+  if (existsSync(MIGRATION_FLAG)) return;
+
+  const oldMcpPath = join(CONFIG_DIR, 'mcp.json');
+  const oldStatePath = join(CONFIG_DIR, 'mcp-state.json');
+  const oldEnvPath = join(CONFIG_DIR, 'mcp-env.json');
+
+  try {
+    let didMigrate = false;
+    const patch: Record<string, unknown> = {};
+
+    if (existsSync(oldMcpPath)) {
+      patch.mcpServers = JSON.parse(readFileSync(oldMcpPath, 'utf-8'));
+      didMigrate = true;
+    }
+    if (existsSync(oldStatePath)) {
+      const state = JSON.parse(readFileSync(oldStatePath, 'utf-8'));
+      patch.mcpEnabledServers = state.enabledServers ?? state.enabledIds ?? [];
+      didMigrate = true;
+    }
+    if (existsSync(oldEnvPath)) {
+      patch.mcpServerEnv = JSON.parse(readFileSync(oldEnvPath, 'utf-8'));
+      didMigrate = true;
+    }
+
+    if (didMigrate) {
+      updateConfig(patch as Parameters<typeof updateConfig>[0]);
+      writeFileSync(MIGRATION_FLAG, new Date().toISOString());
+      console.log('[MCPConfigStore] Migrated from legacy files to AppConfig');
+    }
+  } catch (err) {
+    console.error('[MCPConfigStore] Migration failed:', err);
+  }
+}
+
+// ── 保留旧接口用于 AppConfig 内部存储格式 ──
 export interface MCPServerConfig {
   name?: string;
   type: 'stdio' | 'http' | 'sse';
@@ -19,65 +57,18 @@ export interface MCPServerConfig {
   headers?: Record<string, string>;
 }
 
-interface McpState {
-  enabledServers: string[];
-}
+// ── 公开函数（签名不变，调用方无需修改）──
 
-function ensureDir(filePath: string): void {
-  const dir = dirname(filePath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-}
-
-function readUserMcpConfig(): Record<string, MCPServerConfig> {
-  if (!existsSync(MCP_CONFIG_PATH)) return {};
-  try {
-    return JSON.parse(readFileSync(MCP_CONFIG_PATH, 'utf-8')) as Record<string, MCPServerConfig>;
-  } catch {
-    return {};
-  }
-}
-
-function writeUserMcpConfig(config: Record<string, MCPServerConfig>): void {
-  ensureDir(MCP_CONFIG_PATH);
-  writeFileSync(MCP_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
-}
-
-function readMcpState(): McpState {
-  if (!existsSync(MCP_STATE_PATH)) {
-    // 首次运行：用户已有 MCP 全部启用，预设默认禁用
-    const userConfigs = readUserMcpConfig();
-    const userIds = Object.keys(userConfigs);
-    return { enabledServers: userIds };
-  }
-  try {
-    return JSON.parse(readFileSync(MCP_STATE_PATH, 'utf-8')) as McpState;
-  } catch {
-    return { enabledServers: [] };
-  }
-}
-
-function writeMcpState(state: McpState): void {
-  ensureDir(MCP_STATE_PATH);
-  writeFileSync(MCP_STATE_PATH, JSON.stringify(state, null, 2), 'utf-8');
-}
-
-/**
- * 返回所有 MCP 服务器定义（预设 + 用户自定义合并）
- */
 export function getAll(): McpServerDefinition[] {
-  const userConfigs = readUserMcpConfig();
+  ensureMigration();
+  const config = readConfig();
+  const userConfigs = config.mcpServers ?? {};
   const result: McpServerDefinition[] = [];
 
-  // 预设 MCP
   for (const preset of PRESET_MCP_SERVERS) {
     result.push({ ...preset });
   }
-
-  // 用户自定义 MCP
   for (const [id, cfg] of Object.entries(userConfigs)) {
-    // 如果用户自定义的 ID 与预设重复，跳过（预设优先）
     if (PRESET_MCP_SERVERS.some((p) => p.id === id)) continue;
     result.push({
       id,
@@ -91,115 +82,61 @@ export function getAll(): McpServerDefinition[] {
       isBuiltin: false,
     });
   }
-
   return result;
 }
 
-/**
- * 获取全局启用的 MCP 服务器 ID 列表
- */
 export function getEnabledIds(): string[] {
-  return readMcpState().enabledServers;
+  ensureMigration();
+  return readConfig().mcpEnabledServers ?? [];
 }
 
-/**
- * 切换 MCP 服务器的启用/禁用状态
- */
 export function setEnabled(id: string, enabled: boolean): void {
-  const state = readMcpState();
-  const set = new Set(state.enabledServers);
-  if (enabled) {
-    set.add(id);
-  } else {
-    set.delete(id);
-  }
-  state.enabledServers = [...set];
-  writeMcpState(state);
+  const config = readConfig();
+  const set = new Set(config.mcpEnabledServers ?? []);
+  if (enabled) set.add(id); else set.delete(id);
+  updateConfig({ mcpEnabledServers: [...set] });
 }
 
-/**
- * 添加/更新用户自定义 MCP
- */
 export function set(id: string, config: MCPServerConfig): void {
-  const all = readUserMcpConfig();
-  all[id] = config;
-  writeUserMcpConfig(all);
-
-  // 新添加的用户 MCP 默认启用
-  const state = readMcpState();
-  if (!state.enabledServers.includes(id)) {
-    state.enabledServers.push(id);
-    writeMcpState(state);
+  const current = readConfig();
+  const servers = { ...(current.mcpServers ?? {}), [id]: config };
+  updateConfig({ mcpServers: servers });
+  // 新 MCP 默认启用
+  const enabled = new Set(current.mcpEnabledServers ?? []);
+  if (!enabled.has(id)) {
+    enabled.add(id);
+    updateConfig({ mcpEnabledServers: [...enabled] });
   }
 }
 
-/**
- * 删除 MCP（拒绝删除内置）
- */
 export function remove(id: string): boolean {
-  if (PRESET_MCP_SERVERS.some((p) => p.id === id)) {
-    return false; // 不允许删除内置
-  }
-  const all = readUserMcpConfig();
-  delete all[id];
-  writeUserMcpConfig(all);
-
-  // 从启用列表中移除
-  const state = readMcpState();
-  state.enabledServers = state.enabledServers.filter((s) => s !== id);
-  writeMcpState(state);
+  if (PRESET_MCP_SERVERS.some((p) => p.id === id)) return false;
+  const current = readConfig();
+  const servers = { ...(current.mcpServers ?? {}) };
+  delete servers[id];
+  const enabled = (current.mcpEnabledServers ?? []).filter((s) => s !== id);
+  updateConfig({ mcpServers: servers, mcpEnabledServers: enabled });
   return true;
 }
 
-/**
- * 检查指定 ID 是否为内置 MCP
- */
 export function isBuiltin(id: string): boolean {
   return PRESET_MCP_SERVERS.some((p) => p.id === id);
 }
 
-// ── Per-server environment variables (API keys etc.) ──
-
-function readMcpEnv(): Record<string, Record<string, string>> {
-  if (!existsSync(MCP_ENV_PATH)) return {};
-  try {
-    return JSON.parse(readFileSync(MCP_ENV_PATH, 'utf-8')) as Record<string, Record<string, string>>;
-  } catch {
-    return {};
-  }
-}
-
-function writeMcpEnv(data: Record<string, Record<string, string>>): void {
-  ensureDir(MCP_ENV_PATH);
-  writeFileSync(MCP_ENV_PATH, JSON.stringify(data, null, 2), 'utf-8');
-}
-
-/**
- * 获取指定 MCP 的环境变量
- */
 export function getServerEnv(id: string): Record<string, string> {
-  return readMcpEnv()[id] ?? {};
+  return readConfig().mcpServerEnv?.[id] ?? {};
 }
 
-/**
- * 获取所有 MCP 的环境变量
- */
 export function getAllServerEnv(): Record<string, Record<string, string>> {
-  return readMcpEnv();
+  return readConfig().mcpServerEnv ?? {};
 }
 
-/**
- * 保存指定 MCP 的环境变量
- */
 export function setServerEnv(id: string, env: Record<string, string>): void {
-  const all = readMcpEnv();
-  all[id] = env;
-  writeMcpEnv(all);
+  const current = readConfig();
+  const allEnv = { ...(current.mcpServerEnv ?? {}), [id]: env };
+  updateConfig({ mcpServerEnv: allEnv });
 }
 
-/**
- * 检查需要配置的 MCP 是否已配置完成
- */
 export function checkNeedsConfig(id: string): boolean {
   const preset = PRESET_MCP_SERVERS.find((p) => p.id === id);
   if (!preset?.requiresConfig?.length) return false;
