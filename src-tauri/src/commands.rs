@@ -1,9 +1,8 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
-use crate::sidecar::{self, SidecarManager, SidecarOwner, GLOBAL_SIDECAR_ID};
+use crate::sidecar::{self, ManagedSidecarState, SidecarOwner, GLOBAL_SIDECAR_ID};
 
-pub type SidecarState = Arc<Mutex<SidecarManager>>;
+pub type SidecarState = ManagedSidecarState;
 
 #[tauri::command]
 pub fn cmd_start_session_sidecar(
@@ -17,8 +16,7 @@ pub fn cmd_start_session_sidecar(
 
     let owner = SidecarOwner::Session(session_id.clone());
     let agent_path = agent_dir.map(PathBuf::from);
-    let mut manager = state.lock().map_err(|e| format!("Lock error: {}", e))?;
-    manager.start_sidecar(session_id, agent_path, &bun_path, &script_path, Some(owner))?;
+    sidecar::start_sidecar(&state, session_id, agent_path, &bun_path, &script_path, Some(owner))?;
     Ok(())
 }
 
@@ -38,7 +36,7 @@ pub fn cmd_get_session_server_url(
     session_id: String,
     state: tauri::State<'_, SidecarState>,
 ) -> Result<String, String> {
-    let manager = state.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let mut manager = state.lock().map_err(|e| format!("Lock error: {}", e))?;
     manager
         .get_port(&session_id)
         .map(|port| format!("http://127.0.0.1:{}", port))
@@ -53,8 +51,7 @@ pub fn cmd_start_global_sidecar(
     let bun_path = sidecar::find_bun_executable(&app_handle)?;
     let script_path = sidecar::find_server_script(&app_handle)?;
 
-    let mut manager = state.lock().map_err(|e| format!("Lock error: {}", e))?;
-    manager.start_sidecar(GLOBAL_SIDECAR_ID.to_string(), None, &bun_path, &script_path, None)?;
+    sidecar::start_sidecar(&state, GLOBAL_SIDECAR_ID.to_string(), None, &bun_path, &script_path, None)?;
     Ok(())
 }
 
@@ -140,4 +137,28 @@ pub async fn cmd_propagate_proxy(
 
     log::info!("[proxy-propagate] Done: {} updated, {} failed", ok, fail);
     Ok(serde_json::json!({ "updated": ok, "failed": fail }))
+}
+
+#[tauri::command]
+pub fn cmd_start_background_completion(
+    app_handle: tauri::AppHandle,
+    session_id: String,
+    state: tauri::State<'_, SidecarState>,
+) -> Result<sidecar::BackgroundCompletionResult, String> {
+    sidecar::start_background_completion(&app_handle, &state, &session_id)
+}
+
+#[tauri::command]
+pub fn cmd_cancel_background_completion(
+    session_id: String,
+    state: tauri::State<'_, SidecarState>,
+) -> Result<bool, String> {
+    sidecar::cancel_background_completion(&state, &session_id)
+}
+
+#[tauri::command]
+pub fn cmd_get_background_sessions(
+    state: tauri::State<'_, SidecarState>,
+) -> Result<Vec<String>, String> {
+    Ok(sidecar::get_background_session_ids(&state))
 }
