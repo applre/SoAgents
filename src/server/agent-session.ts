@@ -69,6 +69,60 @@ interface SessionConfig {
   mcpEnabledServerIds?: string[];
 }
 
+// ── 全局 MCP 配置（由前端通过 /api/mcp/set 推送）──
+
+import type { McpServerDefinition } from '../shared/types/mcp';
+
+let currentMcpServers: McpServerDefinition[] | null = null;
+
+/**
+ * 计算 MCP 配置指纹，用于检测配置变化。
+ */
+function mcpConfigFingerprint(servers: McpServerDefinition[]): string {
+  const items = servers
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((s) => ({
+      id: s.id,
+      type: s.type,
+      command: s.command,
+      args: s.args,
+      url: s.url,
+      env: s.env,
+      headers: s.headers,
+    }));
+  return JSON.stringify(items);
+}
+
+/**
+ * 前端推送有效 MCP 配置。若配置变化且有活跃 Session，触发重启。
+ */
+export function setMcpServers(servers: McpServerDefinition[]): void {
+  const changed =
+    currentMcpServers === null ||
+    mcpConfigFingerprint(currentMcpServers) !== mcpConfigFingerprint(servers);
+
+  currentMcpServers = servers;
+
+  if (!changed) return;
+
+  console.log(`[MCP] Config updated: ${servers.map((s) => s.id).join(', ') || 'none'}`);
+
+  // 通知所有活跃 runner 重启（延迟到当前 turn 完成后）
+  for (const r of getAllRunners()) {
+    if (r.isSessionActive()) {
+      r.requestMcpRestart();
+    }
+  }
+}
+
+/**
+ * 获取当前推送的 MCP 配置。null 表示前端尚未推送。
+ */
+export function getMcpServers(): McpServerDefinition[] | null {
+  return currentMcpServers;
+}
+
 export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
 
@@ -246,6 +300,8 @@ class SessionRunner {
   private currentModel: string | undefined;
   private currentPermissionMode: PermissionMode = 'acceptEdits';
   private sessionConfig: SessionConfig | null = null;
+  /** Last known config — preserved after session ends for recovery (forceExecute when session dead) */
+  private lastSessionConfig: SessionConfig | null = null;
 
   // ── 持久 Session 门控 ──
   private messageResolver: ((item: QueueItem | null) => void) | null = null;
@@ -253,6 +309,9 @@ class SessionRunner {
   private shouldAbort = false;
   private sessionTerminationPromise: Promise<void> | null = null;
   private messageQueue: QueueItem[] = [];
+  /** Reset guard: non-null means a restart is in progress; sendMessage awaits it */
+  private resetPromise: Promise<void> | null = null;
+  private resolveReset: (() => void) | null = null;
 
   // ── 每轮助手内容 ──
   private turnAssistantContent = '';
@@ -270,6 +329,25 @@ class SessionRunner {
   private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
   private pendingPermissionData = new Map<string, { toolName: string; toolUseId: string; toolInput: Record<string, unknown> }>();
   private pendingQuestionData = new Map<string, { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }>();
+
+  // ── MCP 动态重启 ──
+  private mcpRestartPending = false;
+
+  /** 标记需要 MCP 重启，延迟到当前 streaming 完成后执行 */
+  requestMcpRestart(): void {
+    if (this.isStreaming) {
+      this.mcpRestartPending = true;
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] MCP restart deferred (streaming)`);
+    } else if (this.sessionActive) {
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] MCP config changed, restarting session`);
+      this.abortSession();
+    }
+  }
+
+  /** 公开 sessionActive 状态 */
+  isSessionActive(): boolean {
+    return this.sessionActive;
+  }
 
   // ── Plan 模式 ──
   private pendingExitPlanMode = new Map<string, { resolve: (approved: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -425,13 +503,21 @@ class SessionRunner {
 
     try {
       // ── 构建 MCP 配置 ──
-      const mcpAll = MCPConfigStore.getAll();
-      const globalEnabledIds = new Set(MCPConfigStore.getEnabledIds());
-      let mcpFiltered = mcpAll.filter((s) => globalEnabledIds.has(s.id));
-      if (config.mcpEnabledServerIds !== undefined) {
-        const workspaceSet = new Set(config.mcpEnabledServerIds);
-        mcpFiltered = mcpFiltered.filter((s) => workspaceSet.has(s.id));
-      }
+      // 优先使用前端推送的全局配置（已经是 globalEnabled ∩ workspaceEnabled 的结果）
+      // 回退到传统方式（从磁盘读取 + mcpEnabledServerIds 过滤）
+      const pushedMcp = getMcpServers();
+      const mcpFiltered: McpServerDefinition[] = pushedMcp !== null
+        ? pushedMcp
+        : (() => {
+            const mcpAll = MCPConfigStore.getAll();
+            const globalEnabledIds = new Set(MCPConfigStore.getEnabledIds());
+            let filtered = mcpAll.filter((s) => globalEnabledIds.has(s.id));
+            if (config.mcpEnabledServerIds !== undefined) {
+              const workspaceSet = new Set(config.mcpEnabledServerIds);
+              filtered = filtered.filter((s) => workspaceSet.has(s.id));
+            }
+            return filtered;
+          })();
 
       let mcpServers: Record<string, unknown> | undefined;
       if (mcpFiltered.length > 0) {
@@ -699,6 +785,7 @@ class SessionRunner {
       this.sessionActive = false;
       this.isStreaming = false;
       this.querySession = null;
+      this.lastSessionConfig = this.sessionConfig;
       this.sessionConfig = null;
 
       // 清理阻塞的 gate
@@ -709,8 +796,13 @@ class SessionRunner {
       }
       this.signalTurnComplete();
 
-      // Drain：逐条广播 queue:cancelled
-      this.drainMessageQueue();
+      // Only drain queue on unexpected death (not intentional abort).
+      // Intentional abort (shouldAbort=true) means the caller (sendMessage restart / stop)
+      // handles cleanup. Draining here would cancel messages that sendMessage is about to re-queue.
+      if (!this.shouldAbort && this.messageQueue.length > 0) {
+        console.log(`${logPrefix} Unexpected session death, draining ${this.messageQueue.length} queued message(s)`);
+        this.drainMessageQueue();
+      }
 
       console.log(`${logPrefix} Subprocess terminated`);
       resolveTermination();
@@ -842,8 +934,17 @@ class SessionRunner {
         durationMs,
       });
 
-      // 标记流式结束，解锁 generator 进入下一轮
+      // 标记流式结束
       this.isStreaming = false;
+
+      // 检查延迟的 MCP 重启请求
+      if (this.mcpRestartPending) {
+        this.mcpRestartPending = false;
+        console.log(`${logTag} Executing deferred MCP restart`);
+        this.abortSession();
+      }
+
+      // 解锁 generator 进入下一轮
       this.signalTurnComplete();
     } else {
       console.log(`${logTag} unhandled event type: ${msg.type}`);
@@ -914,6 +1015,13 @@ class SessionRunner {
   // ── 公共 API ──
 
   async sendMessage(text: string, agentDir: string, providerEnv?: ProviderEnv, model?: string, permissionMode?: PermissionMode, mcpEnabledServerIds?: string[], images?: ChatImage[]): Promise<{ ok: boolean; queued?: boolean; queueId?: string; error?: string }> {
+    // Reset guard: wait for any in-progress session restart to complete
+    if (this.resetPromise) {
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] sendMessage: waiting for session reset to complete...`);
+      await this.resetPromise;
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] sendMessage: session reset completed, proceeding`);
+    }
+
     const activeSessionId = this.sessionId;
     const queueId = crypto.randomUUID();
 
@@ -952,12 +1060,22 @@ class SessionRunner {
       timestamp: new Date().toISOString(),
     });
 
-    // 检测是否需要重启
+    // 检测是否需要重启（with reset guard）
     const needsRestart = this.sessionActive && this.needsSessionRestart(providerEnv, model, permissionMode);
     if (needsRestart) {
-      this.abortSession();
-      if (this.sessionTerminationPromise) {
-        await this.sessionTerminationPromise;
+      // Begin reset guard
+      this.resetPromise = new Promise(r => { this.resolveReset = r; });
+      try {
+        this.abortSession();
+        if (this.sessionTerminationPromise) {
+          await this.sessionTerminationPromise;
+        }
+      } finally {
+        // End reset guard
+        const resolve = this.resolveReset;
+        this.resetPromise = null;
+        this.resolveReset = null;
+        resolve?.();
       }
     }
 
@@ -1039,12 +1157,28 @@ class SessionRunner {
     const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
     if (idx === -1) return false;
     // 移到队首
-    const [item] = this.messageQueue.splice(idx, 1);
-    this.messageQueue.unshift(item);
-    // 中断当前回复
-    if (this.querySession) {
-      this.querySession.interrupt().catch(() => {});
+    if (idx > 0) {
+      const [item] = this.messageQueue.splice(idx, 1);
+      this.messageQueue.unshift(item);
     }
+
+    if (this.sessionActive) {
+      // Session 存活：中断当前响应，generator 会自然消费队列头部
+      if (this.querySession) {
+        this.querySession.interrupt().catch(() => {});
+      }
+    } else {
+      // Session 已死：启动新 session 来处理队列中的消息
+      const config = this.lastSessionConfig;
+      if (config) {
+        console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] forceExecuteQueueItem: session dead, starting new session`);
+        setTimeout(() => {
+          this.startSession(config);
+        }, 0);
+      }
+    }
+
+    const item = this.messageQueue[0];
     console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Force executing queue item: "${item.text.slice(0, 50)}"`);
     return true;
   }
@@ -1132,6 +1266,10 @@ class SessionRunner {
 
 let runner: SessionRunner | null = null;
 let currentSessionId: string | null = null;
+
+export function getAllRunners(): SessionRunner[] {
+  return runner ? [runner] : [];
+}
 
 export function getOrCreateRunner(sid: string): SessionRunner {
   if (runner && currentSessionId === sid) return runner;
