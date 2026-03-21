@@ -1,5 +1,5 @@
 import { createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -493,6 +493,12 @@ Bun.serve({
         servers: MCPConfigStore.getAll(),
         enabledIds: MCPConfigStore.getEnabledIds(),
       });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/mcp/set') {
+      const body = await req.json() as { servers: import('../shared/types/mcp').McpServerDefinition[] };
+      setMcpServers(body.servers ?? []);
+      return Response.json({ ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/mcp') {
