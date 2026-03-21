@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Clock, Folder, FolderOpen, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Search, Settings, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, LayoutList, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Settings } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
 import { relativeTimeCompact } from '../utils/formatTime';
-import SearchModal from './SearchModal';
 
 interface Props {
   sessions: SessionMetadata[];
@@ -15,45 +14,60 @@ interface Props {
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onNavigateToSession: (agentDir: string, sessionId: string) => void;
-  onDeleteSession: (sessionId: string) => void;
+  onArchiveSession: (sessionId: string) => void;
+  onUnarchiveSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, title: string) => void;
   onTogglePin: (sessionId: string) => void;
   onOpenSettings: () => void;
   onOpenScheduledTasks: () => void;
+  onOpenTaskCenter: () => void;
   onCollapse: () => void;
   isSettingsActive?: boolean;
   isScheduledTasksActive?: boolean;
+  isTaskCenterActive?: boolean;
   updateReady?: boolean;
   updateVersion?: string | null;
   onRestartAndUpdate?: () => void;
 }
 
+type SessionFilter = 'active' | 'archived' | 'all';
+
+const filterLabel: Record<SessionFilter, string> = {
+  active: '活跃',
+  archived: '已归档',
+  all: '全部',
+};
+
 export default function LeftSidebar({
   sessions,
   activeSessionId,
-  agentDir,
+  agentDir: _agentDir,
   pinnedSessionIds,
   runningSessions,
   onNewChat,
-  onSelectSession,
+  onSelectSession: _onSelectSession,
   onNavigateToSession,
-  onDeleteSession,
+  onArchiveSession,
+  onUnarchiveSession,
   onRenameSession,
   onTogglePin,
   onOpenSettings,
   onOpenScheduledTasks,
+  onOpenTaskCenter,
   onCollapse,
   isSettingsActive = false,
   isScheduledTasksActive = false,
+  isTaskCenterActive = false,
   updateReady = false,
   updateVersion,
   onRestartAndUpdate,
 }: Props) {
-  const [showSearch, setShowSearch] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>('active');
+  const [showFilterMenu, setShowFilterMenu] = useState(false);
   const editInputRef = useRef<HTMLInputElement>(null);
 
   const sessionTitle = useCallback((s: SessionMetadata) => {
@@ -95,8 +109,15 @@ export default function LeftSidebar({
 
   // Group sessions by agentDir
   const groupedSessions = React.useMemo(() => {
+    // 先按归档状态过滤
+    const filtered = sessions.filter(s => {
+      if (sessionFilter === 'active') return !s.archived;
+      if (sessionFilter === 'archived') return s.archived === true;
+      return true; // 'all'
+    });
+
     const groups = new Map<string, SessionMetadata[]>();
-    for (const s of sessions) {
+    for (const s of filtered) {
       const dir = s.agentDir || '未分类';
       if (!groups.has(dir)) groups.set(dir, []);
       groups.get(dir)!.push(s);
@@ -116,7 +137,7 @@ export default function LeftSidebar({
       const bLatest = new Date(b[1][0]?.lastActiveAt ?? 0).getTime();
       return bLatest - aLatest;
     });
-  }, [sessions, pinnedSessionIds]);
+  }, [sessions, pinnedSessionIds, sessionFilter]);
 
   const handleSessionClick = useCallback((s: SessionMetadata) => {
     onNavigateToSession(s.agentDir, s.id);
@@ -167,11 +188,15 @@ export default function LeftSidebar({
             新建对话
           </button>
           <button
-            onClick={() => setShowSearch(true)}
-            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
+            onClick={onOpenTaskCenter}
+            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium transition-colors text-left ${
+              isTaskCenterActive
+                ? 'bg-[var(--hover)] text-[var(--ink)]'
+                : 'text-[var(--ink)] hover:bg-[var(--hover)]'
+            }`}
           >
-            <Search size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
-            搜索对话
+            <LayoutList size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
+            任务中心
           </button>
           <button
             onClick={onOpenScheduledTasks}
@@ -187,10 +212,42 @@ export default function LeftSidebar({
         </div>
       </div>
 
-      {/* 最近对话标题（固定） */}
+      {/* 对话标题 + 筛选下拉（固定） */}
       {!isSettingsActive && sessions.length > 0 && (
         <div className="shrink-0 flex items-center justify-between" style={{ padding: '12px 22px 6px' }}>
-          <span className="text-[13px] font-semibold text-[var(--ink-secondary)]">最近对话</span>
+          <div className="relative flex items-center gap-1">
+            <span className="text-[13px] font-semibold text-[var(--ink-secondary)]">对话</span>
+            <button
+              onClick={() => setShowFilterMenu(v => !v)}
+              className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink-secondary)] transition-colors"
+            >
+              {filterLabel[sessionFilter]}
+              <ChevronDown size={10} />
+            </button>
+            {showFilterMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowFilterMenu(false)} />
+                <div
+                  className="absolute left-0 top-full mt-1 z-50 min-w-[100px] rounded-xl border border-[var(--border)] bg-white py-1"
+                  style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
+                >
+                  {(['active', 'archived', 'all'] as SessionFilter[]).map(key => (
+                    <button
+                      key={key}
+                      onClick={() => { setSessionFilter(key); setShowFilterMenu(false); }}
+                      className={`flex w-full items-center px-3 py-1.5 text-[13px] transition-colors ${
+                        sessionFilter === key
+                          ? 'text-[var(--accent)] font-medium'
+                          : 'text-[var(--ink)] hover:bg-[var(--hover)]'
+                      }`}
+                    >
+                      {filterLabel[key]}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <button onClick={onNewChat}>
             <Plus size={16} className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors" />
           </button>
@@ -304,13 +361,23 @@ export default function LeftSidebar({
                                   <Pin size={14} />
                                   {isPinned ? '取消置顶' : '置顶'}
                                 </button>
-                                <button
-                                  onClick={() => { onDeleteSession(s.id); setMenuOpenId(null); }}
-                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50 transition-colors"
-                                >
-                                  <Trash2 size={14} />
-                                  删除
-                                </button>
+                                {s.archived ? (
+                                  <button
+                                    onClick={() => { onUnarchiveSession(s.id); setMenuOpenId(null); }}
+                                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink)] hover:bg-[var(--hover)] transition-colors"
+                                  >
+                                    <ArchiveRestore size={14} />
+                                    取消归档
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => { onArchiveSession(s.id); setMenuOpenId(null); }}
+                                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--accent)] hover:bg-[var(--hover)] transition-colors"
+                                  >
+                                    <Archive size={14} />
+                                    归档
+                                  </button>
+                                )}
                               </div>
                             )}
                           </div>
@@ -324,15 +391,6 @@ export default function LeftSidebar({
           </div>
         )}
       </div>
-
-      {/* 搜索弹窗 */}
-      {showSearch && (
-        <SearchModal
-          agentDir={agentDir}
-          onSelectSession={onSelectSession}
-          onClose={() => setShowSearch(false)}
-        />
-      )}
 
       {/* 固定底部：更新提示 + 设置 */}
       <div style={{ padding: '0 14px 14px' }}>

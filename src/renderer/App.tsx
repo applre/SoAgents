@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, Search, Clock, FileText, X } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, LayoutList, Clock, FileText, X } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -19,9 +19,10 @@ import { startWindowDrag, toggleMaximize } from './utils/env';
 import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
-import SearchModal from './components/SearchModal';
-import { startGlobalSidecar, getDefaultWorkspace, stopSessionSidecar } from './api/tauriClient';
-import { globalApiDeleteJson, globalApiPutJson } from './api/apiFetch';
+import TaskCenterView from './pages/TaskCenterView';
+import { startGlobalSidecar, getDefaultWorkspace, stopSessionSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, updateGlobalServerUrl } from './api/tauriClient';
+import { listen } from '@tauri-apps/api/event';
+import { globalApiPutJson } from './api/apiFetch';
 import Chat, { WorkspaceTrigger } from './pages/Chat';
 import { TabProvider } from './context/TabProvider';
 import Settings from './pages/Settings';
@@ -135,7 +136,6 @@ export default function App() {
   const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [showSearch, setShowSearch] = useState(false);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
   const [pendingRefText, setPendingRefText] = useState<Record<string, string>>({});
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => {
@@ -163,21 +163,71 @@ export default function App() {
   const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
 
   // Independent session fetch for sidebar (all workspaces)
-  const { sessions: allSessions, refresh: refreshSidebarSessions } = useSidebarSessions();
+  const { sessions: allSessions, refresh: refreshSidebarSessions, removeSession } = useSidebarSessions();
+
+  // Refs for retry lifecycle (stable across re-renders)
+  const mountedRef = useRef(true);
+  const retryCountRef = useRef(0);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    mountedRef.current = true;
     initFrontendLogger();
-    // 必须等 global sidecar 就绪后再设置 agentDir，否则 refreshSessions 会因 sidecar 未启动而静默失败
-    Promise.all([startGlobalSidecar(), getDefaultWorkspace()]).then(([, dir]) => {
-      // sidecar 就绪后立即刷新 session 列表，不等 10s 轮询
-      refreshSidebarSessions();
-      if (!dir) return;
+    initGlobalSidecarReadyPromise();
+
+    const MAX_RETRIES = 5;
+    const BASE_DELAY = 2000;
+
+    const startGlobalSidecarSilent = async () => {
+      try {
+        await startGlobalSidecar();
+        if (!mountedRef.current) return;
+        markGlobalSidecarReady();
+        retryCountRef.current = 0;
+        refreshSidebarSessions();
+      } catch (_e) {
+        if (!mountedRef.current) return;
+        retryCountRef.current++;
+        const attempt = retryCountRef.current;
+        if (attempt <= MAX_RETRIES) {
+          const delay = BASE_DELAY * Math.pow(2, attempt - 1);
+          console.warn(`[App] Global sidecar failed, retry ${attempt}/${MAX_RETRIES} in ${delay}ms`);
+          retryTimeoutRef.current = setTimeout(() => {
+            if (mountedRef.current) void startGlobalSidecarSilent();
+          }, delay);
+        } else {
+          console.error('[App] Global sidecar failed after all retries');
+          markGlobalSidecarReady(); // Unblock waiting components
+        }
+      }
+    };
+
+    // Start global sidecar + set default workspace
+    void startGlobalSidecarSilent();
+    getDefaultWorkspace().then((dir) => {
+      if (!dir || !mountedRef.current) return;
       setTabs((prev) => prev.map((t) =>
         t.id === INITIAL_TAB.id && !t.agentDir
           ? { ...t, agentDir: dir, title: dir.split('/').pop() ?? dir }
           : t
       ));
     }).catch(console.error);
+
+    // Listen for Rust health monitor auto-restart events
+    let unlistenRestarted: (() => void) | undefined;
+    listen<string>('global-sidecar:restarted', (event) => {
+      if (!mountedRef.current) return;
+      const newUrl = event.payload;
+      console.log('[App] Global sidecar restarted by health monitor:', newUrl);
+      updateGlobalServerUrl(newUrl);
+      refreshSidebarSessions();
+    }).then((fn) => { unlistenRestarted = fn; });
+
+    return () => {
+      mountedRef.current = false;
+      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+      unlistenRestarted?.();
+    };
   }, [refreshSidebarSessions]);
 
   // 切换 tab 时清除未读标记
@@ -187,18 +237,35 @@ export default function App() {
     ));
   }, [activeTabId]);
 
-  const handleDeleteSession = useCallback(async (sessionId: string) => {
-    // 停止 sidecar + 调用全局 API 删除 session
-    await stopSessionSidecar(sessionId).catch(() => {});
-    await globalApiDeleteJson(`/chat/sessions/${sessionId}`).catch(console.error);
-    // 如果是当前活跃 session，重置 tab
+  const handleArchiveSession = useCallback(async (sessionId: string) => {
+    void stopSessionSidecar(sessionId).catch(() => {});
+
+    try {
+      await globalApiPutJson(`/chat/sessions/${sessionId}/archive`, {});
+    } catch (e) {
+      console.error('[handleArchiveSession] failed', e);
+      toast.error('归档失败，请重试');
+      return;
+    }
+
+    removeSession(sessionId);
     if (activeSessionId === sessionId) {
       setActiveSessionId(null);
       setTabs((prev) => prev.map((t) =>
         t.sessionId === sessionId ? { ...t, sessionId: null } : t
       ));
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, removeSession, toast]);
+
+  const handleUnarchiveSession = useCallback(async (sessionId: string) => {
+    try {
+      await globalApiPutJson(`/chat/sessions/${sessionId}/unarchive`, {});
+      refreshSidebarSessions();
+    } catch (e) {
+      console.error('[handleUnarchiveSession] failed', e);
+      toast.error('取消归档失败');
+    }
+  }, [refreshSidebarSessions, toast]);
 
   const handleRenameSession = useCallback(async (sessionId: string, title: string) => {
     await globalApiPutJson(`/chat/sessions/${sessionId}/title`, { title }).catch(console.error);
@@ -285,6 +352,19 @@ export default function App() {
         return prev;
       }
       const tab = createTab({ title: '定时任务', view: 'scheduled-tasks' });
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+  }, []);
+
+  const handleOpenTaskCenter = useCallback(() => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.view === 'task-center');
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const tab = createTab({ title: '任务中心', view: 'task-center' });
       setActiveTabId(tab.id);
       return [...prev, tab];
     });
@@ -489,14 +569,17 @@ export default function App() {
             onNewChat={handleNewChat}
             onSelectSession={handleSelectSession}
             onNavigateToSession={handleNavigateToSession}
-            onDeleteSession={handleDeleteSession}
+            onArchiveSession={handleArchiveSession}
+            onUnarchiveSession={handleUnarchiveSession}
             onRenameSession={handleRenameSession}
             onTogglePin={handleTogglePin}
             onOpenSettings={handleOpenSettings}
             onOpenScheduledTasks={handleOpenScheduledTasks}
+            onOpenTaskCenter={handleOpenTaskCenter}
             onCollapse={() => setShowSidebar(false)}
             isSettingsActive={activeTab?.view === 'settings'}
             isScheduledTasksActive={activeTab?.view === 'scheduled-tasks'}
+            isTaskCenterActive={activeTab?.view === 'task-center'}
             updateReady={updateReady}
             updateVersion={updateVersion}
             onRestartAndUpdate={restartAndUpdate}
@@ -525,14 +608,18 @@ export default function App() {
             >
               <MessageSquarePlus size={18} />
             </button>
-            {/* 搜索对话 */}
+            {/* 任务中心 */}
             <button
-              onClick={() => setShowSearch(true)}
+              onClick={handleOpenTaskCenter}
               onMouseDown={(e) => e.stopPropagation()}
-              title="搜索对话"
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+              title="任务中心"
+              className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                activeTab?.view === 'task-center'
+                  ? 'bg-[var(--hover)] text-[var(--ink)]'
+                  : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+              }`}
             >
-              <Search size={18} />
+              <LayoutList size={18} />
             </button>
             {/* 定时任务 */}
             <button
@@ -564,14 +651,6 @@ export default function App() {
           </div>
         )}
 
-        {/* 搜索弹窗（收缩侧边栏时使用） */}
-        {!showSidebar && showSearch && (
-          <SearchModal
-            agentDir={activeTab?.agentDir ?? undefined}
-            onSelectSession={handleSelectSession}
-            onClose={() => setShowSearch(false)}
-          />
-        )}
 
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* TopTabBar：工作区 */}
@@ -760,11 +839,19 @@ export default function App() {
                 <ScheduledTasksView onNavigateToSession={handleNavigateToSession} />
               </ScheduledTaskProvider>
             )}
+            {activeTab?.view === 'task-center' && (
+              <TaskCenterView
+                onNavigateToSession={handleNavigateToSession}
+                onOpenScheduledTasks={handleOpenScheduledTasks}
+                onArchiveSession={handleArchiveSession}
+                onUnarchiveSession={handleUnarchiveSession}
+              />
+            )}
           </main>
         </div>
 
         {/* 文件面板：与 LeftSidebar 同级，全高列，内部自行管理对齐 */}
-        {showFilesPanel && activeTab?.view !== 'settings' && activeTab?.view !== 'scheduled-tasks' && (
+        {showFilesPanel && activeTab?.view !== 'settings' && activeTab?.view !== 'scheduled-tasks' && activeTab?.view !== 'task-center' && (
           <WorkspaceFilesPanel
             agentDir={activeTab?.agentDir ?? null}
             onOpenFile={openEditorFile}
@@ -802,8 +889,9 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
           const isActive = tab.id === activeTabId;
           const isSettings = tab.view === 'settings';
           const isScheduledTasks = tab.view === 'scheduled-tasks';
+          const isTaskCenter = tab.view === 'task-center';
           const sessionMeta = tab.sessionId ? allSessions.find((s) => s.id === tab.sessionId) : null;
-          const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : (sessionMeta?.title || '新对话');
+          const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : isTaskCenter ? '任务中心' : (sessionMeta?.title || '新对话');
 
           return (
             <div
@@ -831,7 +919,7 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
               {!isActive && !tab.isGenerating && tab.hasUnread && (
                 <span className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
               )}
-              {isActive && (isSettings || isScheduledTasks || tabs.length > 1) && (
+              {isActive && (isSettings || isScheduledTasks || isTaskCenter || tabs.length > 1) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
                   className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 text-center shrink-0"
@@ -853,7 +941,7 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
       </div>
 
       {/* 右侧：展开工作区文件面板（设置页/定时任务页隐藏） */}
-      {tabs.find((t) => t.id === activeTabId)?.view !== 'settings' && tabs.find((t) => t.id === activeTabId)?.view !== 'scheduled-tasks' && (
+      {tabs.find((t) => t.id === activeTabId)?.view !== 'settings' && tabs.find((t) => t.id === activeTabId)?.view !== 'scheduled-tasks' && tabs.find((t) => t.id === activeTabId)?.view !== 'task-center' && (
         <button
           onClick={onToggleFilesPanel}
           onMouseDown={(e) => e.stopPropagation()}

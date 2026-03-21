@@ -34,6 +34,7 @@ export interface SessionMetadata {
   lastActiveAt: string;
   sdkSessionId?: string;
   stats?: SessionStats;
+  archived?: boolean;
 }
 
 export interface SessionMessage {

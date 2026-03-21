@@ -261,12 +261,18 @@ Bun.serve({
       }
     }
 
-    if (req.method === 'DELETE' && url.pathname.startsWith('/chat/sessions/')) {
-      const sessionId = url.pathname.replace('/chat/sessions/', '');
+    if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/archive$/)) {
+      const sessionId = url.pathname.split('/')[3];
       if (getCurrentSessionId() === sessionId) {
         removeRunner();
       }
-      SessionStore.deleteSession(sessionId);
+      SessionStore.archiveSession(sessionId);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/unarchive$/)) {
+      const sessionId = url.pathname.split('/')[3];
+      SessionStore.unarchiveSession(sessionId);
       return Response.json({ ok: true });
     }
 

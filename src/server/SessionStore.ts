@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, appendFileSync, readFileSync, statSync, rmdirSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, appendFileSync, readFileSync, statSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import crypto from 'node:crypto';
@@ -151,9 +151,12 @@ export function getSessionMessages(sessionId: string): SessionMessage[] {
   }
 }
 
-export function listSessions(): SessionMetadata[] {
+export function listSessions(filter?: { archived?: boolean }): SessionMetadata[] {
   ensureDirs();
-  const sessions = withLock(() => readIndex());
+  let sessions = withLock(() => readIndex());
+  if (filter?.archived !== undefined) {
+    sessions = sessions.filter(s => (s.archived ?? false) === filter.archived);
+  }
   return sessions.sort((a, b) => {
     return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
   });
@@ -341,20 +344,24 @@ export function getGlobalStats(range: '7d' | '30d' | '60d'): GlobalStats {
   };
 }
 
-export function deleteSession(sessionId: string): void {
+export function archiveSession(sessionId: string): void {
   if (!isValidId(sessionId)) throw new Error('Invalid session ID');
-  const filePath = join(SESSIONS_DIR, `${sessionId}.jsonl`);
-  if (existsSync(filePath)) {
-    try {
-      unlinkSync(filePath);
-    } catch {
-      // ignore
-    }
-  }
-  lineCountCache.delete(sessionId);
   withLock(() => {
     const sessions = readIndex();
-    const filtered = sessions.filter(s => s.id !== sessionId);
-    writeIndex(filtered);
+    const idx = sessions.findIndex(s => s.id === sessionId);
+    if (idx === -1) return;
+    sessions[idx].archived = true;
+    writeIndex(sessions);
+  });
+}
+
+export function unarchiveSession(sessionId: string): void {
+  if (!isValidId(sessionId)) throw new Error('Invalid session ID');
+  withLock(() => {
+    const sessions = readIndex();
+    const idx = sessions.findIndex(s => s.id === sessionId);
+    if (idx === -1) return;
+    sessions[idx].archived = false;
+    writeIndex(sessions);
   });
 }
