@@ -307,6 +307,7 @@ class SessionRunner {
   private messageResolver: ((item: QueueItem | null) => void) | null = null;
   private resolveTurnComplete: (() => void) | null = null;
   private shouldAbort = false;
+  private stoppedByUser = false;
   private sessionTerminationPromise: Promise<void> | null = null;
   private messageQueue: QueueItem[] = [];
   /** Reset guard: non-null means a restart is in progress; sendMessage awaits it */
@@ -491,6 +492,7 @@ class SessionRunner {
     if (this.sessionActive) return;
 
     this.shouldAbort = false;
+    this.stoppedByUser = false;
     this.sessionAlwaysAllowed.clear();
     this.sessionActive = true;
     this.sessionConfig = config;
@@ -773,13 +775,24 @@ class SessionRunner {
     } catch (err: unknown) {
       const e = err as Error;
       console.error(`${logPrefix} Error:`, err);
-      if (e?.name !== 'AbortError') {
+      if (this.stoppedByUser) {
+        // User-initiated stop — broadcast stopped (not complete/error)
+        if (this.isStreaming) {
+          this.saveTurnAssistantContent(activeSessionId);
+        }
+        broadcast('chat:message-stopped', { sessionId: activeSessionId });
+      } else if (e?.name !== 'AbortError') {
         broadcast('chat:message-error', { sessionId: activeSessionId, error: String(err) });
-      }
-      // 确保当前轮有 complete 事件
-      if (this.isStreaming) {
-        broadcast('chat:message-complete', { sessionId: activeSessionId });
-        this.saveTurnAssistantContent(activeSessionId);
+        if (this.isStreaming) {
+          broadcast('chat:message-complete', { sessionId: activeSessionId });
+          this.saveTurnAssistantContent(activeSessionId);
+        }
+      } else {
+        // AbortError from non-user-stop (e.g. restart) — still ensure complete
+        if (this.isStreaming) {
+          broadcast('chat:message-complete', { sessionId: activeSessionId });
+          this.saveTurnAssistantContent(activeSessionId);
+        }
       }
     } finally {
       this.sessionActive = false;
@@ -1189,8 +1202,13 @@ class SessionRunner {
       .map((item) => ({ queueId: item.queueId, text: item.text }));
   }
 
-  stop(): void {
+  stop(): { alreadyStopped: boolean } {
+    if (!this.sessionActive) {
+      return { alreadyStopped: true };
+    }
+    this.stoppedByUser = true;
     this.abortSession();
+    return { alreadyStopped: false };
   }
 
   respondPermission(toolUseId: string, decision: 'deny' | 'allow_once' | 'always_allow'): boolean {
