@@ -210,6 +210,8 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       const text = chunk.text;
       if (!text) return;
       lastActivityRef.current = Date.now();
+      isStreamingRef.current = true;
+      lastCompletedTextRef.current += text;
       updateStreamingMessage((prev) => {
         if (prev) {
           const blocks = [...prev.blocks];
@@ -379,11 +381,40 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         moveStreamingToHistory();
       }
 
+      // Auto-title: collect QA round, fire after 3+ rounds
+      const completedUserText = pendingUserMessagesRef.current.shift();
+      if (!autoTitleAttemptedRef.current && sessionIdRef.current && completedUserText) {
+        titleRoundsRef.current.push({
+          user: completedUserText.slice(0, 200),
+          assistant: lastCompletedTextRef.current.slice(0, 200),
+        });
+        if (titleRoundsRef.current.length >= AUTO_TITLE_MIN_ROUNDS) {
+          autoTitleAttemptedRef.current = true;
+          const sid = sessionIdRef.current;
+          const rounds = [...titleRoundsRef.current];
+          const model = evt?.model || lastModelRef.current || '';
+          const pEnv = lastProviderEnvRef.current;
+          const url = serverUrlRef.current;
+          if (url) {
+            const postJson = <T,>(path: string, body: unknown): Promise<T> => apiPostJson<T>(url, path, body);
+            generateSessionTitle(postJson, sid, rounds, model, pEnv).catch(() => {});
+          }
+        }
+      }
+      lastCompletedTextRef.current = '';
+
+      isStreamingRef.current = false;
       isRunningRef.current = false;
       setIsRunning(false);
       setIsLoading(false);
       setSessionState('idle');
       lastActivityRef.current = Date.now();
+
+      // Clear stop timeout if any
+      if (stopTimeoutRef.current) {
+        clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+      }
 
       // 非活跃 tab 收到完成事件 → 标记未读
       if (!isActiveRef.current) {
@@ -391,13 +422,35 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       }
     });
 
+    sse.on('chat:message-stopped', () => {
+      moveStreamingToHistory();
+      lastCompletedTextRef.current = '';
+      isStreamingRef.current = false;
+      isRunningRef.current = false;
+      setIsRunning(false);
+      setIsLoading(false);
+      setSessionState('idle');
+      // Clear stop timeout since we received confirmation
+      if (stopTimeoutRef.current) {
+        clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+      }
+    });
+
     sse.on('chat:message-error', () => {
       // Move whatever streaming content we have to history
       moveStreamingToHistory();
+      lastCompletedTextRef.current = '';
+      isStreamingRef.current = false;
       isRunningRef.current = false;
       setIsRunning(false);
       setIsLoading(false);
       setSessionState('error');
+      // Clear stop timeout on error too
+      if (stopTimeoutRef.current) {
+        clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+      }
     });
 
     // ── 队列事件 ──
@@ -826,15 +879,44 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   }, [agentDir, ensureSessionSidecar, getGlobalUrl, onSessionIdChange]);
 
   const stopResponse = useCallback(async () => {
+    // Clear any existing stop timeout
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
+
+    // Immediately show "stopping" state for instant user feedback
+    setSessionState('stopping');
+
     const url = serverUrlRef.current;
-    if (!url) return;
-    await apiPostJson(url, '/chat/stop', {});
-    moveStreamingToHistory();
-    isRunningRef.current = false;
-    setIsRunning(false);
-    setIsLoading(false);
-    setSessionState('idle');
-  }, [moveStreamingToHistory]);
+    if (!url) {
+      recoverStreamingUi();
+      return;
+    }
+
+    try {
+      const response = await apiPostJson<{ success: boolean; alreadyStopped?: boolean }>(url, '/chat/stop', {});
+      if (response.success && response.alreadyStopped) {
+        // Nothing was active — restore UI immediately
+        isStreamingRef.current = false;
+        setIsLoading(false);
+        setSessionState(prev => prev === 'stopping' ? 'idle' : prev);
+        return;
+      }
+      // Set 5-second timeout: if SSE confirmation never arrives, force recover
+      stopTimeoutRef.current = setTimeout(() => {
+        if (isStreamingRef.current) {
+          console.warn(`[TabProvider ${tabId}] Stop timeout - forcing UI recovery`);
+          recoverStreamingUi();
+        }
+        setSessionState(prev => prev === 'stopping' ? 'idle' : prev);
+        stopTimeoutRef.current = null;
+      }, 5000);
+    } catch (error) {
+      console.error(`[TabProvider ${tabId}] Stop response failed:`, error);
+      recoverStreamingUi();
+    }
+  }, [tabId, recoverStreamingUi]);
 
   const resetSession = useCallback(async () => {
     setHistoryMessages([]);

@@ -8,6 +8,7 @@ import { verifyProviderViaSdk, checkAnthropicSubscription, verifySubscription } 
 import { initLogger, getLogHistory } from './logger';
 import { appendUnifiedLogBatch } from './UnifiedLogger';
 import { isAnalyticsEnabled, trackServer } from './analytics';
+import { generateTitle, type TitleRound } from './title-generator';
 import type { PermissionMode } from '../shared/types/permission';
 import type { AppConfig, ProviderEnv, Provider, ProviderAuthType } from '../shared/types/config';
 import { PROVIDERS, getEffectiveModelAliases } from '../shared/providers';
@@ -152,8 +153,10 @@ Bun.serve({
 
     if (req.method === "POST" && url.pathname === "/chat/stop") {
       await req.json().catch(() => ({}));
-      getRunner()?.stop();
-      return Response.json({ ok: true });
+      const runner = getRunner();
+      if (!runner) return Response.json({ success: true, alreadyStopped: true });
+      const result = runner.stop();
+      return Response.json({ success: true, alreadyStopped: result.alreadyStopped });
     }
 
     if (req.method === 'POST' && url.pathname === '/chat/permission-response') {
@@ -275,6 +278,34 @@ Bun.serve({
       const body = await req.json() as { title: string };
       SessionStore.updateTitle(sessionId, body.title);
       return Response.json({ ok: true });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/generate-session-title') {
+      const body = await req.json() as { sessionId: string; rounds?: TitleRound[]; model: string; providerEnv?: ProviderEnv };
+      if (!body.sessionId || !body.rounds?.length) {
+        return Response.json({ success: false, error: 'missing_params' });
+      }
+      // Validate rounds (max 10, truncate content)
+      const rounds = body.rounds.slice(0, 10).map(r => ({
+        user: String(r.user || '').slice(0, 500),
+        assistant: String(r.assistant || '').slice(0, 500),
+      }));
+      // Check if user already manually renamed (skip auto-title)
+      const sessions = SessionStore.listSessions();
+      const session = sessions.find(s => s.id === body.sessionId);
+      if (!session) return Response.json({ success: false, error: 'session_not_found' });
+
+      try {
+        const title = await generateTitle(rounds, body.model, body.providerEnv);
+        if (title) {
+          SessionStore.updateTitle(body.sessionId, title);
+          return Response.json({ success: true, title });
+        }
+        return Response.json({ success: false, error: 'no_title_generated' });
+      } catch (err) {
+        console.warn('[generate-session-title] Error:', err);
+        return Response.json({ success: false, error: String(err) });
+      }
     }
 
     if (req.method === 'GET' && url.pathname === '/config') {
