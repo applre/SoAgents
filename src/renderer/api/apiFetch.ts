@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../utils/env';
-import { getSessionServerUrl } from './tauriClient';
+import { getSessionServerUrl, waitForGlobalSidecar, getCachedGlobalServerUrl, clearCachedGlobalServerUrl } from './tauriClient';
 
 // 通过 Rust 代理发送 HTTP 请求（避免 CORS）
 async function proxyFetch(url: string, options: RequestInit = {}): Promise<string> {
@@ -32,13 +32,15 @@ export async function apiPostJson<T>(baseUrl: string, path: string, body: unknow
 }
 
 // 全局 Sidecar API（Settings/Launcher 页面使用）
-// GLOBAL_SERVER_URL 在运行时从 Rust 获取
-let _globalUrl: string | null = null;
 async function getGlobalUrl(): Promise<string> {
-  if (!_globalUrl) {
-    _globalUrl = await getSessionServerUrl('__global__');
-  }
-  return _globalUrl;
+  // Wait for global sidecar to be ready (blocks until startGlobalSidecar succeeds)
+  await waitForGlobalSidecar();
+
+  // Use cached URL from restart events, or fetch from Rust
+  const cached = getCachedGlobalServerUrl();
+  if (cached) return cached;
+
+  return getSessionServerUrl('__global__');
 }
 
 export async function globalApiGetJson<T>(path: string): Promise<T> {
@@ -46,7 +48,7 @@ export async function globalApiGetJson<T>(path: string): Promise<T> {
   try {
     return await apiGetJson<T>(url, path);
   } catch (e) {
-    _globalUrl = null; // 请求失败时清缓存，下次重新获取端口
+    clearCachedGlobalServerUrl(); // 请求失败时清缓存，下次重新获取端口
     throw e;
   }
 }

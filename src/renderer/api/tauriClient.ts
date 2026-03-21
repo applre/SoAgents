@@ -42,3 +42,42 @@ export async function getDefaultWorkspace(): Promise<string | null> {
   if (!isTauri()) return null;
   return invoke<string>('cmd_get_default_workspace');
 }
+
+// ── Global Sidecar Ready Promise ──
+// Blocks API calls until global sidecar is confirmed running.
+
+let _readyResolve: (() => void) | null = null;
+let _readyPromise: Promise<void> | null = null;
+
+export function initGlobalSidecarReadyPromise(): void {
+  _readyPromise = new Promise((resolve) => { _readyResolve = resolve; });
+}
+
+export function markGlobalSidecarReady(): void {
+  _readyResolve?.();
+  _readyResolve = null;
+}
+
+export async function waitForGlobalSidecar(): Promise<void> {
+  if (!_readyPromise) return;
+  const timeout = new Promise<void>((_, reject) =>
+    setTimeout(() => reject(new Error('Global sidecar ready timeout (60s)')), 60000)
+  );
+  return Promise.race([_readyPromise, timeout]);
+}
+
+// ── Global Server URL cache (updated on restart) ──
+
+let _globalServerUrl: string | null = null;
+
+export function updateGlobalServerUrl(url: string): void {
+  _globalServerUrl = url;
+}
+
+export function getCachedGlobalServerUrl(): string | null {
+  return _globalServerUrl;
+}
+
+export function clearCachedGlobalServerUrl(): void {
+  _globalServerUrl = null;
+}
