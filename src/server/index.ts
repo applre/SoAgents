@@ -1,5 +1,5 @@
 import { createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -8,6 +8,7 @@ import { verifyProviderViaSdk, checkAnthropicSubscription, verifySubscription } 
 import { initLogger, getLogHistory } from './logger';
 import { appendUnifiedLogBatch } from './UnifiedLogger';
 import { isAnalyticsEnabled, trackServer } from './analytics';
+import { generateTitle, type TitleRound } from './title-generator';
 import type { PermissionMode } from '../shared/types/permission';
 import type { AppConfig, ProviderEnv, Provider, ProviderAuthType } from '../shared/types/config';
 import { PROVIDERS, getEffectiveModelAliases } from '../shared/providers';
@@ -152,8 +153,10 @@ Bun.serve({
 
     if (req.method === "POST" && url.pathname === "/chat/stop") {
       await req.json().catch(() => ({}));
-      getRunner()?.stop();
-      return Response.json({ ok: true });
+      const runner = getRunner();
+      if (!runner) return Response.json({ success: true, alreadyStopped: true });
+      const result = runner.stop();
+      return Response.json({ success: true, alreadyStopped: result.alreadyStopped });
     }
 
     if (req.method === 'POST' && url.pathname === '/chat/permission-response') {
@@ -281,6 +284,34 @@ Bun.serve({
       const body = await req.json() as { title: string };
       SessionStore.updateTitle(sessionId, body.title);
       return Response.json({ ok: true });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/generate-session-title') {
+      const body = await req.json() as { sessionId: string; rounds?: TitleRound[]; model: string; providerEnv?: ProviderEnv };
+      if (!body.sessionId || !body.rounds?.length) {
+        return Response.json({ success: false, error: 'missing_params' });
+      }
+      // Validate rounds (max 10, truncate content)
+      const rounds = body.rounds.slice(0, 10).map(r => ({
+        user: String(r.user || '').slice(0, 500),
+        assistant: String(r.assistant || '').slice(0, 500),
+      }));
+      // Check if user already manually renamed (skip auto-title)
+      const sessions = SessionStore.listSessions();
+      const session = sessions.find(s => s.id === body.sessionId);
+      if (!session) return Response.json({ success: false, error: 'session_not_found' });
+
+      try {
+        const title = await generateTitle(rounds, body.model, body.providerEnv);
+        if (title) {
+          SessionStore.updateTitle(body.sessionId, title);
+          return Response.json({ success: true, title });
+        }
+        return Response.json({ success: false, error: 'no_title_generated' });
+      } catch (err) {
+        console.warn('[generate-session-title] Error:', err);
+        return Response.json({ success: false, error: String(err) });
+      }
     }
 
     if (req.method === 'GET' && url.pathname === '/config') {
@@ -495,10 +526,20 @@ Bun.serve({
 
     // MCP 路由
     if (req.method === 'GET' && url.pathname === '/api/mcp') {
-      return Response.json({
-        servers: MCPConfigStore.getAll(),
-        enabledIds: MCPConfigStore.getEnabledIds(),
-      });
+      const servers = MCPConfigStore.getAll();
+      const enabledIds = MCPConfigStore.getEnabledIds();
+      const enabledSet = new Set(enabledIds);
+      const serversWithStatus = servers.map((s) => ({
+        ...s,
+        status: enabledSet.has(s.id) ? 'enabled' as const : 'disabled' as const,
+      }));
+      return Response.json({ servers: serversWithStatus, enabledIds });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/mcp/set') {
+      const body = await req.json() as { servers: import('../shared/types/mcp').McpServerDefinition[] };
+      setMcpServers(body.servers ?? []);
+      return Response.json({ ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/mcp') {
@@ -606,6 +647,23 @@ Bun.serve({
             message = `连接失败：${error.message}`;
           }
           return Response.json({ ok: false, error: { type: 'connection_failed', message } });
+        }
+      }
+
+      // stdio 预热：启用时，如果 command 包含 npx/bunx，后台预下载
+      if (server.type === 'stdio' && server.command) {
+        const cmd = server.command;
+        const args = server.args ?? [];
+        if (cmd === 'npx' || cmd === 'bunx' || cmd.endsWith('/npx') || cmd.endsWith('/bunx')) {
+          const pkg = args.find((a) => !a.startsWith('-'));
+          if (pkg) {
+            console.log(`[MCP] Pre-warming stdio package: ${pkg}`);
+            Bun.spawn(['npm', 'cache', 'add', pkg], {
+              stdout: 'ignore',
+              stderr: 'ignore',
+              env: { ...process.env, ...(server.env ?? {}), ...MCPConfigStore.getServerEnv(server.id) },
+            }).exited.catch(() => {});
+          }
         }
       }
 

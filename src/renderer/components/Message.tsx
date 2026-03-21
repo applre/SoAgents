@@ -1,11 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { Copy, Check, Puzzle } from 'lucide-react';
-import type { Message, TurnMeta } from '../types/chat';
-import ToolUse from './tools/ToolUse';
+import type { Message, TurnMeta, ContentBlock } from '../types/chat';
+import BlockGroup from './BlockGroup';
 import CodeBlock from './markdown/CodeBlock';
+import MermaidDiagram from './markdown/MermaidDiagram';
+import InlineCode from './markdown/InlineCode';
 import { formatTokens, formatDuration } from '../utils/formatTokens';
+import { preprocessContent } from '../utils/preprocessMarkdown';
 
 interface Props {
   message: Message;
@@ -13,10 +19,22 @@ interface Props {
   onOpenUrl?: (url: string) => void;
 }
 
-export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) {
+function MessageItemInner({ message, isStreaming, onOpenUrl }: Props) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // 流式结束后延迟 350ms 显示操作按钮，防止布局跳动
+  const [showActions, setShowActions] = useState(!isStreaming);
+  useEffect(() => {
+    if (!isStreaming) {
+      const timer = setTimeout(() => setShowActions(true), 350);
+      return () => clearTimeout(timer);
+    }
+    // 流式开始时隐藏
+    const timer = setTimeout(() => setShowActions(false), 0);
+    return () => clearTimeout(timer);
+  }, [isStreaming]);
 
   useEffect(() => {
     return () => {
@@ -89,14 +107,19 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
             return (
               <div key={i} className="prose prose-sm max-w-none [&_*]:!text-white [&_*]:!bg-transparent [&_code]:!bg-white/20 [&_pre]:!bg-white/10 [&_a]:!text-white/90">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                   components={{
                     code({ className, children, ...props }) {
                       const match = /language-(\w+)/.exec(className || '');
                       if (match) {
+                        const codeStr = String(children).replace(/\n$/, '');
+                        if (match[1] === 'mermaid') {
+                          return <MermaidDiagram>{codeStr}</MermaidDiagram>;
+                        }
                         return (
                           <CodeBlock language={match[1]} darkTheme>
-                            {String(children).replace(/\n$/, '')}
+                            {codeStr}
                           </CodeBlock>
                         );
                       }
@@ -117,7 +140,7 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
                     },
                   }}
                 >
-                  {block.text}
+                  {preprocessContent(block.text)}
                 </ReactMarkdown>
               </div>
             );
@@ -137,19 +160,16 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
       <div
         className="w-full text-sm text-[var(--ink)]"
       >
-        {message.blocks.map((block, i) => {
-          if (block.type === 'thinking') {
-            // 流式阶段且该消息只有 thinking block（text 还没来）→ 默认展开
-            const hasTextBlock = message.blocks.some((b) => b.type === 'text');
-            const isActiveThinking = isStreaming && !hasTextBlock;
-            return <ThinkingBlock key={i} text={block.thinking} defaultOpen={isActiveThinking} isActive={isActiveThinking} />;
+        {groupBlocks(message.blocks).map((group, gi) => {
+          // 分组：ProcessBlock[] → BlockGroup 组件
+          if (Array.isArray(group)) {
+            return <BlockGroup key={`g${gi}`} blocks={group} isStreaming={isStreaming} />;
           }
-          if (block.type === 'tool_use') {
-            return <ToolUse key={i} block={block} />;
-          }
+          // 单个块：skill / image / text
+          const block = group;
           if (block.type === 'skill') {
             return (
-              <div key={i} className="flex items-center gap-1.5 rounded-full px-3 py-1 mb-1.5 text-xs font-medium bg-[var(--hover)] text-[var(--ink-secondary)] border border-[var(--border)]">
+              <div key={`b${gi}`} className="flex items-center gap-1.5 rounded-full px-3 py-1 mb-1.5 text-xs font-medium bg-[var(--hover)] text-[var(--ink-secondary)] border border-[var(--border)]">
                 <Puzzle size={12} className="shrink-0" />
                 <span>{block.name}</span>
               </div>
@@ -157,26 +177,34 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
           }
           if (block.type === 'image') {
             return (
-              <div key={i} className="mb-2">
+              <div key={`b${gi}`} className="mb-2">
                 <img src={block.base64} alt={block.name} className="max-w-full max-h-64 rounded-lg" />
               </div>
             );
           }
+          // text block
+          if (block.type !== 'text') return null;
           return (
-            <div key={i} className="prose prose-sm max-w-none">
+            <div key={`b${gi}`} className="prose prose-sm max-w-none">
               <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                 components={{
                   code({ className, children, ...props }) {
                     const match = /language-(\w+)/.exec(className || '');
                     if (match) {
+                      const codeStr = String(children).replace(/\n$/, '');
+                      if (match[1] === 'mermaid') {
+                        return <MermaidDiagram>{codeStr}</MermaidDiagram>;
+                      }
                       return (
                         <CodeBlock language={match[1]}>
-                          {String(children).replace(/\n$/, '')}
+                          {codeStr}
                         </CodeBlock>
                       );
                     }
-                    return <code className={className} {...props}>{children}</code>;
+                    // Inline code → InlineCode with file path detection
+                    return <InlineCode className={className} {...props}>{children}</InlineCode>;
                   },
                   pre({ children }) {
                     return <>{children}</>;
@@ -193,19 +221,21 @@ export default function MessageItem({ message, isStreaming, onOpenUrl }: Props) 
                   },
                 }}
               >
-                {block.text}
+                {preprocessContent(block.text)}
               </ReactMarkdown>
             </div>
           );
         })}
       </div>
-      {/* Turn meta + hover action menu */}
-      <div className="flex items-center gap-2 mt-1">
-        {message.turnMeta && <TurnMetaDisplay meta={message.turnMeta} />}
-        <div className="opacity-0 transition-opacity group-hover/assistant:opacity-100">
-          {copyButton}
+      {/* Turn meta + hover action menu — 流式结束后 350ms 延迟显示 */}
+      {showActions && (
+        <div className="flex items-center gap-2 mt-1">
+          {message.turnMeta && <TurnMetaDisplay meta={message.turnMeta} />}
+          <div className="opacity-0 transition-opacity group-hover/assistant:opacity-100">
+            {copyButton}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -224,39 +254,46 @@ function TurnMetaDisplay({ meta }: { meta: TurnMeta }) {
   );
 }
 
-function ThinkingBlock({ text, defaultOpen, isActive }: { text: string; defaultOpen?: boolean; isActive?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen ?? false);
-  const contentRef = useRef<HTMLDivElement>(null);
+/**
+ * 分组算法：将连续的 thinking/tool_use 块合并为一组，其他块单独放
+ * 返回 (ProcessBlock[] | ContentBlock)[]
+ */
+type ProcessBlock = Extract<ContentBlock, { type: 'thinking' }> | Extract<ContentBlock, { type: 'tool_use' }>;
 
-  const [prevIsActive, setPrevIsActive] = useState(isActive);
-  if (prevIsActive !== isActive) {
-    setPrevIsActive(isActive);
-    if (isActive) {
-      // 思考开始 → 自动展开
-      setOpen(true);
+function groupBlocks(blocks: ContentBlock[]): (ProcessBlock[] | ContentBlock)[] {
+  const result: (ProcessBlock[] | ContentBlock)[] = [];
+  let currentGroup: ProcessBlock[] = [];
+
+  const flushGroup = () => {
+    if (currentGroup.length > 0) {
+      result.push(currentGroup);
+      currentGroup = [];
+    }
+  };
+
+  for (const block of blocks) {
+    if (block.type === 'thinking' || block.type === 'tool_use') {
+      currentGroup.push(block);
     } else {
-      // 思考结束（text 开始输出）→ 自动折叠
-      setOpen(false);
+      flushGroup();
+      result.push(block);
     }
   }
+  flushGroup();
 
-  return (
-    <div className="mb-2 text-xs">
-      <button
-        className="text-[var(--ink-tertiary)] italic hover:text-[var(--ink-secondary)] flex items-center gap-1"
-        onClick={() => setOpen((v) => !v)}
-      >
-        {isActive && <span className="text-[var(--accent)] animate-pulse">●</span>}
-        {open ? '▾' : '▸'} {isActive ? '正在思考…' : '思考过程'}
-      </button>
-      {open && (
-        <div
-          ref={contentRef}
-          className="mt-1 pl-3 border-l border-[var(--border)] text-[var(--ink-tertiary)] italic whitespace-pre-wrap max-h-48 overflow-y-auto"
-        >
-          {text}
-        </div>
-      )}
-    </div>
-  );
+  return result;
 }
+
+// 自定义比较：历史消息同引用直接跳过，只有流式消息走完整比较
+function areMessagesEqual(prev: Props, next: Props): boolean {
+  if (prev.isStreaming !== next.isStreaming) return false;
+  // 同引用 → 内容没变（历史消息快速路径）
+  if (prev.message === next.message) return true;
+  // 不同引用但同 id → 可能是流式更新中的同一条消息
+  if (prev.message.id !== next.message.id) return false;
+  return prev.message.blocks === next.message.blocks;
+}
+
+const MessageItem = React.memo(MessageItemInner, areMessagesEqual);
+export default MessageItem;
+

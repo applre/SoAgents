@@ -1,13 +1,13 @@
 import { useCallback, useState } from 'react';
 import { useTabState } from '../context/TabContext';
 import { useConfig } from '../context/ConfigContext';
+import { FileActionProvider } from '../context/FileActionContext';
 import MessageList from '../components/MessageList';
 import ChatInput from '../components/ChatInput';
 import PermissionPrompt from '../components/PermissionPrompt';
 import AskUserQuestionPrompt from '../components/AskUserQuestionPrompt';
 import { ExitPlanModePrompt, EnterPlanModePrompt } from '../components/PlanModePrompt';
 import UnifiedLogsPanel from '../components/UnifiedLogsPanel';
-import QueuedMessagesPanel from '../components/QueuedMessagesPanel';
 import WorkspaceSelector from '../components/WorkspaceSelector';
 
 interface Props {
@@ -58,7 +58,7 @@ export function WorkspaceTrigger({ agentDir, onAgentDirChange }: { agentDir: str
 }
 
 export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, onOpenUrl }: Props) {
-  const { messages, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
+  const { messages, historyMessages, streamingMessage, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
   const { config } = useConfig();
   const [showLogs, setShowLogs] = useState(false);
 
@@ -81,7 +81,7 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
                 onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
               />
             )}
-            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} injectRefText={injectRefText} onRefTextConsumed={onRefTextConsumed} />
+            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} injectRefText={injectRefText} onRefTextConsumed={onRefTextConsumed} queuedMessages={queuedMessages} onCancelQueued={cancelQueuedMessage} onForceExecuteQueued={forceExecuteQueuedMessage} />
           </div>
         </div>
         {pendingPermission && (
@@ -104,7 +104,9 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
 
   return (
     <div className="flex h-full flex-col">
-      <MessageList messages={messages} isLoading={isLoading} onOpenUrl={onOpenUrl} />
+      <FileActionProvider refreshTrigger={historyMessages.length}>
+        <MessageList messages={messages} isLoading={isLoading} streamingMessage={streamingMessage} onOpenUrl={onOpenUrl} />
+      </FileActionProvider>
       {pendingQuestion && (
         <AskUserQuestionPrompt
           questions={pendingQuestion.questions}
@@ -112,11 +114,6 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
           onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
         />
       )}
-      <QueuedMessagesPanel
-        queuedMessages={queuedMessages}
-        onCancel={(queueId) => cancelQueuedMessage(queueId)}
-        onForceExecute={(queueId) => forceExecuteQueuedMessage(queueId)}
-      />
       <div className="relative">
         <ChatInput
           onSend={sendMessage}
@@ -127,6 +124,9 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
           onInjectConsumed={onInjectConsumed}
           injectRefText={injectRefText}
           onRefTextConsumed={onRefTextConsumed}
+          queuedMessages={queuedMessages}
+          onCancelQueued={cancelQueuedMessage}
+          onForceExecuteQueued={forceExecuteQueuedMessage}
         />
         {/* 开发者模式: Logs 按钮 */}
         {config.showDevTools && (

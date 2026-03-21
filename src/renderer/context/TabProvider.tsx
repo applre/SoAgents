@@ -26,6 +26,27 @@ interface Props {
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const IDLE_CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds
+const AUTO_TITLE_MIN_ROUNDS = 3;
+
+interface TitleRound { user: string; assistant: string }
+
+/** Fire-and-forget title generation via session sidecar */
+async function generateSessionTitle(
+  postJson: <T>(path: string, body: unknown) => Promise<T>,
+  sessionId: string,
+  rounds: TitleRound[],
+  model: string,
+  providerEnv?: ProviderEnv,
+): Promise<{ success: boolean; title?: string }> {
+  try {
+    return await postJson<{ success: boolean; title?: string }>(
+      '/api/generate-session-title',
+      { sessionId, rounds, model, providerEnv },
+    );
+  } catch {
+    return { success: false };
+  }
+}
 
 export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActive = true, onRunningSessionsChange, onGeneratingChange, onUnreadChange, onSessionIdChange, children }: Props) {
   // ── Streaming split: history (stable during streaming) + streaming (updates per SSE chunk) ──
@@ -53,7 +74,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   }, [historyMessages, streamingMessage]);
 
   const [isLoading, setIsLoading] = useState(false);
-  const [sessionState, setSessionState] = useState<'idle' | 'running' | 'error'>('idle');
+  const [sessionState, setSessionState] = useState<'idle' | 'running' | 'stopping' | 'error'>('idle');
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<{
     toolUseId: string;
@@ -71,6 +92,8 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   const [isRunning, setIsRunning] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
   const queuedMessagesRef = useRef<QueuedMessageInfo[]>([]);
+  // Track queueIds that have already started (queue:started arrived before .then() replaced opt-)
+  const startedQueueIdsRef = useRef(new Set<string>());
 
   // 1:1 model — single SSE connection and server URL per TabProvider
   const sseRef = useRef<SseConnection | null>(null);
@@ -82,6 +105,19 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   const isRunningRef = useRef(false);
   // Track whether session was created internally (sendMessage) to skip reload on sessionId prop change
   const sessionCreatedInternallyRef = useRef(false);
+  const isStreamingRef = useRef(false);
+
+  // ── Auto-title refs ──
+  const autoTitleAttemptedRef = useRef(false);
+  const titleRoundsRef = useRef<TitleRound[]>([]);
+  // FIFO queue: supports queued sends where user sends B before A completes
+  const pendingUserMessagesRef = useRef<string[]>([]);
+  const lastCompletedTextRef = useRef('');
+  const lastModelRef = useRef<string | undefined>(undefined);
+  const lastProviderEnvRef = useRef<ProviderEnv | undefined>(undefined);
+
+  // ── Stopping state refs ──
+  const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const sessionId = propSessionId ?? null;
 
@@ -117,6 +153,16 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       setStreamingMessage(null);
     }
   }, []);
+
+  // ── Recover from stuck streaming state (stop timeout / error) ──
+  const recoverStreamingUi = useCallback(() => {
+    moveStreamingToHistory();
+    isStreamingRef.current = false;
+    setIsLoading(false);
+    setSessionState('idle');
+    isRunningRef.current = false;
+    setIsRunning(false);
+  }, [moveStreamingToHistory]);
 
   // ── Unified Logs: 监听 React 自定义事件 ──
   const appendUnifiedLog = useCallback((entry: LogEntry) => {
@@ -164,6 +210,8 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       const text = chunk.text;
       if (!text) return;
       lastActivityRef.current = Date.now();
+      isStreamingRef.current = true;
+      lastCompletedTextRef.current += text;
       updateStreamingMessage((prev) => {
         if (prev) {
           const blocks = [...prev.blocks];
@@ -333,11 +381,40 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         moveStreamingToHistory();
       }
 
+      // Auto-title: collect QA round, fire after 3+ rounds
+      const completedUserText = pendingUserMessagesRef.current.shift();
+      if (!autoTitleAttemptedRef.current && sessionIdRef.current && completedUserText) {
+        titleRoundsRef.current.push({
+          user: completedUserText.slice(0, 200),
+          assistant: lastCompletedTextRef.current.slice(0, 200),
+        });
+        if (titleRoundsRef.current.length >= AUTO_TITLE_MIN_ROUNDS) {
+          autoTitleAttemptedRef.current = true;
+          const sid = sessionIdRef.current;
+          const rounds = [...titleRoundsRef.current];
+          const model = evt?.model || lastModelRef.current || '';
+          const pEnv = lastProviderEnvRef.current;
+          const url = serverUrlRef.current;
+          if (url) {
+            const postJson = <T,>(path: string, body: unknown): Promise<T> => apiPostJson<T>(url, path, body);
+            generateSessionTitle(postJson, sid, rounds, model, pEnv).catch(() => {});
+          }
+        }
+      }
+      lastCompletedTextRef.current = '';
+
+      isStreamingRef.current = false;
       isRunningRef.current = false;
       setIsRunning(false);
       setIsLoading(false);
       setSessionState('idle');
       lastActivityRef.current = Date.now();
+
+      // Clear stop timeout if any
+      if (stopTimeoutRef.current) {
+        clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+      }
 
       // 非活跃 tab 收到完成事件 → 标记未读
       if (!isActiveRef.current) {
@@ -345,31 +422,58 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       }
     });
 
+    sse.on('chat:message-stopped', () => {
+      moveStreamingToHistory();
+      lastCompletedTextRef.current = '';
+      isStreamingRef.current = false;
+      isRunningRef.current = false;
+      setIsRunning(false);
+      setIsLoading(false);
+      setSessionState('idle');
+      // Clear stop timeout since we received confirmation
+      if (stopTimeoutRef.current) {
+        clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+      }
+    });
+
     sse.on('chat:message-error', () => {
       // Move whatever streaming content we have to history
       moveStreamingToHistory();
+      lastCompletedTextRef.current = '';
+      isStreamingRef.current = false;
       isRunningRef.current = false;
       setIsRunning(false);
       setIsLoading(false);
       setSessionState('error');
+      // Clear stop timeout on error too
+      if (stopTimeoutRef.current) {
+        clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+      }
     });
 
     // ── 队列事件 ──
     sse.on('queue:added', (data) => {
       const evt = data as { queueId: string; text: string };
       if (!evt.queueId) return;
+      // Deduplicate: already added by optimistic opt- entry or real entry
       const exists = queuedMessagesRef.current.some((q) => q.queueId === evt.queueId);
-      if (!exists) {
-        const info: QueuedMessageInfo = { queueId: evt.queueId, text: evt.text, timestamp: Date.now() };
-        queuedMessagesRef.current = [...queuedMessagesRef.current, info];
-        setQueuedMessages(queuedMessagesRef.current);
-      }
+      if (exists) return;
+      // If an opt- entry exists, the .then() will reconcile — skip SSE duplicate
+      if (queuedMessagesRef.current.some((q) => q.queueId.startsWith('opt-'))) return;
+      const info: QueuedMessageInfo = { queueId: evt.queueId, text: evt.text, timestamp: Date.now() };
+      queuedMessagesRef.current = [...queuedMessagesRef.current, info];
+      setQueuedMessages(queuedMessagesRef.current);
     });
 
     sse.on('queue:started', (data) => {
       const evt = data as { queueId: string; text: string };
       if (!evt.queueId) return;
-      queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== evt.queueId);
+      // Track started IDs to prevent .then() from re-adding
+      startedQueueIdsRef.current.add(evt.queueId);
+      // Remove both real queueId and any opt- entry
+      queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== evt.queueId && !q.queueId.startsWith('opt-'));
       setQueuedMessages(queuedMessagesRef.current);
       const userMsg: Message = {
         id: crypto.randomUUID(),
@@ -380,6 +484,8 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       setHistoryMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
       setSessionState('running');
+      // Clean up started tracking after 5s
+      setTimeout(() => startedQueueIdsRef.current.delete(evt.queueId), 5000);
     });
 
     sse.on('queue:cancelled', (data) => {
@@ -616,7 +722,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     return () => clearInterval(interval);
   }, [stopSidecarCleanup]);
 
-  const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]) => {
+  const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]): Promise<boolean> => {
     let currentSessionId = sessionIdRef.current;
     const wasRunning = isRunningRef.current;
 
@@ -645,6 +751,30 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       blocks,
       createdAt: Date.now(),
     };
+
+    // Track user message for auto-title generation (FIFO queue for queued sends)
+    if (!autoTitleAttemptedRef.current && text) {
+      pendingUserMessagesRef.current.push(text);
+    }
+    lastModelRef.current = model;
+    lastProviderEnvRef.current = providerEnv;
+
+    // Optimistic queue entry: show immediately when AI is busy
+    const localQueueId = wasRunning ? `opt-${crypto.randomUUID()}` : null;
+    if (localQueueId) {
+      const optInfo: QueuedMessageInfo = {
+        queueId: localQueueId,
+        text,
+        images: images?.map((img) => ({
+          id: crypto.randomUUID(),
+          name: img.name ?? 'image',
+          preview: `data:${img.mimeType};base64,${img.data}`,
+        })),
+        timestamp: Date.now(),
+      };
+      queuedMessagesRef.current = [...queuedMessagesRef.current, optInfo];
+      setQueuedMessages(queuedMessagesRef.current);
+    }
 
     // 非排队时立即显示用户消息（添加到 history，不是 streaming）
     if (!wasRunning) {
@@ -681,7 +811,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       // 确保 session sidecar 运行
       const url = await ensureSessionSidecar(currentSessionId);
 
-      const resp = await apiPostJson<{ ok: boolean; sessionId: string | null; queued?: boolean; queueId?: string }>(url, '/chat/send', {
+      const resp = await apiPostJson<{ ok: boolean; sessionId: string | null; queued?: boolean; queueId?: string; error?: string }>(url, '/chat/send', {
         sessionId: currentSessionId,
         message: backendMessage,
         agentDir,
@@ -692,36 +822,108 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         images,
       });
 
-      // 排队消息
+      // Backend rejected (queue full, etc.)
+      if (!resp.ok) {
+        if (localQueueId) {
+          queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== localQueueId);
+          setQueuedMessages(queuedMessagesRef.current);
+        }
+        return false;
+      }
+
+      // 排队消息：reconcile optimistic entry with real queueId
       if (resp.queued && resp.queueId) {
-        const queuedInfo: QueuedMessageInfo = {
-          queueId: resp.queueId,
-          text: text,
-          timestamp: Date.now(),
-        };
-        queuedMessagesRef.current = [...queuedMessagesRef.current, queuedInfo];
+        const realQueueId = resp.queueId;
+        // Race: queue:started SSE arrived before this .then()
+        if (startedQueueIdsRef.current.has(realQueueId)) {
+          startedQueueIdsRef.current.delete(realQueueId);
+          if (localQueueId) {
+            queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== localQueueId);
+            setQueuedMessages(queuedMessagesRef.current);
+          }
+        } else if (localQueueId) {
+          // Replace opt- entry with real queueId + enrich with images
+          queuedMessagesRef.current = queuedMessagesRef.current.map((q) =>
+            q.queueId === localQueueId ? { ...q, queueId: realQueueId } : q,
+          );
+          setQueuedMessages(queuedMessagesRef.current);
+        } else {
+          // No optimistic entry — add real entry (shouldn't normally happen)
+          const queuedInfo: QueuedMessageInfo = {
+            queueId: realQueueId,
+            text,
+            images: images?.map((img) => ({
+              id: crypto.randomUUID(),
+              name: img.name ?? 'image',
+              preview: `data:${img.mimeType};base64,${img.data}`,
+            })),
+            timestamp: Date.now(),
+          };
+          queuedMessagesRef.current = [...queuedMessagesRef.current, queuedInfo];
+          setQueuedMessages(queuedMessagesRef.current);
+        }
+      } else if (localQueueId) {
+        // Message wasn't queued (went through immediately) — remove optimistic entry
+        queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== localQueueId);
         setQueuedMessages(queuedMessagesRef.current);
       }
+
+      return true;
     } catch {
+      // Remove optimistic entry on error
+      if (localQueueId) {
+        queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== localQueueId);
+        setQueuedMessages(queuedMessagesRef.current);
+      }
       if (!wasRunning) {
         isRunningRef.current = false;
         setIsRunning(false);
         setIsLoading(false);
         setSessionState('error');
       }
+      return false;
     }
   }, [agentDir, ensureSessionSidecar, getGlobalUrl, onSessionIdChange]);
 
   const stopResponse = useCallback(async () => {
+    // Clear any existing stop timeout
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
+
+    // Immediately show "stopping" state for instant user feedback
+    setSessionState('stopping');
+
     const url = serverUrlRef.current;
-    if (!url) return;
-    await apiPostJson(url, '/chat/stop', {});
-    moveStreamingToHistory();
-    isRunningRef.current = false;
-    setIsRunning(false);
-    setIsLoading(false);
-    setSessionState('idle');
-  }, [moveStreamingToHistory]);
+    if (!url) {
+      recoverStreamingUi();
+      return;
+    }
+
+    try {
+      const response = await apiPostJson<{ success: boolean; alreadyStopped?: boolean }>(url, '/chat/stop', {});
+      if (response.success && response.alreadyStopped) {
+        // Nothing was active — restore UI immediately
+        isStreamingRef.current = false;
+        setIsLoading(false);
+        setSessionState(prev => prev === 'stopping' ? 'idle' : prev);
+        return;
+      }
+      // Set 5-second timeout: if SSE confirmation never arrives, force recover
+      stopTimeoutRef.current = setTimeout(() => {
+        if (isStreamingRef.current) {
+          console.warn(`[TabProvider ${tabId}] Stop timeout - forcing UI recovery`);
+          recoverStreamingUi();
+        }
+        setSessionState(prev => prev === 'stopping' ? 'idle' : prev);
+        stopTimeoutRef.current = null;
+      }, 5000);
+    } catch (error) {
+      console.error(`[TabProvider ${tabId}] Stop response failed:`, error);
+      recoverStreamingUi();
+    }
+  }, [tabId, recoverStreamingUi]);
 
   const resetSession = useCallback(async () => {
     setHistoryMessages([]);
@@ -730,11 +932,19 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     setIsLoading(false);
     setSessionState('idle');
     isRunningRef.current = false;
+    isStreamingRef.current = false;
     setIsRunning(false);
     setPendingPermission(null);
     setPendingQuestion(null);
     queuedMessagesRef.current = [];
     setQueuedMessages([]);
+    // Reset auto-title state
+    autoTitleAttemptedRef.current = false;
+    titleRoundsRef.current = [];
+    pendingUserMessagesRef.current = [];
+    lastCompletedTextRef.current = '';
+    lastModelRef.current = undefined;
+    lastProviderEnvRef.current = undefined;
   }, [updateStreamingMessage]);
 
   const deleteSession = useCallback(async (sessionIdToDelete: string) => {

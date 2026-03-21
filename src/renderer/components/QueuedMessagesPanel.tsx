@@ -1,4 +1,4 @@
-import { Play, X } from 'lucide-react';
+import { Clock, Play, X } from 'lucide-react';
 import type { QueuedMessageInfo } from '../../shared/types/queue';
 
 interface Props {
@@ -11,39 +11,59 @@ export default function QueuedMessagesPanel({ queuedMessages, onCancel, onForceE
   if (queuedMessages.length === 0) return null;
 
   return (
-    <div className="border-t border-[var(--border)] bg-[var(--paper)] px-6 py-2 mx-auto w-full" style={{ maxWidth: 860 }}>
-      <div className="mb-1 text-[12px] font-medium text-[var(--ink-tertiary)]">
-        排队中 ({queuedMessages.length})
-      </div>
-      <div className="flex flex-col gap-1">
-        {queuedMessages.map((msg) => (
-          <div
-            key={msg.queueId}
-            className="group flex items-center gap-2 rounded-lg px-3 py-1.5 text-[13px] text-[var(--ink)] bg-[var(--surface)] hover:bg-[var(--hover)] transition-colors"
-          >
-            <span className="flex-1 truncate">
-              {msg.text.length > 60 ? msg.text.slice(0, 60) + '…' : msg.text}
-            </span>
-            <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                type="button"
-                onClick={() => onForceExecute(msg.queueId)}
-                className="rounded p-1 text-[var(--ink-tertiary)] hover:bg-[var(--accent)]/10 hover:text-[var(--accent)] transition-colors"
-                title="立即发送"
-              >
-                <Play size={14} />
-              </button>
-              <button
-                type="button"
-                onClick={() => onCancel(msg.queueId)}
-                className="rounded p-1 text-[var(--ink-tertiary)] hover:bg-[var(--error)]/10 hover:text-[var(--error)] transition-colors"
-                title="取消"
-              >
-                <X size={14} />
-              </button>
+    <div className="mb-2 flex justify-end">
+      <div
+        className="min-w-[120px] max-w-[33%] rounded-xl border border-[var(--border)] px-3 py-2 shadow-sm backdrop-blur-sm"
+        style={{ backgroundColor: 'color-mix(in srgb, var(--paper) 88%, transparent)' }}
+      >
+        {/* Header */}
+        <div className="mb-1.5 flex items-center gap-1 text-[12px] text-[var(--ink-tertiary)]">
+          <Clock size={11} />
+          <span>排队中 ({queuedMessages.length})</span>
+        </div>
+
+        {/* Message list */}
+        <div className="space-y-1">
+          {queuedMessages.map((msg) => (
+            <div key={msg.queueId} className="group flex items-center gap-1.5">
+              {/* Message text */}
+              <div className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">
+                {msg.text.length > 60 ? msg.text.slice(0, 60) + '...' : msg.text}
+              </div>
+
+              {/* Images indicator */}
+              {msg.images && msg.images.length > 0 && (
+                <div className="flex shrink-0 gap-0.5">
+                  {msg.images.slice(0, 2).map((img) => (
+                    <div key={img.id} className="h-5 w-5 overflow-hidden rounded border border-[var(--ink-tertiary)]/20">
+                      <img src={img.preview} alt={img.name} className="h-full w-full object-cover" />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Action buttons — visible on hover */}
+              <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                <button
+                  type="button"
+                  onClick={() => onForceExecute(msg.queueId)}
+                  title="立即发送"
+                  className="rounded p-0.5 text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+                >
+                  <Play size={12} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onCancel(msg.queueId)}
+                  title="取消排队"
+                  className="rounded p-0.5 text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+                >
+                  <X size={12} />
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   );

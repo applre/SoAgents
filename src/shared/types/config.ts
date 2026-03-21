@@ -131,6 +131,12 @@ export interface AppConfig {
   providerModelAliases?: Record<string, ModelAliases>;
   /** Extra args for MCP servers (appended to preset args, key = server ID) */
   mcpServerArgs?: Record<string, string[]>;
+  /** MCP 自定义服务器定义（不含 preset），key = server id */
+  mcpServers?: Record<string, { name?: string; type: 'stdio' | 'http' | 'sse'; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> }>;
+  /** 全局启用的 MCP server IDs */
+  mcpEnabledServers?: string[];
+  /** 每个 MCP 的环境变量覆盖 */
+  mcpServerEnv?: Record<string, Record<string, string>>;
   minimizeToTray?: boolean;
   defaultWorkspacePath?: string;
   proxySettings?: ProxySettings;
