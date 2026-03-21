@@ -20,6 +20,8 @@ import AgentTool from './AgentTool';
 
 interface Props {
   block: Extract<ContentBlock, { type: 'tool_use' }>;
+  /** 内嵌模式：由 ProcessRow 管理外壳，ToolUse 只渲染内容 */
+  embedded?: boolean;
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
@@ -79,9 +81,28 @@ function getToolSummary(block: Extract<ContentBlock, { type: 'tool_use' }>): str
   }
 }
 
-export default function ToolUse({ block }: Props) {
+export default function ToolUse({ block, embedded }: Props) {
   const autoOpen = AUTO_OPEN_TOOLS.has(block.name);
-  const [open, setOpen] = useState(autoOpen);
+  const [open, setOpen] = useState(embedded ? true : autoOpen);
+
+  // 内嵌模式：只渲染工具内容，不显示外壳（由 ProcessRow 管理）
+  if (embedded) {
+    const hasDetails = block.input || block.result;
+    if (!hasDetails) return null;
+    return (
+      <div className="text-xs space-y-1.5">
+        {block.input && renderTool(block)}
+        {getToolImagePreviewUrl(block) && (
+          <img
+            src={getToolImagePreviewUrl(block)!}
+            alt="预览"
+            className="max-w-full max-h-64 rounded-lg"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).parentElement!.style.display = 'none'; }}
+          />
+        )}
+      </div>
+    );
+  }
   const config = getToolBadgeConfig(block.name);
   const isRunning = block.status === 'running';
   const isError = block.status === 'error';
