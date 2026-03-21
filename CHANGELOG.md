@@ -8,6 +8,30 @@
 
 ---
 
+## [0.1.8] - 2026-03-22
+
+### 新增
+
+#### Sidecar 进程管理重构
+- **非阻塞进程回收**：`kill_process` 从同步阻塞改为 SIGTERM + 后台线程 `waitpid(WNOHANG)` 轮询，超时 5 秒后 SIGKILL，避免阻塞 Mutex
+- **alive_check 健康检测**：`wait_for_health` 增加存活检测闭包，TCP 健康检查期间同步检测进程是否崩溃，快速失败而非等待超时
+- **start_sidecar 重构为独立函数**：从 `SidecarManager` 方法提取为接收 `&ManagedSidecarState` 的自由函数，健康检查期间释放锁避免阻塞其他操作
+
+#### Background Completion（后台完成）
+- **Rust 层完整实现**：关闭 Tab 时 AI 继续在后台运行直到完成
+  - `start_background_completion`：添加 `BackgroundCompletion` owner + 启动轮询线程
+  - `poll_background_completion`：每 2 秒检查 `/agent/state`，完成后自动释放 owner 并回收 sidecar
+  - `cancel_background_completion`：重新打开 session 时取消后台轮询
+  - 安全机制：60 分钟最大时长、连续 3 次 HTTP 失败自动终止
+- **前端集成**：
+  - `tauriClient.ts` 新增 `startBackgroundCompletion` / `cancelBackgroundCompletion` / `getBackgroundSessions` API
+  - `handleCloseTab`：正在生成时自动启动后台完成 + Toast 提示
+  - `stopSidecarCleanup`：空闲回收时若 AI 运行中，启动后台完成而非直接停止
+  - Tab 重连时自动取消后台完成，由前端接管
+  - 监听 `session:background-complete` 事件刷新 session 列表
+
+---
+
 ## [0.1.7] - 2026-03-20
 
 ### 新增
@@ -52,9 +76,41 @@
 - **类型安全**：verify-providers 脚本消除 any 类型，WorkspaceFilesPanel children prop 重命名为 childEntries
 - **SkillsStore**：bundled-skills 路径查找兼容 ESM
 
+#### 会话标题自动生成
+- **AI 自动命名**：对话 3 轮后自动调用 LLM 生成简洁会话标题，侧栏实时更新
+
+#### 消息渲染增强
+- **虚拟滚动**：长对话消息列表改用虚拟滚动，大幅降低内存占用
+- **Mermaid / LaTeX / Markdown 预处理**：代码块识别与渲染优化
+- **思考过程与工具调用可视化**：折叠展示 AI 思考内容和工具执行详情
+
+#### 排队消息优化
+- **乐观 UI**：排队消息即时展示，无需等待后端确认
+- **图片预览**：排队消息支持图片缩略图预览
+- **面板重设计**：排队消息面板 UI 全面优化
+
+#### Sidecar 健壮性增强
+- **Global Sidecar 健康监控**：自动检测 Global Sidecar 异常并重启
+- **启动流程重构**：Ready Promise 机制，前端 API 调用等待 Sidecar 就绪后才执行
+- **跨实例误杀修复**：修复多实例场景下错误终止其他实例 Sidecar 的问题
+
+#### MCP 全局管理
+- **全局 MCP 配置**：MCP 服务器配置合并到 AppConfig，自动迁移旧格式
+- **状态显示与预热**：MCP 服务器运行状态实时显示，stdio 类型自动预热
+- **指纹变更检测**：配置变更后自动重载 MCP 服务器
+- **JSON 导入导出**：支持 MCP 配置批量导入导出
+
+#### 归档系统
+- **归档替代删除**：会话支持归档/取消归档，侧栏和任务中心按归档状态筛选
+- **侧栏优化**：工作区分组标题增加新建对话按钮，筛选和归档样式优化
+
 ### 修复
 - **Release 构建对话卡死**：macOS GUI 应用 PATH 不含 bun，SDK 子进程 `spawn("bun")` 静默失败导致对话永远停在「思考中」。Rust 层通过 `BUN_EXECUTABLE` 环境变量传递内置 bun 完整路径
 - **构建安全检测**：`post-build-server.sh` 新增 `BUN_EXECUTABLE` 引用检测，缺失则构建失败
+- **用户主动停止与异常中断区分**：新增 `chat:message-stopped` 事件，前端正确识别用户主动中止
+- **resetSession 状态清理**：重置 session 时正确清理 auto-title 和 streaming 相关状态
+- **systemPrompt 格式回退**：恢复为字符串格式，移除 PostToolUse hook
+- **allowedTools 恢复**：bypassPermissions 模式下不传 canUseTool
 
 ---
 
