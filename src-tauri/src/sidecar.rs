@@ -3,11 +3,13 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 pub const GLOBAL_SIDECAR_ID: &str = "__global__";
 const BASE_PORT: u16 = 32415;
+const PORT_RANGE: u16 = 500;
 const SIDECAR_MARKER: &str = "--soagents-sidecar";
 
 // Health check constants (TCP-level, matching MyAgents proven strategy)
@@ -20,11 +22,64 @@ pub enum SidecarOwner {
     Session(String),
 }
 
+/// Kill a child process and its entire process group (Unix).
+/// SIGTERM first for graceful shutdown, SIGKILL after 2s timeout.
+fn kill_process(child: &mut Child) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as i32;
+        // Kill entire process group (sidecar + SDK/MCP children)
+        unsafe { libc::kill(-pgid, libc::SIGTERM); }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                _ => break,
+            }
+        }
+        // Force kill
+        unsafe { libc::kill(-pgid, libc::SIGKILL); }
+        let _ = child.wait(); // reap zombie
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
 pub struct SidecarInstance {
     pub process: Child,
     pub port: u16,
     pub agent_dir: Option<PathBuf>,
     pub owners: HashSet<SidecarOwner>,
+    pub healthy: bool,
+}
+
+impl SidecarInstance {
+    /// Check if the sidecar process is still running and healthy.
+    pub fn is_running(&mut self) -> bool {
+        if !self.healthy {
+            return false;
+        }
+        match self.process.try_wait() {
+            Ok(Some(_)) => { self.healthy = false; false }
+            Ok(None) => true,
+            Err(_) => { self.healthy = false; false }
+        }
+    }
+}
+
+impl Drop for SidecarInstance {
+    fn drop(&mut self) {
+        log::info!("[sidecar] Drop: killing process on port {}", self.port);
+        let _ = kill_process(&mut self.process);
+    }
 }
 
 pub struct SidecarManager {
@@ -32,65 +87,101 @@ pub struct SidecarManager {
     port_counter: AtomicU16,
 }
 
+/// Arc<Mutex<SidecarManager>> for sharing between Tauri commands and background tasks
+pub type ManagedSidecarState = Arc<Mutex<SidecarManager>>;
+
+// ── Stale process cleanup ──────────────────────────────────────────
+
+/// Find PIDs by command line pattern, excluding current process.
+/// Uses "--" separator before pattern to handle patterns starting with "-".
 #[cfg(unix)]
-pub fn cleanup_stale_sidecars() {
-    log::info!("[sidecar] Cleaning up stale sidecar processes...");
+fn find_pids_by_pattern(pattern: &str) -> Vec<i32> {
+    let current_pid = std::process::id() as i32;
 
-    let output = match Command::new("pgrep").arg("-f").arg("soagents-sidecar").output() {
-        Ok(o) => o,
-        Err(e) => {
-            log::debug!("[sidecar] pgrep failed: {}", e);
-            return;
-        }
-    };
+    Command::new("pgrep")
+        .args(["-f", "--", pattern])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|s| s.trim().parse::<i32>().ok())
+                .filter(|&pid| pid != current_pid)
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
-    if !output.status.success() {
-        log::info!("[sidecar] No stale sidecar processes found");
-        return;
-    }
+/// Check if a process is orphaned (PPID≤1, reparented to launchd/init).
+/// Orphaned processes are leftovers from crashed app instances.
+/// Processes with a living parent belong to another running SoAgents instance.
+#[cfg(unix)]
+fn is_orphaned(pid: i32) -> bool {
+    Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<i32>().ok())
+        .map(|ppid| ppid <= 1)
+        .unwrap_or(true)
+}
 
-    let pids_str = String::from_utf8_lossy(&output.stdout);
-    let pids: Vec<i32> = pids_str
-        .lines()
-        .filter_map(|line| line.trim().parse::<i32>().ok())
+/// Kill orphaned processes matching pattern. Returns count killed.
+/// Only kills processes with PPID≤1 (reparented to launchd) to avoid
+/// killing sidecars belonging to other running SoAgents instances.
+#[cfg(unix)]
+fn kill_orphaned_by_pattern(name: &str, pattern: &str) -> usize {
+    let pids: Vec<i32> = find_pids_by_pattern(pattern)
+        .into_iter()
+        .filter(|&pid| is_orphaned(pid))
         .collect();
 
     if pids.is_empty() {
-        log::info!("[sidecar] No stale sidecar processes found");
-        return;
+        return 0;
     }
 
-    let current_pid = std::process::id() as i32;
-
-    for pid in &pids {
-        if *pid == current_pid {
-            continue;
-        }
-        log::info!("[sidecar] Sending SIGTERM to stale sidecar pid {}", pid);
-        unsafe {
-            libc::kill(*pid, libc::SIGTERM);
-        }
+    eprintln!("[sidecar] Found {} orphaned {} processes, sending SIGTERM...", pids.len(), name);
+    for &pid in &pids {
+        unsafe { libc::kill(pid, libc::SIGTERM); }
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
 
-    for pid in &pids {
-        if *pid == current_pid {
-            continue;
-        }
-        log::info!("[sidecar] Sending SIGKILL to stale sidecar pid {}", pid);
-        unsafe {
-            libc::kill(*pid, libc::SIGKILL);
+    // Check which processes survived SIGTERM
+    let remaining: Vec<&i32> = pids.iter()
+        .filter(|&&pid| unsafe { libc::kill(pid, 0) == 0 })
+        .collect();
+    if !remaining.is_empty() {
+        eprintln!("[sidecar] {} orphaned {} processes survived SIGTERM, sending SIGKILL...", remaining.len(), name);
+        for &&pid in &remaining {
+            unsafe { libc::kill(pid, libc::SIGKILL); }
         }
     }
 
-    log::info!("[sidecar] Stale sidecar cleanup complete");
+    let killed = pids.len() - pids.iter().filter(|&&pid| unsafe { libc::kill(pid, 0) == 0 }).count();
+    eprintln!("[sidecar] {} cleanup: killed {}/{}", name, killed, pids.len());
+    killed
+}
+
+#[cfg(unix)]
+pub fn cleanup_stale_sidecars() {
+    eprintln!("[sidecar] Cleaning up orphaned sidecar processes...");
+    let sidecar_count = kill_orphaned_by_pattern("sidecar", SIDECAR_MARKER);
+    let sdk_count = kill_orphaned_by_pattern("SDK", "claude-agent-sdk/cli.js");
+    eprintln!(
+        "[sidecar] Startup cleanup complete: {} sidecar, {} SDK processes cleaned",
+        sidecar_count, sdk_count
+    );
 }
 
 #[cfg(not(unix))]
 pub fn cleanup_stale_sidecars() {
-    log::debug!("[sidecar] Stale sidecar cleanup not supported on this platform");
+    eprintln!("[sidecar] Stale sidecar cleanup not supported on this platform");
 }
+
+// ── File descriptor limit ──────────────────────────────────────────
 
 #[cfg(unix)]
 pub fn ensure_high_file_descriptor_limit() {
@@ -131,6 +222,8 @@ pub fn ensure_high_file_descriptor_limit() {
 
 #[cfg(not(unix))]
 pub fn ensure_high_file_descriptor_limit() {}
+
+// ── Find executables ───────────────────────────────────────────────
 
 /// Find bundled bun binary (from externalBin), fallback to system PATH
 pub fn find_bun_executable<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -236,6 +329,14 @@ pub fn find_server_script<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) -
     Err("Server script not found".to_string())
 }
 
+// ── Port availability ──────────────────────────────────────────────
+
+fn is_port_available(port: u16) -> bool {
+    std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok()
+}
+
+// ── SidecarManager impl ───────────────────────────────────────────
+
 impl SidecarManager {
     pub fn new() -> Self {
         SidecarManager {
@@ -244,157 +345,35 @@ impl SidecarManager {
         }
     }
 
-    pub fn start_sidecar(
-        &mut self,
-        sidecar_id: String,
-        agent_dir: Option<PathBuf>,
-        bun_path: &PathBuf,
-        script_path: &PathBuf,
-        owner: Option<SidecarOwner>,
-    ) -> Result<u16, String> {
-        ensure_high_file_descriptor_limit();
+    /// Get the next available port, skipping ports already in use.
+    /// Wraps around within PORT_RANGE to reuse freed ports.
+    pub fn allocate_port(&self) -> Result<u16, String> {
+        const MAX_ATTEMPTS: u32 = 200;
 
-        // Idempotent: if already running, add owner and return existing port
-        if let Some(instance) = self.instances.get_mut(&sidecar_id) {
-            if let Ok(None) = instance.process.try_wait() {
-                if let Some(o) = owner {
-                    log::info!("[sidecar] Adding owner {:?} to sidecar '{}'", o, sidecar_id);
-                    instance.owners.insert(o);
-                }
-                return Ok(instance.port);
+        for _ in 0..MAX_ATTEMPTS {
+            let port = self.port_counter.fetch_add(1, Ordering::SeqCst);
+            if port > BASE_PORT + PORT_RANGE {
+                self.port_counter.store(BASE_PORT, Ordering::SeqCst);
             }
-            self.instances.remove(&sidecar_id);
-        }
-
-        let mut initial_owners = HashSet::new();
-        if let Some(o) = owner {
-            initial_owners.insert(o);
-        }
-
-        let port = self.port_counter.fetch_add(1, Ordering::SeqCst);
-
-        // Determine cwd: use script's parent dir for bundled, project root for dev
-        let cwd = if script_path.extension().map(|e| e == "js").unwrap_or(false) {
-            // Bundled: server-dist.js — cwd doesn't matter much, use its parent
-            script_path.parent().map(|p| p.to_path_buf())
-        } else {
-            // Dev: src/server/index.ts — need project root as cwd
-            script_path
-                .parent() // src/server/
-                .and_then(|p| p.parent()) // src/
-                .and_then(|p| p.parent()) // project root
-                .map(|p| p.to_path_buf())
-        };
-
-        let cwd = cwd.unwrap_or_else(|| PathBuf::from("."));
-
-        log::info!(
-            "[sidecar] Starting sidecar '{}' on port {} | bun={:?} script={:?} cwd={:?}",
-            sidecar_id,
-            port,
-            bun_path,
-            script_path,
-            cwd
-        );
-
-        let mut cmd = Command::new(bun_path);
-        cmd.arg(script_path)
-            .arg(SIDECAR_MARKER)
-            .current_dir(&cwd)
-            .env("PORT", port.to_string())
-            .env("BUN_EXECUTABLE", bun_path.to_string_lossy().as_ref())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Inject proxy environment variables if configured
-        if let Some(proxy_settings) = crate::proxy_config::read_proxy_settings() {
-            match crate::proxy_config::get_proxy_url(&proxy_settings) {
-                Ok(proxy_url) => {
-                    log::info!("[sidecar] Injecting proxy: {}", proxy_url);
-                    cmd.env("HTTP_PROXY", &proxy_url);
-                    cmd.env("HTTPS_PROXY", &proxy_url);
-                    cmd.env("http_proxy", &proxy_url);
-                    cmd.env("https_proxy", &proxy_url);
-                    cmd.env("NO_PROXY", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
-                    cmd.env("no_proxy", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
-                }
-                Err(e) => {
-                    log::error!("[sidecar] Invalid proxy config: {}, stripping proxy vars", e);
-                    for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
-                        cmd.env_remove(var);
-                    }
-                }
+            if is_port_available(port) {
+                return Ok(port);
             }
-        } else {
-            // No proxy configured: strip inherited system proxy env vars
-            for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
-                cmd.env_remove(var);
-            }
+            log::warn!("[sidecar] Port {} in use, trying next", port);
         }
 
-        let mut child = cmd.spawn()
-            .map_err(|e| format!("Failed to spawn bun process: {}", e))?;
+        Err(format!("No available port found after {} attempts", MAX_ATTEMPTS))
+    }
 
-        // Capture stdout
-        if let Some(stdout) = child.stdout.take() {
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().flatten() {
-                    log::info!("[bun-out] {}", line);
-                }
-            });
-        }
+    pub fn get_instance_mut(&mut self, sidecar_id: &str) -> Option<&mut SidecarInstance> {
+        self.instances.get_mut(sidecar_id)
+    }
 
-        // Capture stderr
-        if let Some(stderr) = child.stderr.take() {
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().flatten() {
-                    log::warn!("[bun-err] {}", line);
-                }
-            });
-        }
+    pub fn insert_instance(&mut self, sidecar_id: String, instance: SidecarInstance) {
+        self.instances.insert(sidecar_id, instance);
+    }
 
-        // Brief wait to check if process exits immediately (e.g. missing script, bad bun binary)
-        thread::sleep(Duration::from_millis(50));
-        if let Ok(Some(status)) = child.try_wait() {
-            thread::sleep(Duration::from_millis(100)); // let stderr thread capture output
-            log::error!("[sidecar] Process exited immediately with status: {:?}", status);
-            return Err(format!(
-                "Sidecar '{}' exited immediately with status: {:?}",
-                sidecar_id, status
-            ));
-        }
-
-        // TCP health check — faster than HTTP because Bun binds TCP before HTTP handler is ready
-        match wait_for_health(port, None) {
-            Ok(()) => {
-                log::info!(
-                    "[sidecar] Sidecar '{}' is healthy on port {}",
-                    sidecar_id,
-                    port
-                );
-            }
-            Err(e) => {
-                log::warn!(
-                    "[sidecar] Health check failed for sidecar '{}': {}",
-                    sidecar_id,
-                    e
-                );
-            }
-        }
-
-        self.instances.insert(
-            sidecar_id,
-            SidecarInstance {
-                process: child,
-                port,
-                agent_dir,
-                owners: initial_owners,
-            },
-        );
-
-        Ok(port)
+    pub fn remove_instance(&mut self, sidecar_id: &str) -> Option<SidecarInstance> {
+        self.instances.remove(sidecar_id)
     }
 
     /// Release an owner from a sidecar. If no owners remain, stop the sidecar process.
@@ -416,76 +395,230 @@ impl SidecarManager {
     }
 
     pub fn stop_sidecar(&mut self, sidecar_id: &str) -> Result<(), String> {
-        if let Some(mut instance) = self.instances.remove(sidecar_id) {
-            log::info!("[sidecar] Stopping sidecar '{}'", sidecar_id);
-
-            let _ = instance.process.kill();
-
-            let start = std::time::Instant::now();
-            loop {
-                match instance.process.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => {
-                        if start.elapsed() > std::time::Duration::from_secs(5) {
-                            log::warn!(
-                                "[sidecar] Process '{}' did not exit in 5s",
-                                sidecar_id
-                            );
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    Err(e) => {
-                        log::error!("[sidecar] Error waiting for process: {}", e);
-                        break;
-                    }
-                }
-            }
-
-            log::info!("[sidecar] Sidecar '{}' stopped", sidecar_id);
+        if let Some(_instance) = self.instances.remove(sidecar_id) {
+            log::info!("[sidecar] Stopping sidecar '{}' (Drop will kill process)", sidecar_id);
+            // Drop handles kill_process automatically
         }
         Ok(())
     }
 
     pub fn stop_all(&mut self) {
-        let sidecar_ids: Vec<String> = self.instances.keys().cloned().collect();
-        for sidecar_id in sidecar_ids {
-            let _ = self.stop_sidecar(&sidecar_id);
-        }
+        log::info!("[sidecar] Stopping all sidecars ({})", self.instances.len());
+        self.instances.clear(); // Drop kills each process
     }
 
-    pub fn get_port(&self, sidecar_id: &str) -> Option<u16> {
-        self.instances.get(sidecar_id).map(|i| i.port)
+    pub fn get_port(&mut self, sidecar_id: &str) -> Option<u16> {
+        if let Some(inst) = self.instances.get_mut(sidecar_id) {
+            if inst.is_running() {
+                return Some(inst.port);
+            }
+        }
+        // Do NOT remove dead instances here — the health monitor needs
+        // the instance to remain in the HashMap to detect and restart it.
+        None
     }
 
     /// Get all ports of running sidecars (for broadcasting config changes)
     pub fn get_all_active_ports(&mut self) -> Vec<u16> {
-        self.instances.retain(|_, inst| matches!(inst.process.try_wait(), Ok(None)));
-        self.instances.values().map(|i| i.port).collect()
+        let mut ports = Vec::new();
+        for inst in self.instances.values_mut() {
+            if inst.is_running() {
+                ports.push(inst.port);
+            }
+        }
+        ports
     }
 
     pub fn list_running(&mut self) -> Vec<(String, Option<String>, u16)> {
-        // 清理已退出的进程
-        self.instances.retain(|_, inst| {
-            matches!(inst.process.try_wait(), Ok(None))
-        });
-        self.instances
-            .iter()
-            .map(|(id, inst)| {
-                (
+        let mut result = Vec::new();
+        for (id, inst) in self.instances.iter_mut() {
+            if inst.is_running() {
+                result.push((
                     id.clone(),
-                    inst.agent_dir
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string()),
+                    inst.agent_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
                     inst.port,
-                )
-            })
-            .collect()
+                ));
+            }
+        }
+        result
     }
 }
 
+// ── start_sidecar (free function — releases lock during health check) ──
+
+/// Start a sidecar process. Releases the Mutex lock during health check
+/// to avoid blocking other sidecar operations for up to 5 minutes.
+pub fn start_sidecar(
+    manager: &ManagedSidecarState,
+    sidecar_id: String,
+    agent_dir: Option<PathBuf>,
+    bun_path: &PathBuf,
+    script_path: &PathBuf,
+    owner: Option<SidecarOwner>,
+) -> Result<u16, String> {
+    ensure_high_file_descriptor_limit();
+
+    let mut guard = manager.lock().map_err(|e| e.to_string())?;
+
+    // Idempotent: if already running, add owner and return existing port
+    if let Some(instance) = guard.get_instance_mut(&sidecar_id) {
+        if instance.is_running() {
+            if let Some(o) = owner {
+                log::info!("[sidecar] Adding owner {:?} to sidecar '{}'", o, sidecar_id);
+                instance.owners.insert(o);
+            }
+            return Ok(instance.port);
+        }
+        // Dead instance — remove (Drop will clean up)
+        guard.remove_instance(&sidecar_id);
+    }
+
+    let mut initial_owners = HashSet::new();
+    if let Some(o) = owner {
+        initial_owners.insert(o);
+    }
+
+    let port = guard.allocate_port()?;
+
+    // Determine cwd: use script's parent dir for bundled, project root for dev
+    let cwd = if script_path.extension().map(|e| e == "js").unwrap_or(false) {
+        // Bundled: server-dist.js — cwd doesn't matter much, use its parent
+        script_path.parent().map(|p| p.to_path_buf())
+    } else {
+        // Dev: src/server/index.ts — need project root as cwd
+        script_path
+            .parent() // src/server/
+            .and_then(|p| p.parent()) // src/
+            .and_then(|p| p.parent()) // project root
+            .map(|p| p.to_path_buf())
+    };
+
+    let cwd = cwd.unwrap_or_else(|| PathBuf::from("."));
+
+    log::info!(
+        "[sidecar] Starting sidecar '{}' on port {} | bun={:?} script={:?} cwd={:?}",
+        sidecar_id,
+        port,
+        bun_path,
+        script_path,
+        cwd
+    );
+
+    let mut cmd = Command::new(bun_path);
+    cmd.arg(script_path)
+        .arg(SIDECAR_MARKER)
+        .current_dir(&cwd)
+        .env("PORT", port.to_string())
+        .env("BUN_EXECUTABLE", bun_path.to_string_lossy().as_ref())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+
+    // Unix: make child a process group leader so kill(-PGID) kills entire tree
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    // Inject proxy environment variables if configured
+    if let Some(proxy_settings) = crate::proxy_config::read_proxy_settings() {
+        match crate::proxy_config::get_proxy_url(&proxy_settings) {
+            Ok(proxy_url) => {
+                log::info!("[sidecar] Injecting proxy: {}", proxy_url);
+                cmd.env("HTTP_PROXY", &proxy_url);
+                cmd.env("HTTPS_PROXY", &proxy_url);
+                cmd.env("http_proxy", &proxy_url);
+                cmd.env("https_proxy", &proxy_url);
+                cmd.env("NO_PROXY", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
+                cmd.env("no_proxy", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
+            }
+            Err(e) => {
+                log::error!("[sidecar] Invalid proxy config: {}, stripping proxy vars", e);
+                for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
+                    cmd.env_remove(var);
+                }
+            }
+        }
+    } else {
+        // No proxy configured: strip inherited system proxy env vars
+        for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
+            cmd.env_remove(var);
+        }
+    }
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("Failed to spawn bun process: {}", e))?;
+
+    // Capture stdout
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                log::info!("[bun-out] {}", line);
+            }
+        });
+    }
+
+    // Capture stderr
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().flatten() {
+                log::warn!("[bun-err] {}", line);
+            }
+        });
+    }
+
+    // Brief wait to check if process exits immediately (e.g. missing script, bad bun binary)
+    thread::sleep(Duration::from_millis(50));
+    if let Ok(Some(status)) = child.try_wait() {
+        thread::sleep(Duration::from_millis(100)); // let stderr thread capture output
+        log::error!("[sidecar] Process exited immediately with status: {:?}", status);
+        return Err(format!(
+            "Sidecar '{}' exited immediately with status: {:?}",
+            sidecar_id, status
+        ));
+    }
+
+    // Insert instance with healthy: false BEFORE health check
+    guard.insert_instance(
+        sidecar_id.clone(),
+        SidecarInstance {
+            process: child,
+            port,
+            agent_dir,
+            owners: initial_owners,
+            healthy: false,
+        },
+    );
+
+    // Drop lock before blocking health check
+    drop(guard);
+
+    // TCP health check (runs without holding the lock)
+    match wait_for_health(port, None) {
+        Ok(()) => {
+            let mut guard = manager.lock().map_err(|e| e.to_string())?;
+            if let Some(inst) = guard.get_instance_mut(&sidecar_id) {
+                inst.healthy = true;
+            }
+            log::info!("[sidecar] Sidecar '{}' is healthy on port {}", sidecar_id, port);
+            Ok(port)
+        }
+        Err(e) => {
+            log::error!("[sidecar] Health check failed for '{}': {}", sidecar_id, e);
+            let mut guard = manager.lock().map_err(|_| e.clone())?;
+            guard.remove_instance(&sidecar_id); // Drop kills process
+            Err(e)
+        }
+    }
+}
+
+// ── Health checks ──────────────────────────────────────────────────
+
 /// Wait for a new sidecar to become healthy using TCP-level check.
-/// TCP check is faster than HTTP because Bun binds the TCP port before the HTTP handler is ready.
+/// TCP check is faster than HTTP because Bun binds TCP before HTTP handler is ready.
 /// Checks first, then sleeps — avoids wasting time if the port is already bound.
 ///
 /// `alive_check`: optional closure that returns `true` if the sidecar process is still alive.
@@ -526,4 +659,163 @@ fn wait_for_health(port: u16, alive_check: Option<Box<dyn Fn() -> bool>>) -> Res
         "Sidecar failed TCP health check after {} attempts on port {}",
         HEALTH_CHECK_MAX_ATTEMPTS, port
     ))
+}
+
+/// HTTP health check for an existing sidecar (blocking).
+fn check_sidecar_http_health(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}/health", port);
+    crate::local_http::blocking_builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .ok()
+        .and_then(|client| client.get(&url).send().ok())
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+// ── Global Sidecar health monitor ──────────────────────────────────
+
+/// Background health monitor for the Global Sidecar.
+/// Periodically checks health and auto-restarts on failure.
+/// Emits `global-sidecar:restarted` Tauri event with new URL on restart.
+pub async fn monitor_global_sidecar(
+    app_handle: tauri::AppHandle,
+    manager: ManagedSidecarState,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+    use tauri::Emitter;
+
+    const CHECK_INTERVAL_SECS: u64 = 15;
+    const MAX_BACKOFF_SECS: u64 = 300;
+
+    let mut consecutive_failures: u32 = 0;
+    let mut first_check = true;
+    // Track whether the global sidecar was ever seen running.
+    // When true and the instance disappears from HashMap (e.g. stop_sidecar),
+    // the monitor will restart it instead of skipping.
+    let mut ever_seen = false;
+
+    log::info!("[sidecar] Global sidecar health monitor started");
+
+    loop {
+        // Delay before check
+        if first_check {
+            first_check = false;
+            tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
+        } else if consecutive_failures > 0 {
+            let backoff = std::cmp::min(
+                CHECK_INTERVAL_SECS.saturating_mul(2u64.saturating_pow(consecutive_failures)),
+                MAX_BACKOFF_SECS,
+            );
+            tokio::time::sleep(Duration::from_secs(backoff)).await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
+        }
+
+        if shutdown.load(Relaxed) {
+            log::info!("[sidecar] Health monitor stopping (app shutdown)");
+            break;
+        }
+
+        // Check global sidecar status
+        let status = {
+            let mut guard = match manager.lock() {
+                Ok(g) => g,
+                Err(_) => continue,
+            };
+            match guard.get_instance_mut(GLOBAL_SIDECAR_ID) {
+                Some(inst) => {
+                    ever_seen = true;
+                    Some((inst.port, inst.is_running()))
+                }
+                None => None,
+            }
+        };
+
+        let needs_restart = match status {
+            Some((port, process_alive)) => {
+                if process_alive {
+                    // Process alive → verify HTTP health (blocking, off async runtime)
+                    let healthy = tokio::task::spawn_blocking(move || {
+                        check_sidecar_http_health(port)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    !healthy
+                } else {
+                    true
+                }
+            }
+            None => {
+                if ever_seen {
+                    // Instance was removed from HashMap (e.g. stop_sidecar)
+                    // but sidecar was previously running — need to restart
+                    log::warn!("[sidecar] Global sidecar instance gone, will restart");
+                    true
+                } else {
+                    continue; // Not started yet by front-end
+                }
+            }
+        };
+
+        if !needs_restart || shutdown.load(Relaxed) {
+            consecutive_failures = 0;
+            continue;
+        }
+
+        log::warn!("[sidecar] Global sidecar is unhealthy, restarting...");
+
+        // Mark unhealthy so start_sidecar won't short-circuit
+        {
+            if let Ok(mut guard) = manager.lock() {
+                if let Some(inst) = guard.get_instance_mut(GLOBAL_SIDECAR_ID) {
+                    inst.healthy = false;
+                }
+            }
+        }
+
+        // Restart (blocking — spawn, health check)
+        let app_clone = app_handle.clone();
+        let mgr_clone = manager.clone();
+        match tokio::task::spawn_blocking(move || {
+            let bun_path = find_bun_executable(&app_clone)?;
+            let script_path = find_server_script(&app_clone)?;
+            start_sidecar(
+                &mgr_clone,
+                GLOBAL_SIDECAR_ID.to_string(),
+                None,
+                &bun_path,
+                &script_path,
+                None,
+            )
+        })
+        .await
+        {
+            Ok(Ok(new_port)) => {
+                consecutive_failures = 0;
+                let new_url = format!("http://127.0.0.1:{}", new_port);
+                log::info!("[sidecar] Global sidecar restarted on port {} ({})", new_port, new_url);
+                let _ = app_handle.emit("global-sidecar:restarted", &new_url);
+            }
+            Ok(Err(e)) => {
+                consecutive_failures += 1;
+                log::error!(
+                    "[sidecar] Global sidecar restart failed (attempt {}): {}",
+                    consecutive_failures, e
+                );
+            }
+            Err(e) => {
+                consecutive_failures += 1;
+                log::error!("[sidecar] spawn_blocking failed: {}", e);
+            }
+        }
+
+        if consecutive_failures >= 5 {
+            log::error!(
+                "[sidecar] {} consecutive restart failures, backing off to {}s",
+                consecutive_failures, MAX_BACKOFF_SECS
+            );
+        }
+    }
 }
