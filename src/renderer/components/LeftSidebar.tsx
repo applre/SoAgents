@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Clock, Folder, FolderOpen, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Search, Settings, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Clock, Folder, FolderOpen, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Settings, Trash2 } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
 import { relativeTimeCompact } from '../utils/formatTime';
-import SearchModal from './SearchModal';
 
 interface Props {
   sessions: SessionMetadata[];
@@ -31,11 +30,11 @@ interface Props {
 export default function LeftSidebar({
   sessions,
   activeSessionId,
-  agentDir,
+  agentDir: _agentDir,
   pinnedSessionIds,
   runningSessions,
   onNewChat,
-  onSelectSession,
+  onSelectSession: _onSelectSession,
   onNavigateToSession,
   onDeleteSession,
   onRenameSession,
@@ -49,7 +48,6 @@ export default function LeftSidebar({
   updateVersion,
   onRestartAndUpdate,
 }: Props) {
-  const [showSearch, setShowSearch] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -165,13 +163,6 @@ export default function LeftSidebar({
           >
             <MessageSquarePlus size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
             新建对话
-          </button>
-          <button
-            onClick={() => setShowSearch(true)}
-            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
-          >
-            <Search size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
-            搜索对话
           </button>
           <button
             onClick={onOpenScheduledTasks}
@@ -324,15 +315,6 @@ export default function LeftSidebar({
           </div>
         )}
       </div>
-
-      {/* 搜索弹窗 */}
-      {showSearch && (
-        <SearchModal
-          agentDir={agentDir}
-          onSelectSession={onSelectSession}
-          onClose={() => setShowSearch(false)}
-        />
-      )}
 
       {/* 固定底部：更新提示 + 设置 */}
       <div style={{ padding: '0 14px 14px' }}>

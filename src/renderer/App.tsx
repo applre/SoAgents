@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, Search, Clock, FileText, X } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, Clock, FileText, X } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -19,7 +19,6 @@ import { startWindowDrag, toggleMaximize } from './utils/env';
 import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
-import SearchModal from './components/SearchModal';
 import { startGlobalSidecar, getDefaultWorkspace, stopSessionSidecar } from './api/tauriClient';
 import { globalApiDeleteJson, globalApiPutJson } from './api/apiFetch';
 import Chat, { WorkspaceTrigger } from './pages/Chat';
@@ -135,7 +134,6 @@ export default function App() {
   const [runningSessions, setRunningSessions] = useState<Set<string>>(new Set());
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [showSearch, setShowSearch] = useState(false);
   const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
   const [pendingRefText, setPendingRefText] = useState<Record<string, string>>({});
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => {
@@ -525,15 +523,6 @@ export default function App() {
             >
               <MessageSquarePlus size={18} />
             </button>
-            {/* 搜索对话 */}
-            <button
-              onClick={() => setShowSearch(true)}
-              onMouseDown={(e) => e.stopPropagation()}
-              title="搜索对话"
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
-            >
-              <Search size={18} />
-            </button>
             {/* 定时任务 */}
             <button
               onClick={handleOpenScheduledTasks}
@@ -564,14 +553,6 @@ export default function App() {
           </div>
         )}
 
-        {/* 搜索弹窗（收缩侧边栏时使用） */}
-        {!showSidebar && showSearch && (
-          <SearchModal
-            agentDir={activeTab?.agentDir ?? undefined}
-            onSelectSession={handleSelectSession}
-            onClose={() => setShowSearch(false)}
-          />
-        )}
 
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* TopTabBar：工作区 */}

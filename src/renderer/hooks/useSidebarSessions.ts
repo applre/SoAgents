@@ -25,6 +25,11 @@ export function useSidebarSessions() {
     }
   }, []);
 
+  // API 成功后从本地列表移除
+  const removeSession = useCallback((sessionId: string) => {
+    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+  }, []);
+
   useEffect(() => {
     fetchSessions();
     intervalRef.current = setInterval(fetchSessions, POLL_INTERVAL_MS);
@@ -33,5 +38,5 @@ export function useSidebarSessions() {
     };
   }, [fetchSessions]);
 
-  return { sessions, loading, refresh: fetchSessions };
+  return { sessions, loading, refresh: fetchSessions, removeSession };
 }
