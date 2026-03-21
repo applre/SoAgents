@@ -1,4 +1,4 @@
-export type TabView = 'chat' | 'settings' | 'scheduled-tasks';
+export type TabView = 'chat' | 'settings' | 'scheduled-tasks' | 'task-center';
 
 export interface OpenFile {
   filePath: string;       // 文件路径 或 URL

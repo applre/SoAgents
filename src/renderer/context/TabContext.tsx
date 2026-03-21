@@ -17,8 +17,8 @@ export interface TabState {
   // 组合视图（向后兼容）
   messages: Message[];
   isLoading: boolean;
-  sessionState: 'idle' | 'running' | 'error';
-  sendMessage: (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]) => Promise<void>;
+  sessionState: 'idle' | 'running' | 'stopping' | 'error';
+  sendMessage: (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]) => Promise<boolean>;
   stopResponse: () => Promise<void>;
   resetSession: () => Promise<void>;
   pendingPermission: { toolName: string; toolUseId: string; toolInput: Record<string, unknown> } | null;
