@@ -57,8 +57,8 @@ export function WorkspaceTrigger({ agentDir, onAgentDirChange }: { agentDir: str
   );
 }
 
-export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, onOpenUrl }: Props) {
-  const { messages, historyMessages, streamingMessage, isLoading, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
+export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, onOpenUrl: _onOpenUrl }: Props) {
+  const { messages, historyMessages, streamingMessage, isLoading, sessionId, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
   const { config } = useConfig();
   const [showLogs, setShowLogs] = useState(false);
 
@@ -105,7 +105,7 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
   return (
     <div className="flex h-full flex-col">
       <FileActionProvider refreshTrigger={historyMessages.length}>
-        <MessageList messages={messages} isLoading={isLoading} streamingMessage={streamingMessage} onOpenUrl={onOpenUrl} />
+        <MessageList messages={messages} isLoading={isLoading} streamingMessage={streamingMessage} sessionId={sessionId} isStreaming={!!streamingMessage} />
       </FileActionProvider>
       {pendingQuestion && (
         <AskUserQuestionPrompt

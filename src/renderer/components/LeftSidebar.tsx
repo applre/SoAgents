@@ -67,6 +67,7 @@ export default function LeftSidebar({
   onRestartAndUpdate,
 }: Props) {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [menuDropUp, setMenuDropUp] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -346,7 +347,18 @@ export default function LeftSidebar({
                                   </span>
                                 </button>
                                 <button
-                                  onClick={(e) => { e.stopPropagation(); setMenuOpenId(isMenuOpen ? null : s.id); }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (isMenuOpen) {
+                                      setMenuOpenId(null);
+                                    } else {
+                                      // 检测按钮距离视口底部的空间，决定菜单向上还是向下弹出
+                                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                      const spaceBelow = window.innerHeight - rect.bottom;
+                                      setMenuDropUp(spaceBelow < 150);
+                                      setMenuOpenId(s.id);
+                                    }
+                                  }}
                                   className={`absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded transition-all ${
                                     isMenuOpen
                                       ? 'opacity-100 bg-[var(--hover)]'
@@ -360,7 +372,9 @@ export default function LeftSidebar({
 
                             {isMenuOpen && (
                               <div
-                                className="absolute right-0 top-full mt-1 z-50 min-w-[160px] rounded-xl border border-[var(--border)] bg-white py-1"
+                                className={`absolute right-0 z-50 min-w-[160px] rounded-xl border border-[var(--border)] bg-white py-1 ${
+                                  menuDropUp ? 'bottom-full mb-1' : 'top-full mt-1'
+                                }`}
                                 style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
                               >
                                 <button
