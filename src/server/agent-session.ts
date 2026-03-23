@@ -111,6 +111,62 @@ function mcpConfigFingerprint(servers: McpServerDefinition[]): string {
   return JSON.stringify(items);
 }
 
+interface BuildMcpServersInput {
+  servers: McpServerDefinition[];
+  serverEnvMap: Record<string, Record<string, string>>;  // from MCPConfigStore.getServerEnv per server
+  serverArgsMap: Record<string, string[]>;               // from ConfigStore.readConfig().mcpServerArgs
+}
+
+function buildSdkMcpServers(input: BuildMcpServersInput): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const cfg of input.servers) {
+    // Skip MCP servers that require config but aren't configured yet
+    if (cfg.requiresConfig?.length) {
+      const serverEnv = input.serverEnvMap[cfg.id] ?? {};
+      const missing = cfg.requiresConfig.some((key) => !serverEnv[key]);
+      if (missing) continue;
+    }
+
+    if (cfg.type === 'stdio') {
+      const extraArgs = input.serverArgsMap[cfg.id];
+      let finalArgs = extraArgs?.length ? [...(cfg.args ?? []), ...extraArgs] : (cfg.args ?? []);
+      finalArgs = pinMcpPackageVersions(finalArgs);
+
+      // Build MCP config with isolated env to prevent proxy interference.
+      // The parent Sidecar may have HTTP_PROXY set (injected by Rust at spawn),
+      // which leaks into MCP child processes and breaks localhost WebSocket connections
+      // (e.g., playwright-core's ws transport to Chrome DevTools gets routed through proxy).
+      const mcpEnv: Record<string, string> = {};
+      if (cfg.env && Object.keys(cfg.env).length > 0) {
+        Object.assign(mcpEnv, cfg.env);
+      }
+      // Strip proxy env vars from MCP subprocess
+      for (const proxyVar of [
+        'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY',
+        'ALL_PROXY', 'all_proxy',
+      ]) {
+        if (!(proxyVar in mcpEnv)) {
+          mcpEnv[proxyVar] = '';
+        }
+      }
+
+      const resolved = resolveStdioCommand(cfg.command ?? '', finalArgs);
+      result[cfg.id] = { type: 'stdio', command: resolved.command, args: resolved.args, env: mcpEnv };
+    } else if (cfg.type === 'sse' || cfg.type === 'http') {
+      // Expand URL templates like {{TAVILY_API_KEY}}
+      let url = cfg.url ?? '';
+      if (url.includes('{{')) {
+        const serverEnv = input.serverEnvMap[cfg.id] ?? {};
+        url = url.replace(/\{\{(\w+)\}\}/g, (_, key) => serverEnv[key] ?? '');
+      }
+      result[cfg.id] = { type: cfg.type, url };
+    }
+  }
+
+  return result;
+}
+
 /** Pin known-good versions for MCP packages to avoid breaking changes from @latest */
 const PINNED_MCP_VERSIONS: Record<string, string> = {
   '@anthropic-ai/claude-code': '1.0.16',
@@ -128,6 +184,42 @@ function pinMcpPackageVersions(args: string[]): string[] {
     }
     return arg;
   });
+}
+
+/**
+ * Resolve stdio command with fallback for restricted PATH environments.
+ * macOS GUI apps only have /usr/bin:/bin:/usr/sbin:/sbin in PATH.
+ */
+function resolveStdioCommand(command: string, args: string[]): { command: string; args: string[] } {
+  if (!['npx', 'bunx', 'uvx'].includes(command) &&
+      !command.endsWith('/npx') && !command.endsWith('/bunx') && !command.endsWith('/uvx')) {
+    return { command, args };
+  }
+
+  // Check if command exists in PATH using 'which'
+  try {
+    const result = Bun.spawnSync(['which', command], { stdout: 'pipe', stderr: 'ignore' });
+    if (result.exitCode === 0) {
+      const fullPath = new TextDecoder().decode(result.stdout).trim();
+      if (fullPath) return { command: fullPath, args };
+    }
+  } catch { /* which not available or failed */ }
+
+  // Fallback for npx/bunx: use bundled bun's bunx
+  const baseName = command.split('/').pop() ?? command;
+  if (baseName === 'npx' || baseName === 'bunx') {
+    const bunExe = process.env.BUN_EXECUTABLE;
+    if (bunExe) {
+      console.log(`[MCP] ${command} not in PATH, falling back to bundled bun: ${bunExe} x`);
+      return { command: bunExe, args: ['x', ...args] };
+    }
+  }
+
+  if (baseName === 'uvx') {
+    console.warn(`[MCP] uvx not found in PATH, no fallback available`);
+  }
+
+  return { command, args };
 }
 
 /**
@@ -154,10 +246,12 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
 
   console.log(`[MCP] Config updated: ${servers.map((s) => s.id).join(', ') || 'none'}`);
 
-  // 通知所有活跃 runner 重启（延迟到当前 turn 完成后）
+  // 通知所有活跃 runner 重启（延迟到当前 turn 完成后）；非活跃 runner 预热 MCP 配置
   for (const r of getAllRunners()) {
     if (r.isSessionActive()) {
       r.requestMcpRestart();
+    } else {
+      r.schedulePreWarm();
     }
   }
 }
@@ -381,6 +475,11 @@ class SessionRunner {
   // ── MCP 动态重启 ──
   private mcpRestartPending = false;
 
+  // ── MCP 预热 ──
+  private preWarmTimer: ReturnType<typeof setTimeout> | null = null;
+  private preWarmRetryCount = 0;
+  private static readonly MAX_PRE_WARM_RETRIES = 2;
+
   /** 标记需要 MCP 重启，延迟到当前 streaming 完成后执行 */
   requestMcpRestart(): void {
     if (this.isStreaming) {
@@ -390,6 +489,43 @@ class SessionRunner {
       console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] MCP config changed, restarting session`);
       this.abortSession();
     }
+  }
+
+  /** Schedule MCP pre-warm: pre-build config so first query starts faster */
+  schedulePreWarm(delayMs = 500): void {
+    if (this.preWarmTimer) clearTimeout(this.preWarmTimer);
+    this.preWarmTimer = setTimeout(() => {
+      this.preWarmTimer = null;
+      if (this.isStreaming || this.sessionActive) return; // Already running, no need to pre-warm
+
+      try {
+        // Pre-build MCP config (this is the expensive part — env lookups, version pinning, etc.)
+        const pushedMcp = getMcpServers();
+        if (!pushedMcp || pushedMcp.length === 0) return;
+
+        const serverEnvMap: Record<string, Record<string, string>> = {};
+        for (const cfg of pushedMcp) {
+          serverEnvMap[cfg.id] = MCPConfigStore.getServerEnv(cfg.id);
+        }
+        const mcpConfig = buildSdkMcpServers({
+          servers: pushedMcp,
+          serverEnvMap,
+          serverArgsMap: ConfigStore.readConfig().mcpServerArgs ?? {},
+        });
+
+        if (Object.keys(mcpConfig).length > 0) {
+          console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Pre-warmed MCP config: ${Object.keys(mcpConfig).join(', ')}`);
+        }
+      } catch (err) {
+        this.preWarmRetryCount++;
+        if (this.preWarmRetryCount < SessionRunner.MAX_PRE_WARM_RETRIES) {
+          console.warn(`[SessionRunner:${this.sessionId.slice(0, 8)}] Pre-warm failed, retrying in 2s:`, err);
+          this.schedulePreWarm(2000);
+        } else {
+          console.warn(`[SessionRunner:${this.sessionId.slice(0, 8)}] Pre-warm failed after ${this.preWarmRetryCount} retries`);
+        }
+      }
+    }, delayMs);
   }
 
   /** 公开 sessionActive 状态 */
@@ -458,6 +594,10 @@ class SessionRunner {
 
   /** 中止持久 session：唤醒所有被阻塞的 Promise + 中断 subprocess */
   private abortSession(): void {
+    if (this.preWarmTimer) {
+      clearTimeout(this.preWarmTimer);
+      this.preWarmTimer = null;
+    }
     this.shouldAbort = true;
     // 唤醒 generator 的 waitForMessage
     if (this.messageResolver) {
@@ -570,52 +710,19 @@ class SessionRunner {
             return filtered;
           })();
 
-      let mcpServers: Record<string, unknown> | undefined;
-      if (mcpFiltered.length > 0) {
-        mcpServers = {};
-        for (const cfg of mcpFiltered) {
-          // Skip MCP servers that require config but aren't configured yet
-          if (cfg.requiresConfig?.length) {
-            const serverEnv = MCPConfigStore.getServerEnv(cfg.id);
-            const missing = cfg.requiresConfig.some((key) => !serverEnv[key]);
-            if (missing) continue;
-          }
-
-          if (cfg.type === 'stdio') {
-            const extraArgs = ConfigStore.readConfig().mcpServerArgs?.[cfg.id];
-            let finalArgs = extraArgs?.length ? [...(cfg.args ?? []), ...extraArgs] : (cfg.args ?? []);
-            finalArgs = pinMcpPackageVersions(finalArgs);
-
-            // Build MCP config with isolated env to prevent proxy interference.
-            // The parent Sidecar may have HTTP_PROXY set (injected by Rust at spawn),
-            // which leaks into MCP child processes and breaks localhost WebSocket connections
-            // (e.g., playwright-core's ws transport to Chrome DevTools gets routed through proxy).
-            const mcpEnv: Record<string, string> = {};
-            if (cfg.env && Object.keys(cfg.env).length > 0) {
-              Object.assign(mcpEnv, cfg.env);
-            }
-            // Strip proxy env vars from MCP subprocess
-            for (const proxyVar of [
-              'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY',
-              'ALL_PROXY', 'all_proxy',
-            ]) {
-              if (!(proxyVar in mcpEnv)) {
-                mcpEnv[proxyVar] = '';
-              }
-            }
-
-            mcpServers[cfg.id] = { type: 'stdio', command: cfg.command, args: finalArgs, env: mcpEnv };
-          } else if (cfg.type === 'sse' || cfg.type === 'http') {
-            // Expand URL templates like {{TAVILY_API_KEY}}
-            let url = cfg.url ?? '';
-            if (url.includes('{{')) {
-              const serverEnv = MCPConfigStore.getServerEnv(cfg.id);
-              url = url.replace(/\{\{(\w+)\}\}/g, (_, key) => serverEnv[key] ?? '');
-            }
-            mcpServers[cfg.id] = { type: cfg.type, url };
-          }
-        }
+      // Build server env map
+      const serverEnvMap: Record<string, Record<string, string>> = {};
+      for (const cfg of mcpFiltered) {
+        serverEnvMap[cfg.id] = MCPConfigStore.getServerEnv(cfg.id);
       }
+
+      const mcpServers = mcpFiltered.length > 0
+        ? buildSdkMcpServers({
+            servers: mcpFiltered,
+            serverEnvMap,
+            serverArgsMap: ConfigStore.readConfig().mcpServerArgs ?? {},
+          })
+        : undefined;
 
       const resolvedPermissionMode = config.permissionMode;
 

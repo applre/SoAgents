@@ -6,7 +6,8 @@ import QueuedMessagesPanel from './QueuedMessagesPanel';
 import type { LucideIcon } from 'lucide-react';
 import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
 import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
-import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
+import { globalApiGetJson } from '../api/apiFetch';
+import { fetchMcpServers, pushEffectiveMcpServers } from '../services/mcpService';
 import { useConfig } from '../context/ConfigContext';
 import { useTabApi, useTabActive } from '../context/TabContext';
 // allProviders 从 ConfigContext 获取，不再使用静态 PROVIDERS
@@ -198,10 +199,10 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       const effective = wsIds !== undefined
         ? globalEnabled.filter((s) => new Set(wsIds).has(s.id))
         : globalEnabled;
-      globalApiPostJson('/api/mcp/set', { servers: effective }).catch(() => {});
+      pushEffectiveMcpServers(effective).catch(() => {});
     };
     const load = () => {
-      globalApiGetJson<{ servers: Array<{ id: string; name: string; description?: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
+      fetchMcpServers()
         .then((data) => {
           if (cancelled) return;
           const enabledSet = new Set(data.enabledIds);
@@ -214,7 +215,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
           // Sidecar 可能还没准备好，3 秒后重试一次
           setTimeout(() => {
             if (cancelled) return;
-            globalApiGetJson<{ servers: Array<{ id: string; name: string; description?: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
+            fetchMcpServers()
               .then((data) => {
                 if (cancelled) return;
                 const enabledSet = new Set(data.enabledIds);
@@ -237,7 +238,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     prevActiveRef.current = isActive;
     if (!isActive || !wasInactive) return;
 
-    globalApiGetJson<{ servers: Array<{ id: string; name: string; description?: string; type: string; isBuiltin: boolean }>; enabledIds: string[] }>('/api/mcp')
+    fetchMcpServers()
       .then((data) => {
         const enabledSet = new Set(data.enabledIds);
         const globalEnabled = data.servers.filter((s) => enabledSet.has(s.id));
@@ -245,7 +246,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         const wsIds = wsEntryRef.current?.mcpEnabledServers;
         const wsSet = wsIds !== undefined ? new Set(wsIds) : null;
         const effective = wsSet ? globalEnabled.filter((s) => wsSet.has(s.id)) : globalEnabled;
-        globalApiPostJson('/api/mcp/set', { servers: effective }).catch(() => {});
+        pushEffectiveMcpServers(effective).catch(() => {});
       })
       .catch(() => {});
   }, [isActive]);
@@ -683,7 +684,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     // 立即同步到后端
     const wsSet = new Set(next);
     const effectiveServers = mcpServers.filter((s) => wsSet.has(s.id));
-    globalApiPostJson('/api/mcp/set', { servers: effectiveServers }).catch((err) => {
+    pushEffectiveMcpServers(effectiveServers).catch((err) => {
       console.error('[ChatInput] Failed to sync MCP to backend:', err);
     });
   }, [agentDir, wsEntry?.mcpEnabledServers, updateWorkspaceConfig, mcpServers]);

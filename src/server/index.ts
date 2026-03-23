@@ -675,19 +675,50 @@ Bun.serve({
           if (!response.ok) {
             return Response.json({ ok: false, error: { type: 'connection_failed', message: `服务器返回错误 (HTTP ${response.status})` } });
           }
+          // SSE: verify content-type
+          if (server.type === 'sse') {
+            const contentType = response.headers.get('content-type') ?? '';
+            if (!contentType.includes('text/event-stream') && !contentType.includes('application/json')) {
+              return Response.json({ ok: false, error: {
+                type: 'connection_failed',
+                message: `SSE 端点返回了非预期的 Content-Type: "${contentType}"。预期 text/event-stream`,
+              } });
+            }
+          }
+          // HTTP: validate JSON-RPC response format
+          if (server.type === 'http') {
+            try {
+              const body = await response.json() as { jsonrpc?: string; error?: { message?: string } };
+              if (body.error?.message) {
+                return Response.json({ ok: false, error: {
+                  type: 'connection_failed',
+                  message: `MCP 服务器返回错误: ${body.error.message}`,
+                } });
+              }
+            } catch {
+              // Response might not be JSON — that's OK for some MCP servers,
+              // continue without error
+            }
+          }
         } catch (err: unknown) {
           const error = err instanceof Error ? err : new Error(String(err));
-          let message: string;
-          if (error.name === 'AbortError') {
-            message = '连接超时（15秒），请检查 URL 是否正确或服务器是否可达';
-          } else if (error.message.includes('ENOTFOUND') || error.message.includes('getaddrinfo')) {
-            message = '域名无法解析，请检查 URL 是否正确';
-          } else if (error.message.includes('ECONNREFUSED')) {
-            message = '连接被拒绝，请检查服务是否已启动';
+
+          // ZlibError: WAF/CDN gzip issues — tolerate and allow through
+          if (error.message.includes('Zlib') || error.message.includes('zlib') || error.message.includes('incorrect header check')) {
+            console.warn(`[MCP Toggle] ZlibError for ${server.id}, allowing through: ${error.message}`);
           } else {
-            message = `连接失败：${error.message}`;
+            let message: string;
+            if (error.name === 'AbortError') {
+              message = '连接超时（15秒），请检查 URL 是否正确或服务器是否可达';
+            } else if (error.message.includes('ENOTFOUND') || error.message.includes('getaddrinfo')) {
+              message = '域名无法解析，请检查 URL 是否正确';
+            } else if (error.message.includes('ECONNREFUSED')) {
+              message = '连接被拒绝，请检查服务是否已启动';
+            } else {
+              message = `连接失败：${error.message}`;
+            }
+            return Response.json({ ok: false, error: { type: 'connection_failed', message } });
           }
-          return Response.json({ ok: false, error: { type: 'connection_failed', message } });
         }
       }
 

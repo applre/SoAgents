@@ -15,6 +15,7 @@ import {
   globalApiDeleteJson,
   globalApiPutJson,
 } from '../api/apiFetch';
+import * as mcpService from '../services/mcpService';
 import CustomSelect from '../components/CustomSelect';
 import { ExternalLink } from '../components/ExternalLink';
 import { openExternal } from '../utils/openExternal';
@@ -440,8 +441,7 @@ function ProviderEditModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.35)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -1504,8 +1504,7 @@ function MCPEditModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.35)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -1705,11 +1704,11 @@ function MCPTab() {
 
   const loadServers = async () => {
     try {
-      const data = await globalApiGetJson<{ servers: McpServerDefinition[]; enabledIds: string[] }>('/api/mcp');
+      const data = await mcpService.fetchMcpServers();
       setServers(data.servers);
       setEnabledIds(new Set(data.enabledIds));
       // Load needs-config status
-      const ncData = await globalApiGetJson<Record<string, boolean>>('/api/mcp/needs-config');
+      const ncData = await mcpService.checkNeedsConfig();
       setNeedsConfig(ncData);
     } catch { /* ignore */ }
     finally { setLoading(false); }
@@ -1727,7 +1726,7 @@ function MCPTab() {
     setTogglingIds((prev) => new Set([...prev, id]));
     setToggleErrors((prev) => { const next = { ...prev }; delete next[id]; return next; });
     try {
-      const resp = await globalApiPostJson<{ ok: boolean; error?: { type: string; message: string; runtimeName?: string; downloadUrl?: string } }>('/api/mcp/toggle', { id, enabled });
+      const resp = await mcpService.toggleMcpServer(id, enabled);
       if (resp.ok) {
         setEnabledIds((prev) => {
           const next = new Set(prev);
@@ -1749,7 +1748,7 @@ function MCPTab() {
 
   const openConfigDialog = async (srv: McpServerDefinition) => {
     try {
-      const allEnv = await globalApiGetJson<Record<string, Record<string, string>>>('/api/mcp/env');
+      const allEnv = await mcpService.fetchMcpEnv();
       setConfigEnvValues(allEnv[srv.id] ?? {});
     } catch {
       setConfigEnvValues({});
@@ -1761,9 +1760,9 @@ function MCPTab() {
     if (!configDialog) return;
     setConfigSaving(true);
     try {
-      await globalApiPutJson('/api/mcp/env', { id: configDialog.id, env: configEnvValues });
+      await mcpService.saveMcpEnv(configDialog.id, configEnvValues);
       // Auto-enable after config
-      await globalApiPostJson('/api/mcp/toggle', { id: configDialog.id, enabled: true });
+      await mcpService.toggleMcpServer(configDialog.id, true);
       setEnabledIds((prev) => new Set([...prev, configDialog.id]));
       setNeedsConfig((prev) => ({ ...prev, [configDialog.id]: false }));
       setConfigDialog(null);
@@ -1774,9 +1773,9 @@ function MCPTab() {
   const handleSave = async (id: string, cfg: Omit<MCPServerConfig, 'id'>) => {
     let resp: { ok?: boolean; error?: string };
     if (editMCP === 'new') {
-      resp = await globalApiPostJson<{ ok?: boolean; error?: string }>('/api/mcp', { id, ...cfg });
+      resp = await mcpService.addMcpServer(id, cfg as Record<string, unknown>);
     } else {
-      resp = await globalApiPutJson<{ ok?: boolean; error?: string }>(`/api/mcp/${encodeURIComponent(id)}`, cfg);
+      resp = await mcpService.updateMcpServer(id, cfg as Record<string, unknown>);
     }
     if (!resp.ok) {
       throw new Error(resp.error ?? '保存失败');
@@ -1785,7 +1784,7 @@ function MCPTab() {
   };
 
   const handleDelete = async (id: string) => {
-    await globalApiDeleteJson(`/api/mcp/${id}`);
+    await mcpService.deleteMcpServer(id);
     await loadServers();
   };
 
@@ -1818,8 +1817,8 @@ function MCPTab() {
         type = (config.transportType === 'sse' || config.type === 'sse') ? 'sse' : 'http';
       }
       try {
-        await globalApiPostJson('/api/mcp', {
-          id, name, type,
+        await mcpService.addMcpServer(id, {
+          name, type,
           ...(type === 'stdio' && {
             command: config.command,
             args: Array.isArray(config.args) ? config.args : undefined,
@@ -1848,7 +1847,7 @@ function MCPTab() {
 
   const handleExportMcpJson = useCallback(async () => {
     try {
-      const data = await globalApiGetJson<{ servers: unknown[]; enabledIds: string[] }>('/api/mcp');
+      const data = await mcpService.fetchMcpServers();
       const json = JSON.stringify(data, null, 2);
       const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -1976,15 +1975,16 @@ function MCPTab() {
                     />
                   )}
                   {srv.isBuiltin ? (
-                    srv.requiresConfig?.length ? (
-                      <button
-                        onClick={() => openConfigDialog(srv)}
-                        className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
-                        title="配置"
-                      >
-                        <SettingsIcon size={14} />
-                      </button>
-                    ) : (
+                    <>
+                      {(srv.requiresConfig?.length || srv.id === 'playwright') && (
+                        <button
+                          onClick={() => openConfigDialog(srv)}
+                          className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
+                          title="配置"
+                        >
+                          <SettingsIcon size={14} />
+                        </button>
+                      )}
                       <button
                         onClick={() => setEditMCP({ id: srv.id, name: srv.name, type: srv.type, command: srv.command, args: srv.args, env: srv.env, url: srv.url, headers: srv.headers })}
                         className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
@@ -1992,7 +1992,7 @@ function MCPTab() {
                       >
                         <Eye size={14} />
                       </button>
-                    )
+                    </>
                   ) : (
                     <>
                       <button
@@ -2073,7 +2073,7 @@ function MCPTab() {
 
       {/* Config Dialog for MCP servers that require API keys */}
       {configDialog && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => setConfigDialog(null)}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setConfigDialog(null)}>
           <div className="w-[420px] rounded-2xl bg-[var(--paper)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
               <div>
@@ -2099,6 +2099,19 @@ function MCPTab() {
                   />
                 </div>
               ))}
+              {configDialog.id === 'playwright' && (
+                <div className="rounded-lg bg-[var(--surface)] p-3 space-y-2">
+                  <p className="text-[13px] font-medium text-[var(--ink)]">常用启动参数</p>
+                  <div className="space-y-1.5 text-[12px] text-[var(--ink-secondary)]">
+                    <p><code className="bg-[var(--hover)] px-1 rounded">--headless</code> — 无头模式（不显示浏览器窗口）</p>
+                    <p><code className="bg-[var(--hover)] px-1 rounded">--browser=firefox</code> — 使用 Firefox 浏览器</p>
+                    <p><code className="bg-[var(--hover)] px-1 rounded">--browser=webkit</code> — 使用 WebKit 浏览器</p>
+                  </div>
+                  <p className="text-[11px] text-[var(--ink-tertiary)]">
+                    如需添加额外参数，可点击旁边的查看按钮，通过 JSON 编辑模式修改 args 字段。
+                  </p>
+                </div>
+              )}
               {configDialog.websiteUrl && (
                 <ExternalLink
                   href={configDialog.websiteUrl}
@@ -2113,15 +2126,17 @@ function MCPTab() {
                 onClick={() => setConfigDialog(null)}
                 className="rounded-lg border border-[var(--border)] px-4 py-2 text-[13px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)]"
               >
-                取消
+                {configDialog.requiresConfig?.length ? '取消' : '关闭'}
               </button>
-              <button
-                onClick={handleConfigSave}
-                disabled={configSaving || !configDialog.requiresConfig?.every((k) => configEnvValues[k])}
-                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {configSaving ? '保存中...' : '保存并启用'}
-              </button>
+              {!!configDialog.requiresConfig?.length && (
+                <button
+                  onClick={handleConfigSave}
+                  disabled={configSaving || !configDialog.requiresConfig?.every((k) => configEnvValues[k])}
+                  className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
+                >
+                  {configSaving ? '保存中...' : '保存并启用'}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2182,8 +2197,7 @@ function SkillEditModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.35)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
