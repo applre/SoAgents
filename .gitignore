@@ -56,3 +56,16 @@ package-lock.json
 # Misc generated files
 config/
 icon-changes-report.html
+tab-style-preview.html
+
+# Playwright MCP
+.playwright-mcp/
+
+# Impeccable config
+.impeccable.md
+
+# Design mockups
+specs/mockups/
+
+# Internal plans
+specs/plans/
