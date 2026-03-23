@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { MoreHorizontal } from 'lucide-react';
 import type { ContentBlock } from '../types/chat';
 import ProcessRow from './ProcessRow';
 
@@ -9,80 +9,97 @@ type ProcessBlock =
 
 interface Props {
   blocks: ProcessBlock[];
+  isLatestActiveSection?: boolean;
   isStreaming?: boolean;
 }
 
-/** 折叠阈值：≥6 个块时折叠中间部分 */
+/** 2 head + N folded + 2 tail — fold kicks in at 6+ blocks */
 const FOLD_THRESHOLD = 6;
 const VISIBLE_HEAD = 2;
 const VISIBLE_TAIL = 2;
 
-/**
- * BlockGroup: 将连续的 thinking/tool_use 块分组渲染
- * - ≤ 5 块：全部平铺
- * - ≥ 6 块：显示前 2 + 后 2，中间折叠
- */
-const BlockGroup = memo(function BlockGroup({ blocks, isStreaming }: Props) {
+const BlockGroup = memo(function BlockGroup({ blocks, isLatestActiveSection = false, isStreaming = false }: Props) {
   const [isUnfolded, setIsUnfolded] = useState(false);
 
   if (blocks.length === 0) return null;
 
+  const isStreamingActive = isStreaming && isLatestActiveSection;
   const shouldFold = !isUnfolded && blocks.length >= FOLD_THRESHOLD;
   const foldedCount = shouldFold ? blocks.length - VISIBLE_HEAD - VISIBLE_TAIL : 0;
 
-  // ≥5 块时使用可折叠 DOM 结构（提前 1 步，让折叠触发时 DOM 不变，CSS 过渡流畅）
+  // Collapsible layout: activates 1 step before FOLD_THRESHOLD so the DOM structure
+  // is already stable when folding triggers, enabling smooth CSS Grid transition.
   if (blocks.length > VISIBLE_HEAD + VISIBLE_TAIL) {
     return (
-      <div>
-        {/* Head: 前 2 块 — 始终可见 */}
-        {blocks.slice(0, VISIBLE_HEAD).map((block, i) => (
-          <ProcessRow key={i} block={block} isStreaming={isStreaming} />
-        ))}
+      <div className="my-3 overflow-hidden rounded-lg border border-[var(--line-subtle)] bg-[var(--surface)]/30 transition-all select-none">
+        <div className="flex flex-col">
+          {/* Head: first 2 blocks — always visible */}
+          {blocks.slice(0, VISIBLE_HEAD).map((block, i) => (
+            <ProcessRow key={i} block={block} index={i} totalBlocks={blocks.length} isStreaming={isStreamingActive} />
+          ))}
 
-        {/* Middle: 可折叠区 — CSS Grid 动画 */}
-        <div
-          className="grid transition-[grid-template-rows] duration-300 ease-out"
-          style={{ gridTemplateRows: shouldFold ? '0fr' : '1fr' }}
-        >
-          <div className="overflow-hidden">
-            {blocks.slice(VISIBLE_HEAD, blocks.length - VISIBLE_TAIL).map((block, i) => (
-              <ProcessRow key={VISIBLE_HEAD + i} block={block} isStreaming={isStreaming} />
-            ))}
+          {/* Middle: collapsible zone — CSS Grid animation */}
+          <div
+            className="grid transition-[grid-template-rows] duration-200 ease-out"
+            style={{ gridTemplateRows: shouldFold ? '0fr' : '1fr' }}
+          >
+            <div className="overflow-hidden">
+              {blocks.slice(VISIBLE_HEAD, blocks.length - VISIBLE_TAIL).map((block, i) => {
+                const idx = VISIBLE_HEAD + i;
+                return (
+                  <ProcessRow key={idx} block={block} index={idx} totalBlocks={blocks.length} isStreaming={isStreamingActive} />
+                );
+              })}
+            </div>
           </div>
-        </div>
 
-        {/* Fold bar: 折叠时显示 */}
-        <div
-          className="grid transition-[grid-template-rows] duration-300 ease-out"
-          style={{ gridTemplateRows: shouldFold ? '1fr' : '0fr' }}
-        >
-          <div className="overflow-hidden">
-            <button
-              type="button"
-              className="flex w-full items-center justify-center gap-1.5 rounded-md py-1 text-[11px] text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink-secondary)] transition-colors"
-              onClick={() => setIsUnfolded(true)}
-            >
-              <ChevronDown className="size-3" />
-              展开全部
-              <span className="rounded-full bg-[var(--surface)] px-1.5 text-[10px]">+{foldedCount}</span>
-            </button>
+          {/* Fold bar: inversely animated — appears as middle collapses */}
+          <div
+            className="grid transition-[grid-template-rows] duration-200 ease-out"
+            style={{ gridTemplateRows: shouldFold ? '1fr' : '0fr' }}
+          >
+            <div className="overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsUnfolded(true)}
+                className="group/fold flex w-full items-center gap-3 border-b border-[var(--border)]/30 px-4 py-2 text-left transition-colors cursor-pointer hover:bg-[var(--hover)]"
+              >
+                <div className="size-1.5 shrink-0" />
+                <div className="flex size-4 shrink-0 items-center justify-center text-[var(--ink-tertiary)]">
+                  <MoreHorizontal className="size-4" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-[var(--ink-tertiary)] group-hover/fold:text-[var(--ink-secondary)] transition-colors">
+                    展开全部
+                  </span>
+                  <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-[var(--accent)]">
+                    +{foldedCount}
+                  </span>
+                </div>
+              </button>
+            </div>
           </div>
-        </div>
 
-        {/* Tail: 最后 2 块 — 始终可见 */}
-        {blocks.slice(blocks.length - VISIBLE_TAIL).map((block, i) => (
-          <ProcessRow key={blocks.length - VISIBLE_TAIL + i} block={block} isStreaming={isStreaming} />
-        ))}
+          {/* Tail: last 2 blocks — always visible */}
+          {blocks.slice(blocks.length - VISIBLE_TAIL).map((block, i) => {
+            const idx = blocks.length - VISIBLE_TAIL + i;
+            return (
+              <ProcessRow key={idx} block={block} index={idx} totalBlocks={blocks.length} isStreaming={isStreamingActive} />
+            );
+          })}
+        </div>
       </div>
     );
   }
 
-  // ≤ 4 块：平铺布局
+  // Flat layout for small block groups (≤4 blocks)
   return (
-    <div>
-      {blocks.map((block, i) => (
-        <ProcessRow key={i} block={block} isStreaming={isStreaming} />
-      ))}
+    <div className="my-3 overflow-hidden rounded-lg border border-[var(--line-subtle)] bg-[var(--surface)]/30 transition-all select-none">
+      <div className="flex flex-col">
+        {blocks.map((block, i) => (
+          <ProcessRow key={i} block={block} index={i} totalBlocks={blocks.length} isStreaming={isStreamingActive} />
+        ))}
+      </div>
     </div>
   );
 });

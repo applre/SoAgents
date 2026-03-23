@@ -9,7 +9,6 @@ import { looksLikeFilePath } from '../../utils/pathDetection';
 
 interface InlineCodeProps {
   children: React.ReactNode;
-  className?: string;
 }
 
 const BASE_CLASS = 'rounded bg-[var(--surface)] px-1.5 py-0.5 font-mono text-[0.9em] text-[var(--ink)]';
@@ -26,13 +25,13 @@ function extractText(node: React.ReactNode): string {
   return '';
 }
 
-export default function InlineCode({ children, className }: InlineCodeProps) {
+export default function InlineCode({ children }: InlineCodeProps) {
   const fileAction = useFileAction(); // null outside Chat
   const text = extractText(children);
 
   // Fast path: no context or not a path candidate → plain code
   if (!fileAction || !looksLikeFilePath(text)) {
-    return <code className={className ?? BASE_CLASS}>{children}</code>;
+    return <code className={BASE_CLASS}>{children}</code>;
   }
 
   // Ask context for cached result (may trigger a batched backend request)
@@ -40,7 +39,7 @@ export default function InlineCode({ children, className }: InlineCodeProps) {
 
   if (!pathInfo?.exists) {
     // Not yet resolved or does not exist → plain code
-    return <code className={className ?? BASE_CLASS}>{children}</code>;
+    return <code className={BASE_CLASS}>{children}</code>;
   }
 
   // Path exists — render interactive

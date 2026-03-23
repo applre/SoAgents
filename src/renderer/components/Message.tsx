@@ -1,37 +1,39 @@
 import React, { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
 import { Copy, Check, Puzzle } from 'lucide-react';
 import type { Message, TurnMeta, ContentBlock } from '../types/chat';
 import BlockGroup from './BlockGroup';
-import CodeBlock from './markdown/CodeBlock';
-import MermaidDiagram from './markdown/MermaidDiagram';
-import InlineCode from './markdown/InlineCode';
+import Markdown from './Markdown';
 import { formatTokens, formatDuration } from '../utils/formatTokens';
-import { preprocessContent } from '../utils/preprocessMarkdown';
 
 interface Props {
   message: Message;
   isStreaming?: boolean;
-  onOpenUrl?: (url: string) => void;
 }
 
-function MessageItemInner({ message, isStreaming, onOpenUrl }: Props) {
+/** Lightweight CSS-only tooltip */
+function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="group/tip relative inline-flex">
+      {children}
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--ink)]/90 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover/tip:opacity-100">
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function MessageItemInner({ message, isStreaming }: Props) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // 流式结束后延迟 350ms 显示操作按钮，防止布局跳动
+  // Delay action buttons 350ms after streaming ends to prevent layout shift
   const [showActions, setShowActions] = useState(!isStreaming);
   useEffect(() => {
     if (!isStreaming) {
       const timer = setTimeout(() => setShowActions(true), 350);
       return () => clearTimeout(timer);
     }
-    // 流式开始时隐藏
     const timer = setTimeout(() => setShowActions(false), 0);
     return () => clearTimeout(timer);
   }, [isStreaming]);
@@ -55,42 +57,95 @@ function MessageItemInner({ message, isStreaming, onOpenUrl }: Props) {
       const textBlocks = message.blocks.filter((b) => b.type === 'text');
       return textBlocks.map((b) => (b as { text: string }).text).join('\n');
     }
-    // Assistant: join text blocks, skip thinking/tool_use
     return message.blocks
       .filter((b) => b.type === 'text')
       .map((b) => (b as { text: string }).text)
       .join('\n\n');
   };
 
-  // Copy action button (shared between user and assistant)
+  // Copy action button
   const copyButton = (
-    <div className="group/copy relative">
+    <Tip label={copied ? '已复制' : '复制'}>
       <button
         type="button"
         onClick={() => handleCopy(getCopyText())}
-        className="rounded-lg p-1.5 text-[var(--ink-tertiary)] transition-all hover:bg-[var(--hover)] hover:text-[var(--ink-secondary)] hover:shadow-sm"
+        className="rounded-lg p-1 text-[var(--ink-tertiary)] transition-all hover:bg-[var(--surface)] hover:text-[var(--ink-secondary)]"
       >
         {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
       </button>
-      <span className="pointer-events-none absolute right-full top-1/2 mr-1 -translate-y-1/2 whitespace-nowrap rounded-md bg-[var(--surface)] px-2 py-1 text-[11px] text-[var(--ink-tertiary)] shadow-md border border-[var(--border)] opacity-0 transition-opacity group-hover/copy:opacity-100">
-        {copied ? '已复制' : '复制'}
-      </span>
-    </div>
+    </Tip>
   );
 
   if (isUser) {
     return (
-      <div className="group/user relative flex flex-col items-end">
-        <div
-          className={[
-            'max-w-[80%] rounded-2xl px-4 py-3 text-sm',
-            'bg-[var(--accent)] text-white [--tw-prose-body:theme(colors.white)] [--tw-prose-headings:theme(colors.white)] [--tw-prose-code:theme(colors.white)] [--tw-prose-bold:theme(colors.white)] [--tw-prose-links:theme(colors.white)]',
-          ].join(' ')}
-        >
-          {message.blocks.map((block, i) => {
+      <div className="group/user relative flex justify-end select-none">
+        <div className="flex w-full flex-col items-end">
+          <article className="relative w-fit max-w-[66%] rounded-2xl border border-[var(--border)] bg-[var(--paper)] px-4 py-3 text-base leading-relaxed text-[var(--ink)] shadow-md select-text">
+            {message.blocks.map((block, i) => {
+              if (block.type === 'skill') {
+                return (
+                  <div key={i} className="flex items-center gap-1.5 rounded-full px-3 py-1 mb-1.5 text-xs font-medium bg-[var(--surface)] text-[var(--ink-secondary)] border border-[var(--border)]">
+                    <Puzzle size={12} className="shrink-0" />
+                    <span>{block.name}</span>
+                  </div>
+                );
+              }
+              if (block.type === 'image') {
+                return (
+                  <div key={i} className="mb-2">
+                    <img src={block.base64} alt={block.name} className="max-w-full max-h-64 rounded-lg" />
+                  </div>
+                );
+              }
+              if (block.type !== 'text') return null;
+              return (
+                <div key={i} className="text-[var(--ink)]">
+                  <Markdown preserveNewlines>{block.text}</Markdown>
+                </div>
+              );
+            })}
+          </article>
+          {/* Hover action menu */}
+          <div className="flex items-center gap-0.5 mt-1 opacity-0 transition-opacity group-hover/user:opacity-100">
+            {copyButton}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Assistant message
+  const groupedBlocks = groupBlocks(message.blocks);
+
+  // Only the last BlockGroup is the "active section" during streaming
+  const lastBlockGroupIndex = groupedBlocks.findLastIndex((item) => Array.isArray(item));
+
+  // Check if any block is still incomplete (running)
+  const hasIncompleteBlocks = message.blocks.some((block) => {
+    if (block.type === 'tool_use') return block.status === 'running';
+    return false;
+  });
+  const isAssistantStreaming = !!isStreaming && hasIncompleteBlocks;
+
+  return (
+    <div className="group/assistant flex flex-col items-start select-none">
+      <article className="w-full px-3 py-2">
+        <div className="space-y-3">
+          {groupedBlocks.map((group, gi) => {
+            if (Array.isArray(group)) {
+              return (
+                <BlockGroup
+                  key={`g${gi}`}
+                  blocks={group}
+                  isLatestActiveSection={gi === lastBlockGroupIndex}
+                  isStreaming={isAssistantStreaming || !!isStreaming}
+                />
+              );
+            }
+            const block = group;
             if (block.type === 'skill') {
               return (
-                <div key={i} className="flex items-center gap-1.5 rounded-full px-3 py-1 mb-1.5 text-xs font-medium bg-white/15 text-white">
+                <div key={`b${gi}`} className="flex items-center gap-1.5 rounded-full px-3 py-1 mb-1.5 text-xs font-medium bg-[var(--hover)] text-[var(--ink-secondary)] border border-[var(--border)]">
                   <Puzzle size={12} className="shrink-0" />
                   <span>{block.name}</span>
                 </div>
@@ -98,138 +153,24 @@ function MessageItemInner({ message, isStreaming, onOpenUrl }: Props) {
             }
             if (block.type === 'image') {
               return (
-                <div key={i} className="mb-2">
+                <div key={`b${gi}`} className="mb-2">
                   <img src={block.base64} alt={block.name} className="max-w-full max-h-64 rounded-lg" />
                 </div>
               );
             }
+            // text block
             if (block.type !== 'text') return null;
             return (
-              <div key={i} className="prose prose-sm max-w-none [&_*]:!text-white [&_*]:!bg-transparent [&_code]:!bg-white/20 [&_pre]:!bg-white/10 [&_a]:!text-white/90">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-                  components={{
-                    code({ className, children, ...props }) {
-                      const match = /language-(\w+)/.exec(className || '');
-                      if (match) {
-                        const codeStr = String(children).replace(/\n$/, '');
-                        if (match[1] === 'mermaid') {
-                          return <MermaidDiagram>{codeStr}</MermaidDiagram>;
-                        }
-                        return (
-                          <CodeBlock language={match[1]} darkTheme>
-                            {codeStr}
-                          </CodeBlock>
-                        );
-                      }
-                      return <code className={className} {...props}>{children}</code>;
-                    },
-                    pre({ children }) {
-                      return <>{children}</>;
-                    },
-                    a({ href, children }) {
-                      if (href?.startsWith('http') && onOpenUrl) {
-                        return (
-                          <a href={href} onClick={(e) => { e.preventDefault(); onOpenUrl(href); }} title={href}>
-                            {children}
-                          </a>
-                        );
-                      }
-                      return <a href={href}>{children}</a>;
-                    },
-                  }}
-                >
-                  {preprocessContent(block.text)}
-                </ReactMarkdown>
+              <div key={`b${gi}`} className="w-full max-w-none text-[var(--ink)] select-text">
+                <Markdown>{block.text}</Markdown>
               </div>
             );
           })}
         </div>
-        {/* Hover action menu */}
-        <div className="flex items-center gap-0.5 mt-1 opacity-0 transition-opacity group-hover/user:opacity-100">
-          {copyButton}
-        </div>
-      </div>
-    );
-  }
-
-  // Assistant message
-  return (
-    <div className="group/assistant flex flex-col items-start">
-      <div
-        className="w-full text-sm text-[var(--ink)]"
-      >
-        {groupBlocks(message.blocks).map((group, gi) => {
-          // 分组：ProcessBlock[] → BlockGroup 组件
-          if (Array.isArray(group)) {
-            return <BlockGroup key={`g${gi}`} blocks={group} isStreaming={isStreaming} />;
-          }
-          // 单个块：skill / image / text
-          const block = group;
-          if (block.type === 'skill') {
-            return (
-              <div key={`b${gi}`} className="flex items-center gap-1.5 rounded-full px-3 py-1 mb-1.5 text-xs font-medium bg-[var(--hover)] text-[var(--ink-secondary)] border border-[var(--border)]">
-                <Puzzle size={12} className="shrink-0" />
-                <span>{block.name}</span>
-              </div>
-            );
-          }
-          if (block.type === 'image') {
-            return (
-              <div key={`b${gi}`} className="mb-2">
-                <img src={block.base64} alt={block.name} className="max-w-full max-h-64 rounded-lg" />
-              </div>
-            );
-          }
-          // text block
-          if (block.type !== 'text') return null;
-          return (
-            <div key={`b${gi}`} className="prose prose-sm max-w-none">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-                components={{
-                  code({ className, children, ...props }) {
-                    const match = /language-(\w+)/.exec(className || '');
-                    if (match) {
-                      const codeStr = String(children).replace(/\n$/, '');
-                      if (match[1] === 'mermaid') {
-                        return <MermaidDiagram>{codeStr}</MermaidDiagram>;
-                      }
-                      return (
-                        <CodeBlock language={match[1]}>
-                          {codeStr}
-                        </CodeBlock>
-                      );
-                    }
-                    // Inline code → InlineCode with file path detection
-                    return <InlineCode className={className} {...props}>{children}</InlineCode>;
-                  },
-                  pre({ children }) {
-                    return <>{children}</>;
-                  },
-                  a({ href, children }) {
-                    if (href?.startsWith('http') && onOpenUrl) {
-                      return (
-                        <a href={href} onClick={(e) => { e.preventDefault(); onOpenUrl(href); }} title={href}>
-                          {children}
-                        </a>
-                      );
-                    }
-                    return <a href={href}>{children}</a>;
-                  },
-                }}
-              >
-                {preprocessContent(block.text)}
-              </ReactMarkdown>
-            </div>
-          );
-        })}
-      </div>
-      {/* Turn meta + hover action menu — 流式结束后 350ms 延迟显示 */}
+      </article>
+      {/* Turn meta + hover action menu */}
       {showActions && (
-        <div className="flex items-center gap-2 mt-1">
+        <div className="flex items-center gap-2 mt-1 px-4">
           {message.turnMeta && <TurnMetaDisplay meta={message.turnMeta} />}
           <div className="opacity-0 transition-opacity group-hover/assistant:opacity-100">
             {copyButton}
@@ -255,8 +196,8 @@ function TurnMetaDisplay({ meta }: { meta: TurnMeta }) {
 }
 
 /**
- * 分组算法：将连续的 thinking/tool_use 块合并为一组，其他块单独放
- * 返回 (ProcessBlock[] | ContentBlock)[]
+ * Group consecutive thinking/tool_use blocks together, merge adjacent text blocks.
+ * Text merging prevents split rendering during streaming.
  */
 type ProcessBlock = Extract<ContentBlock, { type: 'thinking' }> | Extract<ContentBlock, { type: 'tool_use' }>;
 
@@ -274,6 +215,18 @@ function groupBlocks(blocks: ContentBlock[]): (ProcessBlock[] | ContentBlock)[] 
   for (const block of blocks) {
     if (block.type === 'thinking' || block.type === 'tool_use') {
       currentGroup.push(block);
+    } else if (block.type === 'text') {
+      flushGroup();
+      // Merge consecutive text blocks into one
+      const prev = result[result.length - 1];
+      if (prev && !Array.isArray(prev) && prev.type === 'text') {
+        result[result.length - 1] = {
+          ...prev,
+          text: (prev.text || '') + '\n\n' + (block.text || '')
+        };
+      } else {
+        result.push(block);
+      }
     } else {
       flushGroup();
       result.push(block);
@@ -284,16 +237,12 @@ function groupBlocks(blocks: ContentBlock[]): (ProcessBlock[] | ContentBlock)[] 
   return result;
 }
 
-// 自定义比较：历史消息同引用直接跳过，只有流式消息走完整比较
 function areMessagesEqual(prev: Props, next: Props): boolean {
   if (prev.isStreaming !== next.isStreaming) return false;
-  // 同引用 → 内容没变（历史消息快速路径）
   if (prev.message === next.message) return true;
-  // 不同引用但同 id → 可能是流式更新中的同一条消息
   if (prev.message.id !== next.message.id) return false;
   return prev.message.blocks === next.message.blocks;
 }
 
 const MessageItem = React.memo(MessageItemInner, areMessagesEqual);
 export default MessageItem;
-

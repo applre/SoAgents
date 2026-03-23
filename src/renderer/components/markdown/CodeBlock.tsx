@@ -1,52 +1,67 @@
+/**
+ * CodeBlock - Syntax highlighted code block with copy button
+ * Supports all major programming languages via react-syntax-highlighter
+ */
+
 import { Check, Copy } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 interface CodeBlockProps {
   children: string;
   language?: string;
   className?: string;
-  /** true for user messages (dark theme), false for assistant (light theme) */
-  darkTheme?: boolean;
 }
 
-export default function CodeBlock({ children, language, className, darkTheme = false }: CodeBlockProps) {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+// Custom theme based on oneDark with warm tones to match app aesthetic
+// Uses CSS variable --font-code for consistent font across all code rendering
+const customTheme = {
+  ...oneDark,
+  'pre[class*="language-"]': {
+    ...oneDark['pre[class*="language-"]'],
+    background: 'var(--code-bg)',
+    borderRadius: '0.5rem',
+    padding: '1rem',
+    margin: 0,
+    fontSize: '13px',
+    lineHeight: '1.6',
+  },
+  'code[class*="language-"]': {
+    ...oneDark['code[class*="language-"]'],
+    background: 'transparent',
+    fontSize: '13px',
+    lineHeight: '1.6',
+    fontFamily: 'var(--font-code)',
+  },
+};
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
+export default function CodeBlock({ children, language, className }: CodeBlockProps) {
+  const [copied, setCopied] = useState(false);
 
   const extractedLanguage = language || className?.replace(/language-/, '') || 'text';
-  const lineCount = children.split('\n').length;
-  const theme = darkTheme ? oneDark : oneLight;
 
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(children);
       setCopied(true);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), 1500);
+      setTimeout(() => setCopied(false), 2000);
     } catch {
       // clipboard unavailable
     }
   }, [children]);
 
   return (
-    <div className="group/codeblock relative my-3 w-full overflow-hidden rounded-lg">
-      {/* Header: language label + copy button */}
-      <div className="flex items-center justify-between bg-[#2d2d2d] px-4 py-1.5 text-xs">
-        <span className="font-mono text-neutral-400 uppercase tracking-wide">
+    <div className="group relative my-3 w-full overflow-hidden rounded-lg">
+      {/* Header with language label and copy button */}
+      <div className="flex items-center justify-between bg-[var(--code-header-bg)] px-4 py-2 text-xs">
+        <span className="font-mono text-[var(--code-line-number)] uppercase tracking-wide">
           {extractedLanguage}
         </span>
         <button
           type="button"
           onClick={handleCopy}
-          className="flex items-center gap-1.5 rounded px-2 py-1 text-neutral-400 transition-colors hover:bg-neutral-700 hover:text-neutral-200"
+          className="flex items-center gap-1.5 rounded px-2 py-1 text-[var(--code-line-number)] transition-colors hover:bg-white/10 hover:text-neutral-200"
           title={copied ? '已复制' : '复制代码'}
         >
           {copied ? (
@@ -63,24 +78,23 @@ export default function CodeBlock({ children, language, className, darkTheme = f
         </button>
       </div>
 
-      {/* Code content */}
+      {/* Code content with syntax highlighting */}
       <SyntaxHighlighter
         language={extractedLanguage}
-        style={theme}
+        style={customTheme}
         customStyle={{
           margin: 0,
-          borderRadius: 0,
-          fontSize: 13,
-          lineHeight: '1.6',
+          borderTopLeftRadius: 0,
+          borderTopRightRadius: 0,
         }}
-        showLineNumbers={lineCount > 5}
+        showLineNumbers={children.split('\n').length > 5}
         lineNumberStyle={{
           minWidth: '2.5em',
           paddingRight: '1em',
-          color: darkTheme ? '#4a4a4a' : '#9ca3af',
+          color: 'var(--code-line-number)',
           userSelect: 'none',
         }}
-        wrapLongLines
+        wrapLongLines={false}
       >
         {children.trim()}
       </SyntaxHighlighter>

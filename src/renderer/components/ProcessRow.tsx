@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react';
-import { Loader2, Brain, XCircle, ChevronRight } from 'lucide-react';
+import { Brain, ChevronDown, Loader2, XCircle } from 'lucide-react';
+import { memo, useEffect, useRef, useState, useCallback } from 'react';
 import type { ContentBlock } from '../types/chat';
 import { getToolBadgeConfig } from './tools/toolBadgeConfig';
 import ToolUse from './tools/ToolUse';
+import Markdown from './Markdown';
 
 type ProcessBlock =
   | Extract<ContentBlock, { type: 'thinking' }>
@@ -10,13 +11,12 @@ type ProcessBlock =
 
 interface Props {
   block: ProcessBlock;
+  index: number;
+  totalBlocks: number;
   isStreaming?: boolean;
 }
 
-/** TodoWrite/WebSearch 默认展开 */
-const AUTO_OPEN_TOOLS = new Set(['TodoWrite', 'WebSearch']);
-
-/** 获取工具摘要 */
+/** Get tool sub-label for display */
 function getToolLabel(block: Extract<ContentBlock, { type: 'tool_use' }>): string {
   let parsed: Record<string, unknown> = {};
   try { parsed = JSON.parse(block.input ?? '{}'); } catch { /* */ }
@@ -33,112 +33,151 @@ function getToolLabel(block: Extract<ContentBlock, { type: 'tool_use' }>): strin
   }
 }
 
-const ProcessRow = memo(function ProcessRow({ block, isStreaming }: Props) {
+const ProcessRow = memo(function ProcessRow({ block, index, totalBlocks, isStreaming = false }: Props) {
+  const [userToggled, setUserToggled] = useState<boolean | null>(null);
+  const [thinkingElapsed, setThinkingElapsed] = useState(0);
+  const thinkingTimerRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const startTimeRef = useRef(0);
+
   const isThinking = block.type === 'thinking';
   const isToolUse = block.type === 'tool_use';
+  const isLastBlock = index === totalBlocks - 1;
 
-  // 展开状态：三态派生
-  const [userToggled, setUserToggled] = useState<boolean | null>(null);
-  const isActive = isThinking
-    ? !!isStreaming
-    : (isToolUse && block.status === 'running');
-  const autoOpen = isToolUse ? AUTO_OPEN_TOOLS.has(block.name) : false;
+  // Thinking is active if streaming and it's the last block (no isComplete field in SoAgents)
+  const isThinkingActive = isThinking && isStreaming && isLastBlock;
+  // Tool is active via status field
+  const isToolActive = isToolUse && block.status === 'running';
+  const isBlockActive = isThinkingActive || isToolActive;
 
-  const isExpanded = userToggled !== null
-    ? userToggled
-    : (isActive && isThinking) || autoOpen;
-
-  const handleToggle = useCallback(() => {
-    setUserToggled((prev) => prev === null ? !isExpanded : !prev);
-  }, [isExpanded]);
-
-  // 思考计时器
-  const [thinkingElapsed, setThinkingElapsed] = useState(0);
-  const startTimeRef = useRef(0);
+  // Thinking timer
   useEffect(() => {
-    if (!isThinking || !isActive) return;
+    if (!isThinkingActive) {
+      if (thinkingTimerRef.current) {
+        clearInterval(thinkingTimerRef.current);
+        thinkingTimerRef.current = undefined;
+      }
+      return;
+    }
     startTimeRef.current = Date.now();
-    const timer = setInterval(() => {
+    thinkingTimerRef.current = setInterval(() => {
       setThinkingElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
     }, 1000);
-    return () => clearInterval(timer);
-  }, [isThinking, isActive]);
+    return () => {
+      if (thinkingTimerRef.current) {
+        clearInterval(thinkingTimerRef.current);
+        thinkingTimerRef.current = undefined;
+      }
+    };
+  }, [isThinkingActive]);
 
-  // 状态点样式
-  let dotColor = 'bg-[var(--ink-tertiary)]/40';
-  if (isActive) dotColor = 'bg-amber-400 animate-pulse';
-  else if (isToolUse && block.status === 'error') dotColor = 'bg-[var(--error)]';
+  // Check if block has expandable content
+  const hasContent =
+    (isThinking && block.thinking && block.thinking.length > 0) ||
+    (isToolUse && (block.input || block.result));
 
-  // 图标
+  // Expand state: user toggle > auto (thinking active = expanded)
+  const isExpanded = userToggled !== null
+    ? userToggled
+    : (isThinking && isThinkingActive);
+
+  const handleToggle = useCallback(() => {
+    if (!hasContent) return;
+    setUserToggled(prev => prev === null ? true : !prev);
+  }, [hasContent]);
+
+  // Build display content
   let icon: React.ReactNode = null;
-  if (isThinking) {
-    icon = isActive
-      ? <Loader2 className="size-3.5 animate-spin text-[var(--ink-tertiary)]" />
-      : <Brain className="size-3.5 text-[var(--ink-tertiary)]" />;
-  } else if (isToolUse) {
-    const config = getToolBadgeConfig(block.name);
-    icon = isActive
-      ? <Loader2 className="size-3.5 animate-spin text-[var(--ink-tertiary)]" />
-      : (block.status === 'error'
-          ? <XCircle className="size-3.5 text-[var(--error)]" />
-          : config.icon);
-  }
-
-  // 主标签
-  let label = '';
+  let mainLabel = '';
   let subLabel = '';
+
   if (isThinking) {
-    label = isActive ? '思考中…' : '思考过程';
-    if (isActive && thinkingElapsed > 0) subLabel = `${thinkingElapsed}s`;
-    else if (!isActive && block.thinking) {
-      // 思考结束后显示字数
-      subLabel = `${block.thinking.length} 字`;
+    if (isThinkingActive) {
+      const elapsedSec = thinkingElapsed;
+      mainLabel = elapsedSec > 0 ? `思考中… (${elapsedSec}s)` : '思考中…';
+      icon = <Loader2 className="size-4 animate-spin" />;
+    } else {
+      // Completed thinking — show character count as duration proxy
+      const charCount = block.thinking?.length ?? 0;
+      mainLabel = charCount > 0 ? `思考了 ${Math.ceil(charCount / 100)}s` : '思考过程';
+      icon = <Brain className="size-4" />;
     }
   } else if (isToolUse) {
-    label = block.name;
+    const config = getToolBadgeConfig(block.name);
+    mainLabel = block.name;
     subLabel = getToolLabel(block);
+
+    if (isToolActive) {
+      icon = <Loader2 className="size-4 animate-spin" />;
+    } else if (block.status === 'error') {
+      icon = <XCircle className="size-4 text-[var(--error)]" />;
+    } else {
+      icon = config.icon;
+    }
   }
 
+  // Dot color
+  let dotClass = 'bg-[var(--ink-tertiary)]/40';
+  if (isBlockActive) dotClass = 'bg-amber-400 animate-pulse';
+  else if (isToolUse && block.status === 'error') dotClass = 'bg-[var(--error)]';
+
   return (
-    <div className="my-0.5">
-      {/* 行式头部 */}
+    <div className={`group select-none ${index < totalBlocks - 1 ? 'border-b border-[var(--line-subtle)]' : ''}`}>
       <button
         type="button"
-        className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs transition-colors hover:bg-[var(--hover)]"
         onClick={handleToggle}
+        disabled={!hasContent}
+        className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${hasContent ? 'cursor-pointer hover:bg-[var(--hover)]' : 'cursor-default'}`}
       >
-        {/* 状态点 */}
-        <span className={`inline-block size-1.5 shrink-0 rounded-full ${dotColor}`} />
-        {/* 图标 */}
-        <span className="shrink-0">{icon}</span>
-        {/* 主标签 */}
-        <span className="font-medium text-[var(--ink-secondary)]">{label}</span>
-        {/* 子标签 */}
-        {subLabel && (
-          <span className="truncate font-mono text-[var(--ink-tertiary)]">{subLabel}</span>
+        {/* Left indicator dot */}
+        <div className={`flex size-1.5 shrink-0 rounded-full ${dotClass}`} />
+
+        {/* Icon */}
+        <div className="flex size-4 shrink-0 items-center justify-center text-[var(--ink-tertiary)] [&>svg]:size-4">
+          {icon}
+        </div>
+
+        {/* Labels */}
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className={`text-sm leading-snug ${isThinking ? 'text-[var(--ink-secondary)]' : 'text-[var(--ink)] font-medium'}`}>
+            {mainLabel}
+          </span>
+          {subLabel && (
+            <span className="text-xs text-[var(--ink-tertiary)] font-mono truncate">
+              {subLabel}
+            </span>
+          )}
+        </div>
+
+        {/* Chevron */}
+        {hasContent && (
+          <ChevronDown className={`size-4 text-[var(--ink-tertiary)] transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
         )}
-        {/* 展开箭头 */}
-        <ChevronRight className={`ml-auto size-3 shrink-0 text-[var(--ink-tertiary)] transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
       </button>
 
-      {/* 展开详情：CSS Grid 高度动画 */}
-      <div
-        className="grid transition-[grid-template-rows] duration-200 ease-out"
-        style={{ gridTemplateRows: isExpanded ? '1fr' : '0fr' }}
-      >
-        <div className="overflow-hidden">
-          <div className="pl-6 pr-1.5 pb-1 pt-0.5">
-            {isThinking && (
-              <div className="text-xs text-[var(--ink-tertiary)] italic whitespace-pre-wrap max-h-48 overflow-y-auto">
-                {block.thinking}
+      {/* Expanded body — CSS Grid animation */}
+      {hasContent && (
+        <div
+          className="grid transition-[grid-template-rows] duration-200 ease-out"
+          style={{ gridTemplateRows: isExpanded ? '1fr' : '0fr' }}
+        >
+          <div className="overflow-hidden">
+            <div className="border-t border-[var(--border)] bg-[var(--paper)]/50 px-4 pb-4 pt-3">
+              <div className="ml-7">
+                {isThinking && block.thinking && (
+                  <div className="text-[var(--ink-secondary)] select-text">
+                    <Markdown compact>{block.thinking}</Markdown>
+                  </div>
+                )}
+                {isToolUse && (
+                  <div className="w-full overflow-hidden select-text">
+                    <ToolUse block={block} embedded />
+                  </div>
+                )}
               </div>
-            )}
-            {isToolUse && (
-              <ToolUse block={block} embedded />
-            )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 });
