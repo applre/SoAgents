@@ -555,6 +555,21 @@ Bun.serve({
     if (req.method === 'POST' && url.pathname === '/api/mcp') {
       const body = await req.json() as { id: string } & MCPConfigStore.MCPServerConfig;
       const { id, ...config } = body;
+      if (!id || !id.trim()) {
+        return Response.json({ ok: false, error: 'ID 不能为空' });
+      }
+      if (!config.name?.trim()) {
+        return Response.json({ ok: false, error: '名称不能为空' });
+      }
+      if (config.type === 'stdio' && !config.command?.trim()) {
+        return Response.json({ ok: false, error: 'stdio 类型必须提供 command' });
+      }
+      if (config.type !== 'stdio' && !config.url?.trim()) {
+        return Response.json({ ok: false, error: `${config.type} 类型必须提供 URL` });
+      }
+      if (MCPConfigStore.isBuiltin(id)) {
+        return Response.json({ ok: false, error: `ID "${id}" 与内置 MCP 冲突` });
+      }
       MCPConfigStore.set(id, config);
       return Response.json({ ok: true });
     }

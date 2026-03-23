@@ -1287,8 +1287,9 @@ function MCPEditModal({
         headers: form.type !== 'stdio' && Object.keys(headersObj).length > 0 ? headersObj : undefined,
       });
       onClose();
-    } catch {
-      setError('保存失败，请检查参数');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || '保存失败');
     } finally {
       setSaving(false);
     }
@@ -1540,10 +1541,14 @@ function MCPTab() {
   };
 
   const handleSave = async (id: string, cfg: Omit<MCPServerConfig, 'id'>) => {
+    let resp: { ok?: boolean; error?: string };
     if (editMCP === 'new') {
-      await globalApiPostJson('/api/mcp', { id, ...cfg });
+      resp = await globalApiPostJson<{ ok?: boolean; error?: string }>('/api/mcp', { id, ...cfg });
     } else {
-      await globalApiPutJson(`/api/mcp/${encodeURIComponent(id)}`, cfg);
+      resp = await globalApiPutJson<{ ok?: boolean; error?: string }>(`/api/mcp/${encodeURIComponent(id)}`, cfg);
+    }
+    if (!resp.ok) {
+      throw new Error(resp.error ?? '保存失败');
     }
     await loadServers();
   };
