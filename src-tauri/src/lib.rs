@@ -9,10 +9,13 @@ mod sse_proxy;
 mod updater;
 mod cron_task;
 mod local_http;
+mod tray;
 pub mod logger;
 
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
 use commands::SidecarState;
+use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_autostart::MacosLauncher;
 use tokio::sync::RwLock;
 
@@ -21,12 +24,22 @@ pub fn run() {
     let sidecar_state: SidecarState = Arc::new(Mutex::new(sidecar::SidecarManager::new()));
     let cron_task_state: cron_task::CronTaskState = Arc::new(RwLock::new(cron_task::CronTaskManager::new()));
 
-    // 保存一份 Arc clone 用于退出清理
     let cleanup_state = Arc::clone(&sidecar_state);
+    let cleanup_state_for_exit = Arc::clone(&sidecar_state);
     let cron_task_cleanup = cron_task_state.clone();
+    let cron_task_cleanup_for_exit = cron_task_state.clone();
     let cron_task_setup = cron_task_state.clone();
 
-    tauri::Builder::default()
+    // Track if cleanup has been performed to avoid duplicate cleanup
+    let cleanup_done = Arc::new(AtomicBool::new(false));
+    let cleanup_done_for_window = cleanup_done.clone();
+    let cleanup_done_for_exit = cleanup_done.clone();
+    let cleanup_done_for_tray_exit = cleanup_done.clone();
+
+    let sidecar_state_for_tray_exit = Arc::clone(&sidecar_state);
+    let cron_task_cleanup_for_tray_exit = cron_task_state.clone();
+
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
@@ -85,14 +98,37 @@ pub fn run() {
             // Open DevTools in debug builds
             #[cfg(debug_assertions)]
             {
-                use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
                     window.open_devtools();
                 }
             }
 
-            // 初始化统一日志系统（保存全局 AppHandle）
+            // Initialize unified logging system
             logger::init_app_handle(app.handle());
+
+            // Setup system tray
+            if let Err(e) = tray::setup_tray(app) {
+                log::error!("[App] Failed to setup system tray: {}", e);
+            }
+
+            // Setup tray exit handler (for when user confirms exit from tray menu)
+            let app_handle_for_tray = app.handle().clone();
+            app.listen("tray:confirm-exit", move |_| {
+                log::info!("[App] Tray exit confirmed by user");
+                use std::sync::atomic::Ordering::Relaxed;
+                if !cleanup_done_for_tray_exit.swap(true, Relaxed) {
+                    log::info!("[App] Cleaning up sidecars before exit...");
+                    if let Ok(mut manager) = sidecar_state_for_tray_exit.lock() {
+                        manager.stop_all();
+                    }
+                    let cron_clone = cron_task_cleanup_for_tray_exit.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut mgr = cron_clone.write().await;
+                        mgr.stop();
+                    });
+                }
+                app_handle_for_tray.exit(0);
+            });
 
             ulog_info!("[App] SoAgents started successfully");
 
@@ -117,20 +153,64 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(move |_window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Ok(mut manager) = cleanup_state.lock() {
-                    ulog_info!("[App] Stopping all sidecars on window close");
-                    manager.stop_all();
+        .on_window_event(move |window, event| {
+            match event {
+                // Handle window close request (X button) - emit to frontend, let it decide
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    log::info!("[App] Window close requested, emitting event to frontend");
+                    let _ = window.app_handle().emit("window:close-requested", ());
+                    api.prevent_close();
                 }
-
-                let cron_task_clone = cron_task_cleanup.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut mgr = cron_task_clone.write().await;
-                    mgr.stop();
-                });
+                // Clean up when window is actually destroyed
+                tauri::WindowEvent::Destroyed => {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    if !cleanup_done_for_window.swap(true, Relaxed) {
+                        log::info!("[App] Window destroyed, cleaning up sidecars...");
+                        if let Ok(mut manager) = cleanup_state.lock() {
+                            manager.stop_all();
+                        }
+                        let cron_clone = cron_task_cleanup.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let mut mgr = cron_clone.write().await;
+                            mgr.stop();
+                        });
+                    }
+                }
+                _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // Run with event handler to catch Cmd+Q, Dock quit, and Dock click
+    app.run(move |_app_handle, event| {
+        match event {
+            // Handle app exit events (Cmd+Q, Dock right-click quit, etc.)
+            tauri::RunEvent::ExitRequested { .. } => {
+                use std::sync::atomic::Ordering::Relaxed;
+                if !cleanup_done_for_exit.swap(true, Relaxed) {
+                    log::info!("[App] Exit requested (Cmd+Q or Dock quit), cleaning up sidecars...");
+                    if let Ok(mut manager) = cleanup_state_for_exit.lock() {
+                        manager.stop_all();
+                    }
+                    let cron_clone = cron_task_cleanup_for_exit.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut mgr = cron_clone.write().await;
+                        mgr.stop();
+                    });
+                }
+            }
+            // Handle Dock icon click on macOS (Reopen event)
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                log::info!("[App] Dock icon clicked (Reopen), showing main window");
+                if let Some(window) = _app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+            _ => {}
+        }
+    });
 }

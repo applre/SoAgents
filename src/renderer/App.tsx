@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, LayoutList, Clock, FileText, X } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, LayoutList, Clock, FileText, X, Plus } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -34,6 +34,8 @@ import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
 import { EditorActionBar, RichTextToolbar } from './components/EditorToolbar';
 import type { ToolbarAction } from './components/EditorToolbar';
 import { ConfigProvider } from './context/ConfigProvider';
+import { useConfigData } from './context/ConfigContext';
+import { useTrayEvents } from './hooks/useTrayEvents';
 import { useToast } from './components/Toast';
 import { useUpdater } from './hooks/useUpdater';
 import { useSidebarSessions } from './hooks/useSidebarSessions';
@@ -99,7 +101,6 @@ function SortableFileTab({ file, isActive, onActivate, onClose }: {
         }}
       >
         <FileText size={14} className="shrink-0" style={{ color: isActive ? 'var(--ink-secondary)' : 'var(--ink-tertiary)' }} />
-        {/* 未保存修改标记圆点 */}
         {file.isDirty && (
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
         )}
@@ -596,6 +597,7 @@ export default function App() {
 
   return (
     <ConfigProvider>
+      <TrayEventHandler onOpenSettings={handleOpenSettings} />
       <div className="flex h-screen overflow-hidden bg-[var(--paper)]">
         {showSidebar ? (
           <LeftSidebar
@@ -903,6 +905,18 @@ export default function App() {
   );
 }
 
+// ── TrayEventHandler (must be inside ConfigProvider) ──────────────────
+
+function TrayEventHandler({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { config } = useConfigData();
+  useTrayEvents({
+    minimizeToTray: config.minimizeToTray ?? false,
+    onOpenSettings,
+    onExitRequested: async () => true,
+  });
+  return null;
+}
+
 // ── SessionTabBar ─────────────────────────────────────────────────────
 
 interface SessionTabBarProps {
@@ -919,54 +933,70 @@ interface SessionTabBarProps {
 function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, onCloseTab, showFilesPanel, onToggleFilesPanel }: SessionTabBarProps) {
   return (
     <div
-      className="relative flex items-center justify-between px-5 border-b border-[var(--border)] bg-[var(--paper)] shrink-0 z-50"
-      style={{ height: 48, paddingTop: 2 }}
+      className="relative flex items-center justify-between shrink-0 z-50"
+      style={{ height: 44, background: 'var(--surface)', borderBottom: '1px solid var(--border)', paddingLeft: 12, paddingRight: 12 }}
       onMouseDown={startWindowDrag}
       onDoubleClick={toggleMaximize}
     >
-      <div className="flex items-center gap-1 min-w-0 overflow-x-auto scrollbar-hide" onMouseDown={(e) => e.stopPropagation()}>
-        {tabs.map((tab) => {
+      <div className="flex items-end gap-0 min-w-0 overflow-x-auto scrollbar-hide h-full" onMouseDown={(e) => e.stopPropagation()}>
+        {tabs.map((tab, index) => {
           const isActive = tab.id === activeTabId;
           const isSettings = tab.view === 'settings';
           const isScheduledTasks = tab.view === 'scheduled-tasks';
           const isTaskCenter = tab.view === 'task-center';
           const sessionMeta = tab.sessionId ? allSessions.find((s) => s.id === tab.sessionId) : null;
           const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : isTaskCenter ? '任务中心' : (sessionMeta?.title || '新对话');
+          // 非活跃 tab 之间的分隔线（前一个也不是活跃时才显示）
+          const prevTab = tabs[index - 1];
+          const showDivider = index > 0 && !isActive && prevTab?.id !== activeTabId;
 
           return (
-            <div
-              key={tab.id}
-              onClick={() => onSwitchTab(tab.id)}
-              className="flex items-center gap-1 rounded-lg px-2.5 cursor-pointer select-none shrink-0"
-              style={{
-                height: 34,
-                maxWidth: 180,
-                background: isActive ? '#F0EDE8' : 'transparent',
-                borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-              }}
-            >
-              {isSettings && <SettingsIcon size={14} className={`shrink-0 ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`} />}
-              <span className={`text-[13px] font-semibold truncate ${isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-tertiary)]'}`}>
-                {label}
-              </span>
-              {/* 状态圆点：生成中(绿色脉冲) / 未读(暖色静态，仅非活跃 tab) */}
-              {tab.isGenerating && (
-                <span className="relative ml-0.5 flex h-1.5 w-1.5 shrink-0">
-                  <span className="absolute inset-0 rounded-full bg-[var(--success)]" />
-                  <span className="absolute inset-0 rounded-full bg-[var(--success)] animate-ping" />
+            <div key={tab.id} className="flex items-end shrink-0" style={{ height: '100%' }}>
+              {showDivider && (
+                <div className="self-center w-px h-4 bg-[var(--border)]" />
+              )}
+              <div
+                onClick={() => onSwitchTab(tab.id)}
+                className={`group flex items-center gap-1.5 cursor-pointer select-none shrink-0 transition-colors ${
+                  isActive
+                    ? 'bg-[var(--paper)] text-[var(--ink)]'
+                    : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink-secondary)]'
+                }`}
+                style={{
+                  height: 34,
+                  maxWidth: 200,
+                  padding: '0 12px',
+                  borderRadius: '8px 8px 0 0',
+                  marginBottom: isActive ? -1 : 0,
+                  paddingBottom: isActive ? 1 : 0,
+                  position: 'relative',
+                  zIndex: isActive ? 2 : 1,
+                }}
+              >
+                {isSettings && <SettingsIcon size={14} className="shrink-0" />}
+                <span className={`text-[13px] truncate ${isActive ? 'font-semibold' : 'font-medium'}`}>
+                  {label}
                 </span>
-              )}
-              {!isActive && !tab.isGenerating && tab.hasUnread && (
-                <span className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
-              )}
-              {isActive && (isSettings || isScheduledTasks || isTaskCenter || tabs.length > 1) && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
-                  className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 text-center shrink-0"
-                >
-                  ×
-                </button>
-              )}
+                {/* 状态圆点：生成中(绿色脉冲) / 未读(暖色静态，仅非活跃 tab) */}
+                {tab.isGenerating && (
+                  <span className="relative ml-0.5 flex h-1.5 w-1.5 shrink-0">
+                    <span className="absolute inset-0 rounded-full bg-[var(--success)]" />
+                    <span className="absolute inset-0 rounded-full bg-[var(--success)] animate-ping" />
+                  </span>
+                )}
+                {!isActive && !tab.isGenerating && tab.hasUnread && (
+                  <span className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
+                )}
+                {(isActive || (isSettings || isScheduledTasks || isTaskCenter)) && (isSettings || isScheduledTasks || isTaskCenter || tabs.length > 1) && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
+                    className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 h-4 flex items-center justify-center rounded shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                    style={{ opacity: isActive ? undefined : undefined }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -974,9 +1004,9 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
         <button
           onClick={onNewTab}
           onMouseDown={(e) => e.stopPropagation()}
-          className="text-[18px] font-medium leading-none text-[var(--ink-tertiary)] hover:text-[var(--ink)] w-7 h-7 flex items-center justify-center rounded transition-colors shrink-0"
+          className="self-center ml-1 text-[var(--ink-tertiary)] hover:text-[var(--ink)] hover:bg-[var(--hover)] w-7 h-7 flex items-center justify-center rounded-md transition-colors shrink-0"
         >
-          +
+          <Plus size={15} />
         </button>
       </div>
 

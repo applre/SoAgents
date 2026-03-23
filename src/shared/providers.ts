@@ -315,4 +315,5 @@ export const DEFAULT_CONFIG: AppConfig = {
   currentProviderId: 'anthropic-sub',
   apiKeys: {},
   customProviders: [],
+  minimizeToTray: true,
 };

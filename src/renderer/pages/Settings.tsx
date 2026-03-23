@@ -2260,12 +2260,11 @@ function GeneralTab() {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[13px] font-medium text-[var(--ink)]">最小化到托盘</p>
-            <p className="text-[12px] text-[var(--ink-tertiary)]">关闭窗口时最小化到系统托盘（即将支持）</p>
+            <p className="text-[12px] text-[var(--ink-tertiary)]">关闭窗口时最小化到系统托盘而非退出应用</p>
           </div>
           <ToggleSwitch
             checked={config.minimizeToTray ?? false}
-            onChange={() => {}}
-            disabled
+            onChange={(v) => updateConfig({ minimizeToTray: v })}
           />
         </div>
       </div>
