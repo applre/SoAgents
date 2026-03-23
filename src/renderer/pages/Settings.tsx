@@ -1243,6 +1243,21 @@ function MCPEditModal({
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // Reset form when editing a different MCP server
+  useEffect(() => {
+    setForm({
+      id: mcp?.id ?? '',
+      name: mcp?.name ?? '',
+      type: (mcp?.type ?? 'stdio') as MCPServerConfig['type'],
+      command: mcp?.command ?? '',
+      args: mcp?.args?.join(', ') ?? '',
+      url: mcp?.url ?? '',
+      env: mcp?.env ? Object.entries(mcp.env).map(([k, v]) => `${k}=${v}`).join('\n') : '',
+      headers: mcp?.headers ? Object.entries(mcp.headers).map(([k, v]) => `${k}=${v}`).join('\n') : '',
+    });
+    setError('');
+  }, [mcp]);
+
   const handleSave = async () => {
     if (isReadonly) return;
     if (!form.id.trim()) { setError('ID 不能为空'); return; }
