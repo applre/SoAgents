@@ -200,6 +200,10 @@ Bun.serve({
         ...(m.usage ? { usage: m.usage } : {}),
         ...(m.durationMs ? { durationMs: m.durationMs } : {}),
         ...(m.toolCount ? { toolCount: m.toolCount } : {}),
+        ...(m.attachments ? { attachments: m.attachments.map(att => ({
+          ...att,
+          previewUrl: att.mimeType.startsWith('image/') ? SessionStore.getAttachmentDataUrl(att.path, att.mimeType) : undefined,
+        })) } : {}),
       })));
     }
 
@@ -258,7 +262,13 @@ Bun.serve({
       const sessionId = url.pathname.split('/')[3];
       try {
         const msgs = SessionStore.getSessionMessages(sessionId);
-        return Response.json(msgs);
+        return Response.json(msgs.map(m => ({
+          ...m,
+          ...(m.attachments ? { attachments: m.attachments.map(att => ({
+            ...att,
+            previewUrl: att.mimeType.startsWith('image/') ? SessionStore.getAttachmentDataUrl(att.path, att.mimeType) : undefined,
+          })) } : {}),
+        })));
       } catch {
         return Response.json([]);
       }
@@ -546,6 +556,22 @@ Bun.serve({
       const body = await req.json() as { id: string } & MCPConfigStore.MCPServerConfig;
       const { id, ...config } = body;
       MCPConfigStore.set(id, config);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/mcp/')
+        && !url.pathname.includes('/env') && !url.pathname.includes('/set')
+        && !url.pathname.includes('/toggle') && !url.pathname.includes('/needs-config')
+        && !url.pathname.includes('/config')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/mcp/'.length));
+      if (MCPConfigStore.isBuiltin(id)) {
+        return Response.json({ ok: false, error: '不允许编辑内置 MCP' });
+      }
+      const body = await req.json() as MCPConfigStore.MCPServerConfig;
+      const ok = MCPConfigStore.update(id, body);
+      if (!ok) {
+        return Response.json({ ok: false, error: `MCP 服务器 "${id}" 不存在` });
+      }
       return Response.json({ ok: true });
     }
 

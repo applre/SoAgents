@@ -109,6 +109,16 @@ export function set(id: string, config: MCPServerConfig): void {
   }
 }
 
+/** Update an existing custom MCP server without changing its enabled state */
+export function update(id: string, config: MCPServerConfig): boolean {
+  if (PRESET_MCP_SERVERS.some((p) => p.id === id)) return false;
+  const current = readConfig();
+  const servers = current.mcpServers ?? {};
+  if (!(id in servers)) return false;
+  updateConfig({ mcpServers: { ...servers, [id]: config } });
+  return true;
+}
+
 export function remove(id: string): boolean {
   if (PRESET_MCP_SERVERS.some((p) => p.id === id)) return false;
   const current = readConfig();

@@ -1543,8 +1543,7 @@ function MCPTab() {
     if (editMCP === 'new') {
       await globalApiPostJson('/api/mcp', { id, ...cfg });
     } else {
-      await globalApiDeleteJson(`/api/mcp/${id}`);
-      await globalApiPostJson('/api/mcp', { id, ...cfg });
+      await globalApiPutJson(`/api/mcp/${encodeURIComponent(id)}`, cfg);
     }
     await loadServers();
   };
