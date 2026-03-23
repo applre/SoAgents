@@ -3,9 +3,9 @@
 
 /* SoAgents 设计系统 */
 :root {
-  --paper: #FBF9F6;
-  --surface: #F5F3F0;
-  --hover: #EEEBE7;
+  --paper: #FFFFFF;
+  --surface: #F7F7F7;
+  --hover: #EFEFEF;
   --ink: #1A1A1A;
   --ink-secondary: #666666;
   --ink-tertiary: #999999;
@@ -24,6 +24,19 @@
   --warning-bg: #faf3e3;
   --info: #4a7ab5;
   --info-bg: #e4ecf4;
+
+  /* ========== Typography: Font ========== */
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas',
+               'Monaco', 'Fira Code', monospace;
+  --font-code: var(--font-mono);
+
+  /* ========== Code Block ========== */
+  --code-bg: #1e1e1e;
+  --code-header-bg: #2d2d2d;
+  --code-line-number: #858585;
+
+  /* ========== Border variants ========== */
+  --line-subtle: rgba(0, 0, 0, 0.06);
 }
 
 /* Toast slide-down animation */
@@ -42,9 +55,21 @@ body {
   margin: 0;
   padding: 0;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background-color: var(--paper);
   color: var(--ink);
   overflow: hidden;
+  background: var(--paper);
+  /* Font rendering */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Dot-grid texture disabled for clean white look */
+
+#root {
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -54,3 +79,47 @@ body {
 
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Override Tailwind's font-mono to use our CSS variable */
+.font-mono {
+  font-family: var(--font-code) !important;
+}
+
+/* Code block typography */
+pre code {
+  font-family: var(--font-code);
+  font-size: 13px;
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+}
+
+/* Global button interaction feedback */
+button {
+  cursor: pointer;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Hide rewind buttons during AI streaming — CSS-only, no per-message re-renders */
+[data-streaming="true"] [data-rewind-btn] {
+  display: none;
+}
+
+/* Fade-in animation for message list after session load */
+@keyframes message-list-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Text selection isolation */
+pre { user-select: text; }
+code { user-select: text; }
