@@ -691,7 +691,7 @@ Bun.serve({
         }
       }
 
-      // stdio 预热：启用时，如果 command 包含 npx/bunx，后台预下载
+      // stdio 预热：启用时，如果 command 包含 npx/bunx，预下载包并报告错误
       if (server.type === 'stdio' && server.command) {
         const cmd = server.command;
         const args = server.args ?? [];
@@ -699,11 +699,33 @@ Bun.serve({
           const pkg = args.find((a) => !a.startsWith('-'));
           if (pkg) {
             console.log(`[MCP] Pre-warming stdio package: ${pkg}`);
-            Bun.spawn(['npm', 'cache', 'add', pkg], {
-              stdout: 'ignore',
-              stderr: 'ignore',
-              env: { ...process.env, ...(server.env ?? {}), ...MCPConfigStore.getServerEnv(server.id) },
-            }).exited.catch(() => {});
+            const warmupEnv = { ...process.env, ...(server.env ?? {}), ...MCPConfigStore.getServerEnv(server.id) };
+            try {
+              const proc = Bun.spawn(['npm', 'cache', 'add', pkg], {
+                stdout: 'pipe',
+                stderr: 'pipe',
+                env: warmupEnv,
+              });
+              const timeoutMs = 30_000;
+              const exited = await Promise.race([
+                proc.exited,
+                new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), timeoutMs)),
+              ]);
+              if (exited === 'timeout') {
+                proc.kill();
+                console.warn(`[MCP] Warmup timed out for ${pkg} after ${timeoutMs}ms`);
+              } else if (exited !== 0) {
+                const stderrText = proc.stderr ? await new Response(proc.stderr).text() : '';
+                console.warn(`[MCP] Warmup failed for ${pkg} (exit ${exited}): ${stderrText.slice(0, 500)}`);
+                if (stderrText.includes('404') || stderrText.includes('Not Found') || stderrText.includes('not found in the npm registry')) {
+                  console.warn(`[MCP] Package "${pkg}" may not exist in npm registry`);
+                }
+              } else {
+                console.log(`[MCP] Warmup succeeded for ${pkg}`);
+              }
+            } catch (err) {
+              console.warn(`[MCP] Warmup spawn failed for ${pkg}:`, err);
+            }
           }
         }
       }

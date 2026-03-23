@@ -41,7 +41,7 @@ interface McpServerDefinition {
   requiresConfig?: string[];
   configHint?: string;
   websiteUrl?: string;
-  status?: 'enabled' | 'connecting' | 'error' | 'disabled';
+  status?: 'enabled' | 'connecting' | 'pending' | 'needs-auth' | 'error' | 'disabled';
 }
 
 interface MCPServerConfig {
@@ -1213,6 +1213,100 @@ function ProviderTab() {
   );
 }
 
+// ── KeyValue Editor ───────────────────────────────────────────
+
+function KeyValueEditor({
+  value,
+  onChange,
+  disabled,
+  keyPlaceholder = 'KEY',
+  valuePlaceholder = 'VALUE',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  keyPlaceholder?: string;
+  valuePlaceholder?: string;
+}) {
+  const rows = value
+    ? value.split('\n').map((line) => {
+        const idx = line.indexOf('=');
+        return idx > 0
+          ? { key: line.slice(0, idx), val: line.slice(idx + 1) }
+          : { key: line, val: '' };
+      })
+    : [];
+
+  const updateRows = (newRows: { key: string; val: string }[]) => {
+    onChange(newRows.map((r) => `${r.key}=${r.val}`).join('\n'));
+  };
+
+  const handleKeyChange = (index: number, newKey: string) => {
+    const newRows = [...rows];
+    newRows[index] = { ...newRows[index], key: newKey };
+    updateRows(newRows);
+  };
+
+  const handleValChange = (index: number, newVal: string) => {
+    const newRows = [...rows];
+    newRows[index] = { ...newRows[index], val: newVal };
+    updateRows(newRows);
+  };
+
+  const addRow = () => {
+    updateRows([...rows, { key: '', val: '' }]);
+  };
+
+  const removeRow = (index: number) => {
+    updateRows(rows.filter((_, i) => i !== index));
+  };
+
+  return (
+    <div className="space-y-2">
+      {rows.map((row, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder={keyPlaceholder}
+            value={row.key}
+            onChange={(e) => handleKeyChange(i, e.target.value)}
+            disabled={disabled}
+            className={`${inputCls} flex-1`}
+          />
+          <span className="text-[var(--ink-tertiary)] text-[12px]">=</span>
+          <input
+            type="text"
+            placeholder={valuePlaceholder}
+            value={row.val}
+            onChange={(e) => handleValChange(i, e.target.value)}
+            disabled={disabled}
+            className={`${inputCls} flex-1`}
+          />
+          {!disabled && (
+            <button
+              type="button"
+              onClick={() => removeRow(i)}
+              className="text-[var(--ink-tertiary)] hover:text-[var(--error)] transition-colors shrink-0"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      ))}
+      {!disabled && (
+        <button
+          type="button"
+          onClick={addRow}
+          className="flex items-center gap-1 text-[12px] text-[var(--ink-tertiary)] hover:text-[var(--ink-secondary)] transition-colors"
+        >
+          <Plus size={12} />
+          添加
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── MCP Edit Modal ────────────────────────────────────────────
 
 function MCPEditModal({
@@ -1242,6 +1336,8 @@ function MCPEditModal({
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [jsonMode, setJsonMode] = useState(false);
+  const [jsonText, setJsonText] = useState('');
 
   // Reset form when editing a different MCP server
   useEffect(() => {
@@ -1258,8 +1354,106 @@ function MCPEditModal({
     setError('');
   }, [mcp]);
 
+  const formToJson = () => {
+    const envObj: Record<string, string> = {};
+    form.env.split('\n').forEach((line) => {
+      const idx = line.indexOf('=');
+      if (idx > 0) envObj[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+    });
+    const headersObj: Record<string, string> = {};
+    form.headers.split('\n').forEach((line) => {
+      const idx = line.indexOf('=');
+      if (idx > 0) headersObj[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+    });
+    const argsArr = form.args.split(',').map((a) => a.trim()).filter(Boolean);
+    const obj: Record<string, unknown> = {
+      name: form.name,
+      type: form.type,
+    };
+    if (form.type === 'stdio') {
+      if (form.command) obj.command = form.command;
+      if (argsArr.length > 0) obj.args = argsArr;
+    } else {
+      if (form.url) obj.url = form.url;
+      if (Object.keys(headersObj).length > 0) obj.headers = headersObj;
+    }
+    if (Object.keys(envObj).length > 0) obj.env = envObj;
+    return JSON.stringify(obj, null, 2);
+  };
+
+  const jsonToForm = (json: string): boolean => {
+    try {
+      const obj = JSON.parse(json) as Record<string, unknown>;
+      setForm({
+        id: form.id,
+        name: (obj.name as string) ?? '',
+        type: ((obj.type as string) ?? 'stdio') as MCPServerConfig['type'],
+        command: (obj.command as string) ?? '',
+        args: Array.isArray(obj.args) ? (obj.args as string[]).join(', ') : '',
+        url: (obj.url as string) ?? '',
+        env: obj.env && typeof obj.env === 'object'
+          ? Object.entries(obj.env as Record<string, string>).map(([k, v]) => `${k}=${v}`).join('\n')
+          : '',
+        headers: obj.headers && typeof obj.headers === 'object'
+          ? Object.entries(obj.headers as Record<string, string>).map(([k, v]) => `${k}=${v}`).join('\n')
+          : '',
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const toggleJsonMode = () => {
+    if (jsonMode) {
+      if (!jsonToForm(jsonText)) {
+        setError('JSON 格式错误，无法切换到表单模式');
+        return;
+      }
+      setError('');
+    } else {
+      setJsonText(formToJson());
+      setError('');
+    }
+    setJsonMode(!jsonMode);
+  };
+
   const handleSave = async () => {
     if (isReadonly) return;
+
+    // JSON mode: parse directly from jsonText
+    if (jsonMode) {
+      let obj: Record<string, unknown>;
+      try { obj = JSON.parse(jsonText); } catch { setError('JSON 格式错误'); return; }
+      const name = ((obj.name as string) ?? '').trim();
+      const type = ((obj.type as string) ?? 'stdio') as MCPServerConfig['type'];
+      const command = (obj.command as string)?.trim();
+      const url = (obj.url as string)?.trim();
+      if (!form.id.trim()) { setError('ID 不能为空'); return; }
+      if (!name) { setError('名称不能为空'); return; }
+      if (type === 'stdio' && !command) { setError('Command 不能为空'); return; }
+      if (type !== 'stdio' && !url) { setError('URL 不能为空'); return; }
+      setSaving(true); setError('');
+      try {
+        await onSave(form.id.trim(), {
+          name,
+          type,
+          command: type === 'stdio' ? command : undefined,
+          args: type === 'stdio' && Array.isArray(obj.args) ? (obj.args as string[]) : undefined,
+          env: obj.env && typeof obj.env === 'object' ? obj.env as Record<string, string> : undefined,
+          url: type !== 'stdio' ? url : undefined,
+          headers: type !== 'stdio' && obj.headers && typeof obj.headers === 'object' ? obj.headers as Record<string, string> : undefined,
+        });
+        onClose();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(msg || '保存失败');
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     if (!form.id.trim()) { setError('ID 不能为空'); return; }
     if (!form.name.trim()) { setError('名称不能为空'); return; }
     if (form.type === 'stdio' && !form.command.trim()) { setError('Command 不能为空'); return; }
@@ -1329,9 +1523,19 @@ function MCPEditModal({
               {isReadonly ? '内置 MCP Server，仅可查看' : '配置 MCP Server 基本信息'}
             </p>
           </div>
-          <button onClick={onClose} className="mt-0.5 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors">
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-2">
+            {!isReadonly && (
+              <button
+                onClick={toggleJsonMode}
+                className="rounded-md border border-[var(--border)] px-2 py-1 text-[12px] font-medium text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+              >
+                {jsonMode ? '表单模式' : 'JSON'}
+              </button>
+            )}
+            <button onClick={onClose} className="mt-0.5 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors">
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         {/* 内容 */}
@@ -1342,74 +1546,101 @@ function MCPEditModal({
             </div>
           )}
 
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">ID</label>
-            <input
-              type="text"
-              placeholder="my-server"
-              value={form.id}
-              onChange={(e) => setForm((f) => ({ ...f, id: e.target.value }))}
-              disabled={!isNew || isReadonly}
-              className={inputCls}
-            />
-            {isNew && <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">唯一标识符，创建后不可修改</p>}
-          </div>
-
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">名称</label>
-            <input
-              type="text"
-              placeholder="我的 MCP 服务器"
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              disabled={isReadonly}
-              className={inputCls}
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">类型</label>
-            <CustomSelect
-              value={form.type}
-              options={[
-                { value: 'stdio', label: 'stdio' },
-                { value: 'http', label: 'http' },
-                { value: 'sse', label: 'sse' },
-              ]}
-              onChange={(v) => !isReadonly && setForm((f) => ({ ...f, type: v as MCPServerConfig['type'] }))}
-              className="w-full"
-            />
-          </div>
-
-          {form.type === 'stdio' ? (
-            <>
-              <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Command</label>
-                <input type="text" placeholder="npx" value={form.command} onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))} disabled={isReadonly} className={inputCls} />
-              </div>
-              <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Args（逗号分隔）</label>
-                <input type="text" placeholder="server.js, --port, 3000" value={form.args} onChange={(e) => setForm((f) => ({ ...f, args: e.target.value }))} disabled={isReadonly} className={inputCls} />
-              </div>
-            </>
+          {jsonMode ? (
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">JSON 配置</label>
+              <textarea
+                rows={14}
+                value={jsonText}
+                onChange={(e) => setJsonText(e.target.value)}
+                className={`${inputCls} resize-none font-mono text-[13px]`}
+                spellCheck={false}
+              />
+            </div>
           ) : (
             <>
               <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">URL</label>
-                <input type="text" placeholder={form.type === 'sse' ? 'https://example.com/sse' : 'https://example.com/mcp'} value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} disabled={isReadonly} className={inputCls} />
-                <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">{form.type === 'sse' ? 'SSE 事件流端点地址' : 'MCP 服务器的 HTTP 端点地址'}</p>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">ID</label>
+                <input
+                  type="text"
+                  placeholder="my-server"
+                  value={form.id}
+                  onChange={(e) => setForm((f) => ({ ...f, id: e.target.value }))}
+                  disabled={!isNew || isReadonly}
+                  className={inputCls}
+                />
+                {isNew && <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">唯一标识符，创建后不可修改</p>}
               </div>
+
               <div>
-                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Headers（KEY=VALUE，每行一个）</label>
-                <textarea rows={2} placeholder={"Authorization=Bearer xxx"} value={form.headers} onChange={(e) => setForm((f) => ({ ...f, headers: e.target.value }))} disabled={isReadonly} className={`${inputCls} resize-none`} />
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">名称</label>
+                <input
+                  type="text"
+                  placeholder="我的 MCP 服务器"
+                  value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  disabled={isReadonly}
+                  className={inputCls}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">类型</label>
+                <CustomSelect
+                  value={form.type}
+                  options={[
+                    { value: 'stdio', label: 'stdio' },
+                    { value: 'http', label: 'http' },
+                    { value: 'sse', label: 'sse' },
+                  ]}
+                  onChange={(v) => !isReadonly && setForm((f) => ({ ...f, type: v as MCPServerConfig['type'] }))}
+                  className="w-full"
+                />
+              </div>
+
+              {form.type === 'stdio' ? (
+                <>
+                  <div>
+                    <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Command</label>
+                    <input type="text" placeholder="npx" value={form.command} onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))} disabled={isReadonly} className={inputCls} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Args（逗号分隔）</label>
+                    <input type="text" placeholder="server.js, --port, 3000" value={form.args} onChange={(e) => setForm((f) => ({ ...f, args: e.target.value }))} disabled={isReadonly} className={inputCls} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">URL</label>
+                    <input type="text" placeholder={form.type === 'sse' ? 'https://example.com/sse' : 'https://example.com/mcp'} value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} disabled={isReadonly} className={inputCls} />
+                    <p className="mt-1 text-[11px] text-[var(--ink-tertiary)]">{form.type === 'sse' ? 'SSE 事件流端点地址' : 'MCP 服务器的 HTTP 端点地址'}</p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Headers</label>
+                    <KeyValueEditor
+                      value={form.headers}
+                      onChange={(v) => setForm((f) => ({ ...f, headers: v }))}
+                      disabled={isReadonly}
+                      keyPlaceholder="Header 名"
+                      valuePlaceholder="值"
+                    />
+                  </div>
+                </>
+              )}
+
+              <div>
+                <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">环境变量</label>
+                <KeyValueEditor
+                  value={form.env}
+                  onChange={(v) => setForm((f) => ({ ...f, env: v }))}
+                  disabled={isReadonly}
+                  keyPlaceholder="变量名"
+                  valuePlaceholder="值"
+                />
               </div>
             </>
           )}
-
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-[var(--ink-secondary)]">Env（KEY=VALUE，每行一个）</label>
-            <textarea rows={3} placeholder={"API_KEY=xxx\nDEBUG=true"} value={form.env} onChange={(e) => setForm((f) => ({ ...f, env: e.target.value }))} disabled={isReadonly} className={`${inputCls} resize-none`} />
-          </div>
         </div>
 
         {/* 底部操作 */}
@@ -1692,14 +1923,25 @@ function MCPTab() {
                         ? 'bg-[var(--success)]/10 text-[var(--success)]'
                         : srv.status === 'error'
                           ? 'bg-[var(--error)]/10 text-[var(--error)]'
-                          : 'bg-[var(--surface)] text-[var(--ink-tertiary)]'
+                          : srv.status === 'connecting' || srv.status === 'pending'
+                            ? 'bg-amber-500/10 text-amber-600'
+                            : srv.status === 'needs-auth'
+                              ? 'bg-blue-500/10 text-blue-600'
+                              : 'bg-[var(--surface)] text-[var(--ink-tertiary)]'
                     }`}>
                       <span className={`w-1.5 h-1.5 rounded-full ${
                         srv.status === 'enabled' ? 'bg-[var(--success)]'
                           : srv.status === 'error' ? 'bg-[var(--error)]'
+                          : srv.status === 'connecting' || srv.status === 'pending' ? 'bg-amber-500'
+                          : srv.status === 'needs-auth' ? 'bg-blue-500'
                           : 'bg-[var(--ink-tertiary)]'
                       }`} />
-                      {srv.status === 'enabled' ? '已启用' : srv.status === 'error' ? '错误' : '未启用'}
+                      {srv.status === 'enabled' ? '已启用'
+                        : srv.status === 'error' ? '错误'
+                        : srv.status === 'connecting' ? '连接中'
+                        : srv.status === 'pending' ? '等待中'
+                        : srv.status === 'needs-auth' ? '需认证'
+                        : '未启用'}
                     </span>
                   </div>
                   <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">

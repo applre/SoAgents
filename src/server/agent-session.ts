@@ -8,11 +8,28 @@ import * as ConfigStore from './ConfigStore';
 import { resolveClaudeCodeCli } from './provider-verify';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
+import type { MessageAttachment } from '../shared/types/session';
+import { processImage } from './utils/imageResize';
 
 interface ChatImage {
   name: string;
   mimeType: string;
   data: string; // 纯 base64
+}
+
+function saveImageAttachments(sessionId: string, images?: ChatImage[]): MessageAttachment[] {
+  if (!images?.length) return [];
+  const attachments: MessageAttachment[] = [];
+  for (const img of images) {
+    try {
+      const attachmentId = crypto.randomUUID();
+      const relativePath = SessionStore.saveAttachment(sessionId, attachmentId, img.name, img.data, img.mimeType);
+      attachments.push({ id: attachmentId, name: img.name, mimeType: img.mimeType, path: relativePath });
+    } catch (error) {
+      console.error('[agent] Failed to save attachment:', error);
+    }
+  }
+  return attachments;
 }
 
 /** OpenAI Bridge 上游配置（当 apiProtocol === 'openai' 时存储） */
@@ -55,6 +72,7 @@ interface QueueItem {
   text: string; // 用于日志和持久化
   queueId: string;
   wasQueued: boolean; // 区分直接发送和排队消息
+  attachments?: MessageAttachment[]; // 排队消息的图片附件
 }
 
 const MAX_QUEUE_SIZE = 10;
@@ -91,6 +109,35 @@ function mcpConfigFingerprint(servers: McpServerDefinition[]): string {
       headers: s.headers,
     }));
   return JSON.stringify(items);
+}
+
+/** Pin known-good versions for MCP packages to avoid breaking changes from @latest */
+const PINNED_MCP_VERSIONS: Record<string, string> = {
+  '@anthropic-ai/claude-code': '1.0.16',
+  '@anthropic-ai/claude-code-mcp': '0.0.16',
+  '@playwright/mcp': '0.0.28',
+  '@anthropic-ai/mcp-proxy': '0.7.1',
+};
+
+function pinMcpPackageVersions(args: string[]): string[] {
+  return args.map((arg) => {
+    for (const [pkg, version] of Object.entries(PINNED_MCP_VERSIONS)) {
+      if (arg === pkg || arg === `${pkg}@latest`) {
+        return `${pkg}@${version}`;
+      }
+    }
+    return arg;
+  });
+}
+
+/**
+ * Strip verbose Playwright MCP tool results for frontend display.
+ * The AI still sees the full content; this only affects SSE broadcast.
+ */
+function stripPlaywrightResult(toolName: string | undefined, content: string): string {
+  if (!toolName?.startsWith('mcp__playwright')) return content;
+  if (content.length <= 500) return content;
+  return `[Playwright result truncated: ${content.length} chars]`;
 }
 
 /**
@@ -317,6 +364,7 @@ class SessionRunner {
   private turnAssistantContent = '';
   private turnHasStreamedContent = false;
   private currentToolId = '';
+  private toolNameMap = new Map<string, string>();
 
   // ── Turn 级 usage 跟踪 ──
   private turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined as string | undefined, modelUsage: undefined as Record<string, import('../shared/types/session').ModelUsageEntry> | undefined };
@@ -444,6 +492,7 @@ class SessionRunner {
           role: 'user',
           content: item.text,
           timestamp: new Date().toISOString(),
+          ...(item.attachments ? { attachments: item.attachments } : {}),
         });
         broadcast('queue:started', {
           sessionId: this.sessionId,
@@ -456,6 +505,7 @@ class SessionRunner {
       this.turnAssistantContent = '';
       this.turnHasStreamedContent = false;
       this.currentToolId = '';
+      this.toolNameMap.clear();
       this.turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined, modelUsage: undefined };
       this.turnStartTime = Date.now();
       this.turnToolCount = 0;
@@ -533,7 +583,8 @@ class SessionRunner {
 
           if (cfg.type === 'stdio') {
             const extraArgs = ConfigStore.readConfig().mcpServerArgs?.[cfg.id];
-            const finalArgs = extraArgs?.length ? [...(cfg.args ?? []), ...extraArgs] : cfg.args;
+            let finalArgs = extraArgs?.length ? [...(cfg.args ?? []), ...extraArgs] : (cfg.args ?? []);
+            finalArgs = pinMcpPackageVersions(finalArgs);
 
             // Build MCP config with isolated env to prevent proxy interference.
             // The parent Sidecar may have HTTP_PROXY set (injected by Rust at spawn),
@@ -838,6 +889,7 @@ class SessionRunner {
         console.log(`${logTag} content_block_start: type=${block?.type}, name=${block?.name ?? '-'}, id=${block?.id ?? '-'}`);
         if (block?.type === 'tool_use') {
           this.currentToolId = block.id ?? '';
+          this.toolNameMap.set(block.id ?? '', block.name ?? '');
           this.turnToolCount++;
           broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
         }
@@ -865,12 +917,16 @@ class SessionRunner {
       console.log(`${logTag} user message (tool results): blocks=[${blockTypes}]`);
       for (const block of userMsg.content ?? []) {
         if (block.type === 'tool_result') {
+          const rawContent = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+          const toolId = block.tool_use_id ?? '';
+          const toolName = this.toolNameMap.get(toolId);
           broadcast('chat:tool-result', {
             sessionId: activeSessionId,
-            id: block.tool_use_id ?? '',
-            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+            id: toolId,
+            content: stripPlaywrightResult(toolName, rawContent),
             isError: block.is_error ?? false,
           });
+          this.toolNameMap.delete(toolId);
         }
       }
     } else if (msg.type === 'result') {
@@ -1025,9 +1081,12 @@ class SessionRunner {
         return { ok: false, error: 'queue_full' };
       }
 
+      // 保存图片到磁盘（排队前就持久化，避免丢失）
+      const queuedAttachments = saveImageAttachments(activeSessionId, images);
+
       // 构建 SDK 用户消息用于排队
       const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
-      const messageContent = this.buildMessageContent(text, images);
+      const messageContent = await this.buildMessageContent(text, images);
       const queueItem: QueueItem = {
         sdkMessage: {
           type: 'user' as const,
@@ -1038,6 +1097,7 @@ class SessionRunner {
         text,
         queueId,
         wasQueued: true,
+        attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
       };
 
       this.messageQueue.push(queueItem);
@@ -1046,12 +1106,14 @@ class SessionRunner {
       return { ok: true, queued: true, queueId };
     }
 
-    // 保存用户消息到 SessionStore
+    // 保存用户消息到 SessionStore（含图片附件）
+    const savedAttachments = saveImageAttachments(activeSessionId, images);
     SessionStore.saveMessage(activeSessionId, {
       id: crypto.randomUUID(),
       role: 'user',
       content: text,
       timestamp: new Date().toISOString(),
+      ...(savedAttachments.length > 0 ? { attachments: savedAttachments } : {}),
     });
 
     // 检测是否需要重启（with reset guard）
@@ -1087,7 +1149,7 @@ class SessionRunner {
       this.sdkSessionId = SessionStore.getSdkSessionId(activeSessionId) ?? null;
     }
     const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
-    const messageContent = this.buildMessageContent(text, images);
+    const messageContent = await this.buildMessageContent(text, images);
 
     const queueItem: QueueItem = {
       sdkMessage: {
@@ -1121,17 +1183,30 @@ class SessionRunner {
     return { ok: true, queued: false };
   }
 
-  private buildMessageContent(text: string, images?: ChatImage[]): { role: 'user'; content: string | Array<Record<string, unknown>> } {
+  private async buildMessageContent(text: string, images?: ChatImage[]): Promise<{ role: 'user'; content: string | Array<Record<string, unknown>> }> {
     if (images && images.length > 0) {
       const contentBlocks: Array<Record<string, unknown>> = [];
       if (text) {
         contentBlocks.push({ type: 'text', text });
       }
       for (const img of images) {
-        contentBlocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: img.mimeType, data: img.data },
-        });
+        try {
+          const tiles = await processImage(img);
+          if (tiles.length > 1) {
+            contentBlocks.push({
+              type: 'text',
+              text: `[The following ${tiles.length} images are consecutive tiles of a single long screenshot, read them in order]`,
+            });
+          }
+          for (const tile of tiles) {
+            contentBlocks.push({
+              type: 'image',
+              source: { type: 'base64', media_type: tile.mimeType, data: tile.data },
+            });
+          }
+        } catch (err) {
+          contentBlocks.push({ type: 'text', text: `[图片处理失败: ${err instanceof Error ? err.message : String(err)}]` });
+        }
       }
       return { role: 'user' as const, content: contentBlocks };
     }
