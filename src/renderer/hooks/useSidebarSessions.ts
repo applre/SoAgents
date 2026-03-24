@@ -30,6 +30,11 @@ export function useSidebarSessions() {
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
   }, []);
 
+  // Optimistic update: 本地立刻更新标题
+  const updateSessionTitle = useCallback((sessionId: string, title: string) => {
+    setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, title } : s));
+  }, []);
+
   useEffect(() => {
     fetchSessions();
     intervalRef.current = setInterval(fetchSessions, POLL_INTERVAL_MS);
@@ -38,5 +43,5 @@ export function useSidebarSessions() {
     };
   }, [fetchSessions]);
 
-  return { sessions, loading, refresh: fetchSessions, removeSession };
+  return { sessions, loading, refresh: fetchSessions, removeSession, updateSessionTitle };
 }

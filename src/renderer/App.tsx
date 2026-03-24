@@ -164,7 +164,7 @@ export default function App() {
   const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
 
   // Independent session fetch for sidebar (all workspaces)
-  const { sessions: allSessions, refresh: refreshSidebarSessions, removeSession } = useSidebarSessions();
+  const { sessions: allSessions, refresh: refreshSidebarSessions, removeSession, updateSessionTitle } = useSidebarSessions();
 
   // Refs for retry lifecycle (stable across re-renders)
   const mountedRef = useRef(true);
@@ -278,8 +278,9 @@ export default function App() {
   }, [refreshSidebarSessions, toast]);
 
   const handleRenameSession = useCallback(async (sessionId: string, title: string) => {
+    updateSessionTitle(sessionId, title);
     await globalApiPutJson(`/chat/sessions/${sessionId}/title`, { title }).catch(console.error);
-  }, []);
+  }, [updateSessionTitle]);
 
   const handleTogglePin = useCallback((sessionId: string) => {
     setPinnedSessionIds(prev => {
@@ -933,12 +934,13 @@ interface SessionTabBarProps {
 function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, onCloseTab, showFilesPanel, onToggleFilesPanel }: SessionTabBarProps) {
   return (
     <div
-      className="relative flex items-center justify-between shrink-0 z-50"
-      style={{ height: 44, background: 'var(--surface)', borderBottom: '1px solid var(--border)', paddingLeft: 12, paddingRight: 12 }}
+      className="relative flex items-end shrink-0 z-50"
+      style={{ height: 36, background: 'var(--surface)', paddingLeft: 8, paddingRight: 8, paddingTop: 6 }}
       onMouseDown={startWindowDrag}
       onDoubleClick={toggleMaximize}
     >
-      <div className="flex items-end gap-0 min-w-0 overflow-x-auto scrollbar-hide h-full" onMouseDown={(e) => e.stopPropagation()}>
+      {/* Tab 列表 + 新建按钮 */}
+      <div className="flex items-end gap-0 min-w-0 overflow-x-auto scrollbar-hide" style={{ height: 30 }} onMouseDown={(e) => e.stopPropagation()}>
         {tabs.map((tab, index) => {
           const isActive = tab.id === activeTabId;
           const isSettings = tab.view === 'settings';
@@ -946,54 +948,55 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
           const isTaskCenter = tab.view === 'task-center';
           const sessionMeta = tab.sessionId ? allSessions.find((s) => s.id === tab.sessionId) : null;
           const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : isTaskCenter ? '任务中心' : (sessionMeta?.title || '新对话');
-          // 非活跃 tab 之间的分隔线（前一个也不是活跃时才显示）
+          // Chrome 风格分隔线：两侧都不是活跃 tab 时才显示
           const prevTab = tabs[index - 1];
           const showDivider = index > 0 && !isActive && prevTab?.id !== activeTabId;
 
           return (
-            <div key={tab.id} className="flex items-end shrink-0" style={{ height: '100%' }}>
+            <div key={tab.id} className="flex items-end shrink-0" style={{ height: 30 }}>
               {showDivider && (
-                <div className="self-center w-px h-4 bg-[var(--border)]" />
+                <div className="self-center w-px bg-[var(--border)]" style={{ height: 14 }} />
               )}
               <div
                 onClick={() => onSwitchTab(tab.id)}
-                className={`group flex items-center gap-1.5 cursor-pointer select-none shrink-0 transition-colors ${
+                className={`group flex items-center gap-1 cursor-pointer select-none shrink-0 transition-colors ${
                   isActive
                     ? 'bg-[var(--paper)] text-[var(--ink)]'
-                    : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink-secondary)]'
+                    : 'text-[var(--ink-secondary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
                 }`}
                 style={{
-                  height: 34,
-                  maxWidth: 200,
-                  padding: '0 12px',
+                  height: 30,
+                  maxWidth: 220,
+                  minWidth: 40,
+                  padding: '0 8px',
                   borderRadius: '8px 8px 0 0',
-                  marginBottom: isActive ? -1 : 0,
-                  paddingBottom: isActive ? 1 : 0,
                   position: 'relative',
                   zIndex: isActive ? 2 : 1,
                 }}
               >
-                {isSettings && <SettingsIcon size={14} className="shrink-0" />}
-                <span className={`text-[13px] truncate ${isActive ? 'font-semibold' : 'font-medium'}`}>
-                  {label}
-                </span>
-                {/* 状态圆点：生成中(绿色脉冲) / 未读(暖色静态，仅非活跃 tab) */}
+                {/* 状态圆点：放在标题前面 */}
                 {tab.isGenerating && (
-                  <span className="relative ml-0.5 flex h-1.5 w-1.5 shrink-0">
+                  <span className="relative flex h-1.5 w-1.5 shrink-0">
                     <span className="absolute inset-0 rounded-full bg-[var(--success)]" />
                     <span className="absolute inset-0 rounded-full bg-[var(--success)] animate-ping" />
                   </span>
                 )}
                 {!isActive && !tab.isGenerating && tab.hasUnread && (
-                  <span className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
                 )}
-                {(isActive || (isSettings || isScheduledTasks || isTaskCenter)) && (isSettings || isScheduledTasks || isTaskCenter || tabs.length > 1) && (
+                {isSettings && <SettingsIcon size={13} className="shrink-0" />}
+                <span className={`text-[13px] truncate ${isActive ? 'font-medium' : ''}`}>
+                  {label}
+                </span>
+                {/* 关闭按钮：Chrome 风格，hover 时显示，active tab 始终可见 */}
+                {(tabs.length > 1 || isSettings || isScheduledTasks || isTaskCenter) && (
                   <button
                     onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
-                    className="text-[14px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] leading-none w-4 h-4 flex items-center justify-center rounded shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                    style={{ opacity: isActive ? undefined : undefined }}
+                    className={`ml-auto flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full transition-all hover:bg-black/10 ${
+                      isActive ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-60 group-hover:hover:opacity-100'
+                    }`}
                   >
-                    ×
+                    <X size={12} />
                   </button>
                 )}
               </div>
@@ -1001,29 +1004,33 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
           );
         })}
 
+        {/* Chrome 风格 "+" 按钮：紧挨最后一个 tab 的小圆形 */}
         <button
           onClick={onNewTab}
           onMouseDown={(e) => e.stopPropagation()}
-          className="self-center ml-1 text-[var(--ink-tertiary)] hover:text-[var(--ink)] hover:bg-[var(--hover)] w-7 h-7 flex items-center justify-center rounded-md transition-colors shrink-0"
+          className="self-center ml-1 text-[var(--ink-tertiary)] hover:text-[var(--ink)] hover:bg-[var(--hover)] flex items-center justify-center rounded-full transition-colors shrink-0"
+          style={{ width: 26, height: 26 }}
         >
-          <Plus size={15} />
+          <Plus size={16} />
         </button>
       </div>
 
-      {/* 右侧：展开工作区文件面板（设置页/定时任务页隐藏） */}
+      {/* 右侧：展开工作区文件面板 */}
       {tabs.find((t) => t.id === activeTabId)?.view !== 'settings' && tabs.find((t) => t.id === activeTabId)?.view !== 'scheduled-tasks' && tabs.find((t) => t.id === activeTabId)?.view !== 'task-center' && (
-        <button
-          onClick={onToggleFilesPanel}
-          onMouseDown={(e) => e.stopPropagation()}
-          title="工作区文件"
-          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors shrink-0 ${
-            showFilesPanel
-              ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-              : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
-          }`}
-        >
-          {showFilesPanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
-        </button>
+        <div className="flex items-center shrink-0 self-center ml-auto" onMouseDown={(e) => e.stopPropagation()}>
+          <button
+            onClick={onToggleFilesPanel}
+            title="工作区文件"
+            className={`flex items-center justify-center rounded-full transition-colors shrink-0 ${
+              showFilesPanel
+                ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+            }`}
+            style={{ width: 26, height: 26 }}
+          >
+            {showFilesPanel ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+          </button>
+        </div>
       )}
     </div>
   );
