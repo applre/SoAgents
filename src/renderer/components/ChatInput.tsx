@@ -171,22 +171,18 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setTimeout(() => textareaRef.current?.focus(), 50);
   }, [injectRefText, onRefTextConsumed]);
 
-  // 加载 skills
+  // 加载 slash commands（内置 + 自定义 + 技能）
   useEffect(() => {
-    const loadSkills = async () => {
+    const loadCommands = async () => {
       try {
         const path = agentDir
-          ? `/api/skills?agentDir=${encodeURIComponent(agentDir)}`
-          : '/api/skills';
-        const skills = await globalApiGetJson<Array<{ name: string; description: string; source: string }>>(path);
-        setSkillCommands(skills.map((s) => ({
-          name: s.name,
-          description: s.description || '',
-          source: s.source as 'global' | 'project',
-        })));
+          ? `/api/commands?agentDir=${encodeURIComponent(agentDir)}`
+          : '/api/commands';
+        const commands = await globalApiGetJson<CommandItem[]>(path);
+        setSkillCommands(commands);
       } catch { /* 静默失败 */ }
     };
-    loadSkills();
+    loadCommands();
   }, [agentDir]);
 
   // @ 文件搜索 API — 搜索逻辑已下沉到 FileSearchMenu 内部
@@ -755,7 +751,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               <div className="flex items-center gap-2 text-xs">
                 <button
                   onClick={async () => {
-                    for (const s of skillCommands) {
+                    const attachableSkills = skillCommands.filter((s) => s.source === 'skill' || s.source === 'custom');
+                    for (const s of attachableSkills) {
                       if (!selectedSkills.some((ss) => ss.name === s.name)) await addSkill(s.name);
                     }
                   }}
@@ -807,9 +804,10 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             {/* 列表 */}
             <div className="flex-1 overflow-y-auto">
               {(() => {
+                const attachableSkills = skillCommands.filter((s) => s.source === 'skill' || s.source === 'custom');
                 const baseList = skillPanelTab === 'selected'
-                  ? skillCommands.filter((s) => selectedSkills.some((ss) => ss.name === s.name))
-                  : skillCommands;
+                  ? attachableSkills.filter((s) => selectedSkills.some((ss) => ss.name === s.name))
+                  : attachableSkills;
                 const filtered = skillSearchQuery
                   ? baseList.filter((s) =>
                       s.name.toLowerCase().includes(skillSearchQuery.toLowerCase()) ||
@@ -838,11 +836,11 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                           <span className="text-xs text-[var(--ink-tertiary)] truncate block">{s.description}</span>
                         )}
                       </div>
-                      {s.source && (
+                      {s.scope && (
                         <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
-                          s.source === 'project' ? 'bg-green-100 text-green-700' : 'bg-blue-50 text-blue-600'
+                          s.scope === 'project' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--hover)] text-[var(--ink-tertiary)]'
                         }`}>
-                          {s.source === 'project' ? '项目' : '全局'}
+                          {s.scope === 'project' ? '项目' : '全局'}
                         </span>
                       )}
                     </button>

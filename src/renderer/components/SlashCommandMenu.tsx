@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 
 const BUILTIN_COMMANDS = [
-  { name: 'clear', description: '清空对话历史' },
-  { name: 'reset', description: '重置当前会话' },
+  { name: 'clear', description: '清空对话历史', source: 'builtin' as const },
+  { name: 'reset', description: '重置当前会话', source: 'builtin' as const },
 ];
 
 export interface CommandItem {
   name: string;
   description: string;
-  source?: 'global' | 'project' | 'builtin';
+  source: 'builtin' | 'custom' | 'skill';
+  scope?: 'user' | 'project';
 }
 
 interface Props {
@@ -20,7 +21,7 @@ interface Props {
 
 export default function SlashCommandMenu({ query, onSelect, onClose, skillCommands }: Props) {
   const allCommands: CommandItem[] = [
-    ...BUILTIN_COMMANDS.map((c) => ({ ...c, source: 'builtin' as const })),
+    ...BUILTIN_COMMANDS,
     ...(skillCommands || []),
   ];
   const [activeIdx, setActiveIdx] = useState(0);
@@ -67,7 +68,7 @@ export default function SlashCommandMenu({ query, onSelect, onClose, skillComman
           key={cmd.name}
           className={[
             'flex w-full items-center gap-2 px-3 py-2 text-left text-sm',
-            i === activeIdx ? 'bg-[var(--accent-warm)] text-white' : 'text-[var(--ink)] hover:bg-[var(--paper-dark)]',
+            i === activeIdx ? 'bg-[var(--accent)] text-white' : 'text-[var(--ink)] hover:bg-[var(--hover)]',
           ].join(' ')}
           onClick={() => onSelect(cmd.name)}
           onMouseEnter={() => setActiveIdx(i)}
@@ -76,14 +77,24 @@ export default function SlashCommandMenu({ query, onSelect, onClose, skillComman
           <span className={`text-xs ${i === activeIdx ? 'text-white/70' : 'text-[var(--ink-tertiary)]'}`}>
             {cmd.description}
           </span>
-          {cmd.source === 'global' && (
-            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-blue-500'}`}>
+          {cmd.source === 'builtin' && (
+            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-[var(--ink-tertiary)]'}`}>
+              [内置]
+            </span>
+          )}
+          {cmd.source === 'custom' && cmd.scope === 'user' && (
+            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-[var(--ink-tertiary)]'}`}>
               [全局]
             </span>
           )}
-          {cmd.source === 'project' && (
-            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-green-500'}`}>
+          {cmd.source === 'custom' && cmd.scope === 'project' && (
+            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-[var(--accent)]'}`}>
               [项目]
+            </span>
+          )}
+          {cmd.source === 'skill' && (
+            <span className={`ml-auto text-xs px-1 rounded ${i === activeIdx ? 'text-white/70' : 'text-[var(--ink-tertiary)]'}`}>
+              [技能]
             </span>
           )}
         </button>
