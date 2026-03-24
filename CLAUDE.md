@@ -87,6 +87,7 @@ npm run typecheck && npm run lint  # 提交前必跑
 | UI 硬编码颜色（`#fff`、`bg-blue-500`） | 破坏设计系统 | 使用 CSS Token `var(--xxx)` |
 | 新增 SSE 事件不在前端注册 | 前端静默丢弃该事件 | 前端 SSE 白名单注册 |
 | Sidecar 内 `child_process.spawn("bun")` | macOS GUI 应用 PATH 无 bun → 静默挂起 | 用 `process.env.BUN_EXECUTABLE \|\| 'bun'` |
+| `SessionTabBar` tab 容器用 `flex-1` | 空白区域 stopPropagation 拦截拖拽，标题栏无法拖动窗口 | tab 容器不加 `flex-1`，右侧按钮用 `ml-auto` |
 
 ---
 
