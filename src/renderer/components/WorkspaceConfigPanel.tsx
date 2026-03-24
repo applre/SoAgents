@@ -6,6 +6,8 @@ import SystemPromptsPanel, { type SystemPromptsPanelRef } from './SystemPromptsP
 import SkillsCommandsTab from './SkillsCommandsTab';
 import SkillDetailPanel, { type SkillDetailPanelRef } from './SkillDetailPanel';
 import CommandDetailPanel, { type CommandDetailPanelRef } from './CommandDetailPanel';
+import AgentDetailPanel, { type AgentDetailPanelRef } from './AgentDetailPanel';
+import { useToast } from './Toast';
 
 type Tab = 'general' | 'system-prompts' | 'skills';
 type DetailView =
@@ -27,22 +29,40 @@ interface Props {
 }
 
 export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Props) {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<Tab>('general');
   const [detailView, setDetailView] = useState<DetailView>({ type: 'none' });
   const systemPromptsRef = useRef<SystemPromptsPanelRef>(null);
   const skillDetailRef = useRef<SkillDetailPanelRef>(null);
   const commandDetailRef = useRef<CommandDetailPanelRef>(null);
+  const agentDetailRef = useRef<AgentDetailPanelRef>(null);
 
   const isDetail = detailView.type !== 'none';
 
-  const handleBack = useCallback(() => {
-    setDetailView({ type: 'none' });
+  const isAnyEditing = useCallback(() => {
+    if (systemPromptsRef.current?.isEditing()) return true;
+    if (skillDetailRef.current?.isEditing()) return true;
+    if (commandDetailRef.current?.isEditing()) return true;
+    if (agentDetailRef.current?.isEditing()) return true;
+    return false;
   }, []);
 
+  const handleBack = useCallback(() => {
+    if (isAnyEditing()) {
+      toast.warning('请先保存或取消当前编辑');
+      return;
+    }
+    setDetailView({ type: 'none' });
+  }, [isAnyEditing, toast]);
+
   const handleTabChange = useCallback((tab: Tab) => {
+    if (isAnyEditing()) {
+      toast.warning('请先保存或取消当前编辑');
+      return;
+    }
     setActiveTab(tab);
     setDetailView({ type: 'none' });
-  }, []);
+  }, [isAnyEditing, toast]);
 
   // Escape key handler: detail -> back; list -> close
   useEffect(() => {
@@ -157,6 +177,17 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
             <CommandDetailPanel
               ref={commandDetailRef}
               fileName={detailView.name}
+              scope={detailView.scope}
+              agentDir={agentDir}
+              isNew={detailView.isNew}
+              onBack={() => setDetailView({ type: 'none' })}
+              onDeleted={() => setDetailView({ type: 'none' })}
+            />
+          )}
+          {detailView.type === 'agent' && (
+            <AgentDetailPanel
+              ref={agentDetailRef}
+              folderName={detailView.name}
               scope={detailView.scope}
               agentDir={agentDir}
               isNew={detailView.isNew}
