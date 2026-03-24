@@ -1382,12 +1382,27 @@ function MCPEditModal({
     return JSON.stringify(obj, null, 2);
   };
 
+  // Unwrap mcpServers wrapper (Claude Desktop format) to flat server config
+  const unwrapMcpJson = (raw: Record<string, unknown>): { id?: string; config: Record<string, unknown> } => {
+    // { "mcpServers": { "name": { ... } } }
+    if (raw.mcpServers && typeof raw.mcpServers === 'object') {
+      const servers = raw.mcpServers as Record<string, unknown>;
+      const keys = Object.keys(servers);
+      if (keys.length === 1 && typeof servers[keys[0]] === 'object') {
+        return { id: keys[0], config: servers[keys[0]] as Record<string, unknown> };
+      }
+    }
+    // flat format: { "name": "...", "type": "...", ... }
+    return { config: raw };
+  };
+
   const jsonToForm = (json: string): boolean => {
     try {
-      const obj = JSON.parse(json) as Record<string, unknown>;
+      const raw = JSON.parse(json) as Record<string, unknown>;
+      const { id: serverId, config: obj } = unwrapMcpJson(raw);
       setForm({
-        id: form.id,
-        name: (obj.name as string) ?? '',
+        id: serverId || form.id,
+        name: (obj.name as string) ?? serverId ?? '',
         type: ((obj.type as string) ?? 'stdio') as MCPServerConfig['type'],
         command: (obj.command as string) ?? '',
         args: Array.isArray(obj.args) ? (obj.args as string[]).join(', ') : '',
@@ -1424,19 +1439,21 @@ function MCPEditModal({
 
     // JSON mode: parse directly from jsonText
     if (jsonMode) {
-      let obj: Record<string, unknown>;
-      try { obj = JSON.parse(jsonText); } catch { setError('JSON 格式错误'); return; }
-      const name = ((obj.name as string) ?? '').trim();
+      let raw: Record<string, unknown>;
+      try { raw = JSON.parse(jsonText); } catch { setError('JSON 格式错误'); return; }
+      const { id: serverId, config: obj } = unwrapMcpJson(raw);
+      const name = ((obj.name as string) ?? serverId ?? '').trim();
       const type = ((obj.type as string) ?? 'stdio') as MCPServerConfig['type'];
       const command = (obj.command as string)?.trim();
       const url = (obj.url as string)?.trim();
-      if (!form.id.trim()) { setError('ID 不能为空'); return; }
+      const effectiveId = form.id.trim() || serverId || '';
+      if (!effectiveId) { setError('ID 不能为空'); return; }
       if (!name) { setError('名称不能为空'); return; }
       if (type === 'stdio' && !command) { setError('Command 不能为空'); return; }
       if (type !== 'stdio' && !url) { setError('URL 不能为空'); return; }
       setSaving(true); setError('');
       try {
-        await onSave(form.id.trim(), {
+        await onSave(effectiveId, {
           name,
           type,
           command: type === 'stdio' ? command : undefined,
