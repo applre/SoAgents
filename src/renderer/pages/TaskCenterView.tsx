@@ -53,7 +53,7 @@ export default memo(function TaskCenterView({
   onArchiveSession,
   onUnarchiveSession,
 }: TaskCenterViewProps) {
-  const { sessions, scheduledTasks, isLoading } = useTaskCenterData();
+  const { sessions, scheduledTasks, cronSessionIds, isLoading } = useTaskCenterData();
 
   // 搜索状态
   const [query, setQuery] = useState('');
@@ -140,12 +140,9 @@ export default memo(function TaskCenterView({
         // 非归档视图默认隐藏已归档的
         if (session.archived) return false;
 
-        // 状态过滤
+        // 定时任务过滤：只显示由定时任务创建的 session
         if (statusFilter === 'cron') {
-          const hasCronInWorkspace = scheduledTasks.some(
-            t => t.enabled && t.workingDirectory === session.agentDir
-          );
-          if (!hasCronInWorkspace) return false;
+          if (!cronSessionIds.has(session.id)) return false;
         }
       }
 
@@ -154,7 +151,7 @@ export default memo(function TaskCenterView({
 
       return true;
     });
-  }, [sessions, statusFilter, workspaceFilter, scheduledTasks]);
+  }, [sessions, statusFilter, workspaceFilter, cronSessionIds]);
 
   // ── 定时任务排序 ──
 

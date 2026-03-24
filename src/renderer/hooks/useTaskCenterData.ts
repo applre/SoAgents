@@ -10,15 +10,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { globalApiGetJson } from '../api/apiFetch';
-import { listScheduledTasks, onTaskUpdated, onTaskDeleted } from '../api/scheduledTaskApi';
+import { listScheduledTasks, listAllScheduledTaskRuns, onTaskUpdated, onTaskDeleted, onRunUpdated } from '../api/scheduledTaskApi';
 import type { SessionMetadata } from '../../shared/types/session';
-import type { ScheduledTask } from '../../shared/types/scheduledTask';
+import type { ScheduledTask, ScheduledTaskRun } from '../../shared/types/scheduledTask';
 
 export type SessionTag = { type: 'cron' };
 
 export interface TaskCenterData {
   sessions: SessionMetadata[];
   scheduledTasks: ScheduledTask[];
+  cronSessionIds: Set<string>;
   sessionTagsMap: Map<string, SessionTag[]>;
   isLoading: boolean;
   refresh: () => void;
@@ -28,15 +29,17 @@ export interface TaskCenterData {
 export function useTaskCenterData(): TaskCenterData {
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [taskRuns, setTaskRuns] = useState<ScheduledTaskRun[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const isMountedRef = useRef(true);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [sessionsData, tasksData] = await Promise.all([
+      const [sessionsData, tasksData, runsData] = await Promise.all([
         globalApiGetJson<SessionMetadata[]>('/chat/sessions'),
         listScheduledTasks().catch(() => [] as ScheduledTask[]),
+        listAllScheduledTaskRuns(500, 0).catch(() => [] as ScheduledTaskRun[]),
       ]);
 
       if (!isMountedRef.current) return;
@@ -46,6 +49,7 @@ export function useTaskCenterData(): TaskCenterData {
       );
       setSessions(sorted);
       setScheduledTasks(tasksData);
+      setTaskRuns(runsData);
     } catch (err) {
       console.error('[useTaskCenterData] Failed to load:', err);
     } finally {
@@ -82,26 +86,44 @@ export function useTaskCenterData(): TaskCenterData {
         }
       });
       unlisteners.push(u2);
+
+      const u3 = await onRunUpdated((run) => {
+        if (isMountedRef.current) {
+          setTaskRuns(prev => {
+            const idx = prev.findIndex(r => r.id === run.id);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = run;
+              return next;
+            }
+            return [run, ...prev];
+          });
+        }
+      });
+      unlisteners.push(u3);
     };
 
     void setup();
     return () => { unlisteners.forEach(fn => fn()); };
   }, []);
 
+  // 从运行记录中收集定时任务关联的 sessionId
+  const cronSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of taskRuns) {
+      if (run.sessionId) ids.add(run.sessionId);
+    }
+    return ids;
+  }, [taskRuns]);
+
   // 计算 session tag
   const sessionTagsMap = useMemo(() => {
     const map = new Map<string, SessionTag[]>();
-
-    // 收集正在运行的定时任务关联的 sessionId
-    // ScheduledTask 目前没有 sessionId 字段，暂时通过 state.lastStatus === 'running' 标记
-    // TODO: 后续如果 ScheduledTask 增加 sessionId 字段再精准匹配
-    for (const _task of scheduledTasks) {
-      // 当前 ScheduledTask 类型没有直接关联 sessionId
-      // 先跳过，后续可以扩展
+    for (const sessionId of cronSessionIds) {
+      map.set(sessionId, [{ type: 'cron' }]);
     }
-
     return map;
-  }, [scheduledTasks]);
+  }, [cronSessionIds]);
 
   const refresh = useCallback(() => { void fetchData(); }, [fetchData]);
 
@@ -112,6 +134,7 @@ export function useTaskCenterData(): TaskCenterData {
   return {
     sessions,
     scheduledTasks,
+    cronSessionIds,
     sessionTagsMap,
     isLoading,
     refresh,
