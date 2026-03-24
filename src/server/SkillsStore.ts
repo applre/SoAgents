@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmdirSync, statSync, copyFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmdirSync, statSync, copyFileSync, symlinkSync, lstatSync, readlinkSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
+export type { SkillItem, SkillDetail, SkillFrontmatter } from '../shared/types/skill';
 
 const GLOBAL_SKILLS_DIR = join(homedir(), '.soagents', 'skills');
 const SKILLS_CONFIG_PATH = join(homedir(), '.soagents', 'skills-config.json');
@@ -12,7 +13,7 @@ export interface SkillInfo {
   description: string;
   content: string;      // 去掉 frontmatter 的 body
   rawContent: string;   // 完整文件内容
-  source: 'global' | 'project';
+  source: 'user' | 'project';
   path: string;
   isBuiltin: boolean;
   enabled: boolean;
@@ -23,7 +24,7 @@ export interface SkillData {
   description?: string;
   allowedTools?: string[];
   content: string;      // markdown body（不含 frontmatter）
-  scope: 'global' | 'project';
+  scope: 'user' | 'project';
   agentDir?: string;
 }
 
@@ -91,7 +92,7 @@ function findSkillPath(skillsDir: string, name: string): string | null {
   return null;
 }
 
-function scanSkillsDir(skillsDir: string, source: 'global' | 'project'): Omit<SkillInfo, 'isBuiltin' | 'enabled'>[] {
+function scanSkillsDir(skillsDir: string, source: 'user' | 'project'): Omit<SkillInfo, 'isBuiltin' | 'enabled'>[] {
   if (!existsSync(skillsDir)) {
     return [];
   }
@@ -271,7 +272,7 @@ export function list(agentDir?: string): SkillInfo[] {
   const disabledSet = new Set(config.disabled);
   const builtinNames = getBuiltinSkillNames();
 
-  const globalSkills = scanSkillsDir(GLOBAL_SKILLS_DIR, 'global');
+  const globalSkills = scanSkillsDir(GLOBAL_SKILLS_DIR, 'user');
 
   const enriched = (skills: Omit<SkillInfo, 'isBuiltin' | 'enabled'>[]): SkillInfo[] =>
     skills.map((s) => ({
@@ -338,7 +339,7 @@ export function get(name: string, agentDir?: string): SkillInfo | null {
         description: meta['description'] || '',
         content: body,
         rawContent,
-        source: 'global',
+        source: 'user',
         path: globalPath,
       });
     } catch {
@@ -393,9 +394,9 @@ export function update(name: string, skill: SkillData): void {
 /**
  * 删除 skill（拒绝删除内置）
  */
-export function deleteSkill(name: string, scope: 'global' | 'project', agentDir?: string): boolean {
+export function deleteSkill(name: string, scope: 'user' | 'project', agentDir?: string): boolean {
   const builtinNames = getBuiltinSkillNames();
-  if (builtinNames.has(name) && scope === 'global') {
+  if (builtinNames.has(name) && scope === 'user') {
     return false; // 不允许删除内置 skill
   }
 
@@ -446,4 +447,85 @@ export function toggleSkill(name: string, enabled: boolean): void {
   }
   config.disabled = [...disabledSet];
   writeSkillsConfig(config);
+}
+
+/**
+ * 将用户级别已启用的 skills 同步为 agentDir 下的符号链接。
+ * 清理悬空符号链接（源路径已不存在）。
+ * 所有操作均 try/catch，不影响 session 启动。
+ */
+export function syncToProject(agentDir: string): void {
+  const targetDir = join(agentDir, '.claude', 'skills');
+  try {
+    mkdirSync(targetDir, { recursive: true });
+  } catch {
+    return;
+  }
+
+  // 获取用户级别已启用的 skills
+  let enabledSkills: SkillInfo[];
+  try {
+    enabledSkills = list().filter((s) => s.source === 'user' && s.enabled);
+  } catch {
+    return;
+  }
+
+  // 为每个已启用 skill 创建符号链接（指向 skill 目录，即 SKILL.md 的父目录）
+  for (const skill of enabledSkills) {
+    try {
+      // skill.path 指向 SKILL.md，符号链接应指向其父目录（{name}/）
+      const sourcePath = join(GLOBAL_SKILLS_DIR, skill.name);
+      if (!existsSync(sourcePath)) continue;
+
+      const linkPath = join(targetDir, skill.name);
+      let linkStat: ReturnType<typeof lstatSync> | null = null;
+      try {
+        linkStat = lstatSync(linkPath);
+      } catch {
+        // 不存在，继续创建
+      }
+
+      if (linkStat) {
+        if (linkStat.isSymbolicLink()) {
+          // 已是符号链接，检查是否悬空
+          try {
+            const target = readlinkSync(linkPath);
+            if (target === sourcePath && existsSync(sourcePath)) {
+              continue; // 已存在且有效
+            }
+            // 悬空或目标变化，删除重建
+            unlinkSync(linkPath);
+          } catch {
+            // ignore
+          }
+        } else {
+          continue; // 是真实文件/目录，跳过
+        }
+      }
+
+      symlinkSync(sourcePath, linkPath);
+    } catch {
+      // 单个 skill 失败不影响其他
+    }
+  }
+
+  // 清理悬空符号链接
+  try {
+    const entries = readdirSync(targetDir);
+    for (const entry of entries) {
+      try {
+        const linkPath = join(targetDir, entry);
+        const linkStat = lstatSync(linkPath);
+        if (!linkStat.isSymbolicLink()) continue;
+        const target = readlinkSync(linkPath);
+        if (!existsSync(target)) {
+          unlinkSync(linkPath);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
 }

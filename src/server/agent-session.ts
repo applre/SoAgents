@@ -5,6 +5,9 @@ import crypto from 'crypto';
 import * as SessionStore from './SessionStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as ConfigStore from './ConfigStore';
+import * as AgentStore from './AgentStore';
+import * as SkillsStore from './SkillsStore';
+import * as CommandStore from './CommandStore';
 import { resolveClaudeCodeCli } from './provider-verify';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
@@ -939,6 +942,14 @@ class SessionRunner {
 
       console.log(`${logPrefix} Starting subprocess, cwd=${config.agentDir}, mode=${resolvedPermissionMode}, model=${config.model ?? 'default'}, provider=${config.providerEnv?.baseUrl ?? 'default(subscription)'}, resume=${this.sdkSessionId ? 'yes' : 'no'}`);
 
+      // Load enabled sub-agents for SDK
+      const enabledAgents = AgentStore.loadEnabledAgents(config.agentDir);
+      const hasAgents = Object.keys(enabledAgents).length > 0;
+
+      // ── 同步用户级别 skills/commands 到项目目录 ──
+      try { SkillsStore.syncToProject(config.agentDir); } catch (e) { console.warn(`${logPrefix} SkillsStore.syncToProject failed:`, e); }
+      try { CommandStore.syncToProject(config.agentDir); } catch (e) { console.warn(`${logPrefix} CommandStore.syncToProject failed:`, e); }
+
       // ── 创建 query（子进程在此启动）──
       const resolvedCanUseTool = resolvedPermissionMode !== 'bypassPermissions'
         ? canUseTool
@@ -965,6 +976,7 @@ class SessionRunner {
           resume: this.sdkSessionId ?? undefined,
           canUseTool: resolvedCanUseTool,
         },
+        ...(hasAgents ? { agents: enabledAgents } : {}),
       });
       this.querySession = q;
 
