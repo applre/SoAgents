@@ -1,13 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { X, ChevronLeft } from 'lucide-react';
 import WorkspaceGeneralTab from './WorkspaceGeneralTab';
-import SystemPromptsPanel, { type SystemPromptsPanelRef } from './SystemPromptsPanel';
+import SystemPromptsPanel from './SystemPromptsPanel';
 import SkillsCommandsTab from './SkillsCommandsTab';
-import SkillDetailPanel, { type SkillDetailPanelRef } from './SkillDetailPanel';
-import CommandDetailPanel, { type CommandDetailPanelRef } from './CommandDetailPanel';
-import AgentDetailPanel, { type AgentDetailPanelRef } from './AgentDetailPanel';
-import { useToast } from './Toast';
+import SkillDetailPanel from './SkillDetailPanel';
+import CommandDetailPanel from './CommandDetailPanel';
+import AgentDetailPanel from './AgentDetailPanel';
 
 type Tab = 'general' | 'system-prompts' | 'skills';
 type DetailView =
@@ -29,40 +28,19 @@ interface Props {
 }
 
 export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Props) {
-  const toast = useToast();
   const [activeTab, setActiveTab] = useState<Tab>('general');
   const [detailView, setDetailView] = useState<DetailView>({ type: 'none' });
-  const systemPromptsRef = useRef<SystemPromptsPanelRef>(null);
-  const skillDetailRef = useRef<SkillDetailPanelRef>(null);
-  const commandDetailRef = useRef<CommandDetailPanelRef>(null);
-  const agentDetailRef = useRef<AgentDetailPanelRef>(null);
 
   const isDetail = detailView.type !== 'none';
 
-  const isAnyEditing = useCallback(() => {
-    if (systemPromptsRef.current?.isEditing()) return true;
-    if (skillDetailRef.current?.isEditing()) return true;
-    if (commandDetailRef.current?.isEditing()) return true;
-    if (agentDetailRef.current?.isEditing()) return true;
-    return false;
+  const handleBack = useCallback(() => {
+    setDetailView({ type: 'none' });
   }, []);
 
-  const handleBack = useCallback(() => {
-    if (isAnyEditing()) {
-      toast.warning('请先保存或取消当前编辑');
-      return;
-    }
-    setDetailView({ type: 'none' });
-  }, [isAnyEditing, toast]);
-
   const handleTabChange = useCallback((tab: Tab) => {
-    if (isAnyEditing()) {
-      toast.warning('请先保存或取消当前编辑');
-      return;
-    }
     setActiveTab(tab);
     setDetailView({ type: 'none' });
-  }, [isAnyEditing, toast]);
+  }, []);
 
   // Escape key handler: detail -> back; list -> close
   useEffect(() => {
@@ -149,7 +127,7 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
             <WorkspaceGeneralTab agentDir={agentDir} />
           )}
           {activeTab === 'system-prompts' && (
-            <SystemPromptsPanel ref={systemPromptsRef} agentDir={agentDir} />
+            <SystemPromptsPanel agentDir={agentDir} />
           )}
           {activeTab === 'skills' && detailView.type === 'none' && (
             <SkillsCommandsTab
@@ -164,7 +142,6 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
           )}
           {detailView.type === 'skill' && (
             <SkillDetailPanel
-              ref={skillDetailRef}
               name={detailView.name}
               scope={detailView.scope}
               agentDir={agentDir}
@@ -175,7 +152,6 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
           )}
           {detailView.type === 'command' && (
             <CommandDetailPanel
-              ref={commandDetailRef}
               fileName={detailView.name}
               scope={detailView.scope}
               agentDir={agentDir}
@@ -186,7 +162,6 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
           )}
           {detailView.type === 'agent' && (
             <AgentDetailPanel
-              ref={agentDetailRef}
               folderName={detailView.name}
               scope={detailView.scope}
               agentDir={agentDir}
