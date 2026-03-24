@@ -4,6 +4,8 @@ import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
 import * as SkillsStore from './SkillsStore';
+import * as CommandStore from './CommandStore';
+import * as AgentStore from './AgentStore';
 import { verifyProviderViaSdk, checkAnthropicSubscription, verifySubscription } from './provider-verify';
 import { initLogger, getLogHistory } from './logger';
 import { appendUnifiedLogBatch } from './UnifiedLogger';
@@ -1010,7 +1012,7 @@ Bun.serve({
 
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/skills/')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length));
-      const scope = (url.searchParams.get('scope') ?? 'global') as 'global' | 'project';
+      const scope = (url.searchParams.get('scope') ?? 'user') as 'user' | 'project';
       const agentDir = url.searchParams.get('agentDir') ?? undefined;
       const deleted = SkillsStore.deleteSkill(name, scope, agentDir);
       if (!deleted) {
@@ -1132,6 +1134,251 @@ Bun.serve({
           { status: 500 }
         );
       }
+    }
+
+    // ── CLAUDE.md 路由 ──────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/claude-md') {
+      const agentDir = url.searchParams.get('agentDir');
+      if (!agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+      const filePath = join(agentDir, '.claude', 'CLAUDE.md');
+      if (!existsSync(filePath)) {
+        return Response.json({ content: '' });
+      }
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        return Response.json({ content });
+      } catch {
+        return Response.json({ content: '' });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/claude-md') {
+      const body = await req.json() as { agentDir: string; content: string };
+      if (!body.agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+      const dirPath = join(body.agentDir, '.claude');
+      mkdirSync(dirPath, { recursive: true });
+      writeFileSync(join(dirPath, 'CLAUDE.md'), body.content, 'utf-8');
+      return Response.json({ ok: true });
+    }
+
+    // ── Rules 路由 ──────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/rules') {
+      const agentDir = url.searchParams.get('agentDir');
+      if (!agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+      const rulesDir = join(agentDir, '.claude', 'rules');
+      if (!existsSync(rulesDir)) {
+        return Response.json({ files: [] });
+      }
+      try {
+        const files = readdirSync(rulesDir).filter(f => f.endsWith('.md'));
+        return Response.json({ files });
+      } catch {
+        return Response.json({ files: [] });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/rules') {
+      const body = await req.json() as { agentDir: string; filename: string; content: string };
+      if (!body.agentDir || !body.filename) return Response.json({ error: 'missing params' }, { status: 400 });
+      if (body.filename.includes('..') || body.filename.includes('/')) {
+        return Response.json({ error: 'invalid filename' }, { status: 400 });
+      }
+      const rulesDir = join(body.agentDir, '.claude', 'rules');
+      mkdirSync(rulesDir, { recursive: true });
+      writeFileSync(join(rulesDir, body.filename), body.content, 'utf-8');
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/rules/')) {
+      const filename = decodeURIComponent(url.pathname.slice('/api/rules/'.length));
+      const agentDir = url.searchParams.get('agentDir');
+      if (!agentDir || !filename) return Response.json({ error: 'missing params' }, { status: 400 });
+      if (filename.includes('..') || filename.includes('/')) {
+        return Response.json({ error: 'invalid filename' }, { status: 400 });
+      }
+      const filePath = join(agentDir, '.claude', 'rules', filename);
+      if (!existsSync(filePath)) return new Response('Not Found', { status: 404 });
+      try {
+        unlinkSync(filePath);
+        return Response.json({ ok: true });
+      } catch {
+        return Response.json({ error: 'delete failed' }, { status: 500 });
+      }
+    }
+
+    if (req.method === 'PUT' && url.pathname.match(/^\/api\/rules\/[^/]+\/rename$/)) {
+      const parts = url.pathname.slice('/api/rules/'.length).split('/');
+      const filename = decodeURIComponent(parts[0]);
+      const body = await req.json() as { agentDir: string; newFilename: string };
+      if (!body.agentDir || !body.newFilename) return Response.json({ error: 'missing params' }, { status: 400 });
+      if (filename.includes('..') || filename.includes('/') || body.newFilename.includes('..') || body.newFilename.includes('/')) {
+        return Response.json({ error: 'invalid filename' }, { status: 400 });
+      }
+      const rulesDir = join(body.agentDir, '.claude', 'rules');
+      const oldPath = join(rulesDir, filename);
+      const newPath = join(rulesDir, body.newFilename);
+      if (!existsSync(oldPath)) return new Response('Not Found', { status: 404 });
+      try {
+        renameSync(oldPath, newPath);
+        return Response.json({ ok: true });
+      } catch {
+        return Response.json({ error: 'rename failed' }, { status: 500 });
+      }
+    }
+
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/rules/')) {
+      const filename = decodeURIComponent(url.pathname.slice('/api/rules/'.length));
+      const body = await req.json() as { agentDir: string; content: string };
+      if (!body.agentDir || !filename) return Response.json({ error: 'missing params' }, { status: 400 });
+      if (filename.includes('..') || filename.includes('/')) {
+        return Response.json({ error: 'invalid filename' }, { status: 400 });
+      }
+      const filePath = join(body.agentDir, '.claude', 'rules', filename);
+      if (!existsSync(filePath)) return new Response('Not Found', { status: 404 });
+      writeFileSync(filePath, body.content, 'utf-8');
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/api/rules/')) {
+      const filename = decodeURIComponent(url.pathname.slice('/api/rules/'.length));
+      const agentDir = url.searchParams.get('agentDir');
+      if (!agentDir || !filename) return Response.json({ error: 'missing params' }, { status: 400 });
+      if (filename.includes('..') || filename.includes('/')) {
+        return Response.json({ error: 'invalid filename' }, { status: 400 });
+      }
+      const filePath = join(agentDir, '.claude', 'rules', filename);
+      if (!existsSync(filePath)) return new Response('Not Found', { status: 404 });
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        return Response.json({ content });
+      } catch {
+        return Response.json({ error: 'read failed' }, { status: 500 });
+      }
+    }
+
+    // ── Command 路由 ─────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/commands') {
+      const agentDir = url.searchParams.get('agentDir') ?? undefined;
+      return Response.json(CommandStore.listSlashCommands(agentDir));
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/command-items') {
+      const agentDir = url.searchParams.get('agentDir') ?? undefined;
+      const scope = url.searchParams.get('scope') as 'user' | 'project' | null;
+      const items = CommandStore.list(agentDir);
+      if (scope) {
+        return Response.json(items.filter(i => i.source === scope));
+      }
+      return Response.json(items);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/command-item/create') {
+      const body = await req.json() as Parameters<typeof CommandStore.create>[0];
+      CommandStore.create(body);
+      const agentDir = body.agentDir;
+      if (agentDir) {
+        if ('syncToProject' in SkillsStore) {
+          (SkillsStore.syncToProject as (dir: string) => void)(agentDir);
+        }
+      }
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/command-item/')) {
+      const fileName = decodeURIComponent(url.pathname.slice('/api/command-item/'.length));
+      const scope = (url.searchParams.get('scope') ?? 'user') as 'user' | 'project';
+      const agentDir = url.searchParams.get('agentDir') ?? undefined;
+      const deleted = CommandStore.remove(fileName, scope, agentDir);
+      if (!deleted) return new Response('Not Found', { status: 404 });
+      if (agentDir) {
+        if ('syncToProject' in SkillsStore) {
+          (SkillsStore.syncToProject as (dir: string) => void)(agentDir);
+        }
+      }
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/command-item/')) {
+      const fileName = decodeURIComponent(url.pathname.slice('/api/command-item/'.length));
+      const body = await req.json() as Parameters<typeof CommandStore.update>[1] & { newFileName?: string };
+      CommandStore.update(fileName, body, body.newFileName);
+      const agentDir = body.agentDir;
+      if (agentDir) {
+        if ('syncToProject' in SkillsStore) {
+          (SkillsStore.syncToProject as (dir: string) => void)(agentDir);
+        }
+      }
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/api/command-item/')) {
+      const fileName = decodeURIComponent(url.pathname.slice('/api/command-item/'.length));
+      const scope = (url.searchParams.get('scope') ?? 'user') as 'user' | 'project';
+      const agentDir = url.searchParams.get('agentDir') ?? undefined;
+      const item = CommandStore.get(fileName, scope, agentDir);
+      if (!item) return new Response('Not Found', { status: 404 });
+      return Response.json(item);
+    }
+
+    // ── Agent 路由 ───────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/agents/workspace-config') {
+      const agentDir = url.searchParams.get('agentDir');
+      if (!agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+      return Response.json(AgentStore.readWorkspaceConfig(agentDir));
+    }
+
+    if (req.method === 'PUT' && url.pathname === '/api/agents/workspace-config') {
+      const body = await req.json() as { agentDir: string; config: AgentStore.AgentWorkspaceConfig };
+      if (!body.agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+      AgentStore.writeWorkspaceConfig(body.agentDir, body.config);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/agents/enabled') {
+      const agentDir = url.searchParams.get('agentDir');
+      if (!agentDir) return Response.json({ error: 'missing agentDir' }, { status: 400 });
+      return Response.json(AgentStore.loadEnabledAgents(agentDir));
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/agents') {
+      const agentDir = url.searchParams.get('agentDir') ?? undefined;
+      const scope = url.searchParams.get('scope') as 'user' | 'project' | null;
+      const items = AgentStore.list(agentDir);
+      if (scope) {
+        return Response.json(items.filter(i => i.source === scope));
+      }
+      return Response.json(items);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/agent/create') {
+      const body = await req.json() as Parameters<typeof AgentStore.create>[0];
+      AgentStore.create(body);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/agent/')) {
+      const folderName = decodeURIComponent(url.pathname.slice('/api/agent/'.length));
+      const scope = (url.searchParams.get('scope') ?? 'user') as 'user' | 'project';
+      const agentDir = url.searchParams.get('agentDir') ?? undefined;
+      const deleted = AgentStore.remove(folderName, scope, agentDir);
+      if (!deleted) return new Response('Not Found', { status: 404 });
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/agent/')) {
+      const folderName = decodeURIComponent(url.pathname.slice('/api/agent/'.length));
+      const body = await req.json() as Parameters<typeof AgentStore.update>[1] & { newFolderName?: string };
+      AgentStore.update(folderName, body, body.newFolderName);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/api/agent/')) {
+      const folderName = decodeURIComponent(url.pathname.slice('/api/agent/'.length));
+      const scope = (url.searchParams.get('scope') ?? 'user') as 'user' | 'project';
+      const agentDir = url.searchParams.get('agentDir') ?? undefined;
+      const item = AgentStore.get(folderName, scope, agentDir);
+      if (!item) return new Response('Not Found', { status: 404 });
+      return Response.json(item);
     }
 
     // ── Git 初始化 ───────────────────────────────────────────

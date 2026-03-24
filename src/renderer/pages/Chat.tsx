@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { Settings } from 'lucide-react';
 import { useTabState } from '../context/TabContext';
 import { useConfig } from '../context/ConfigContext';
 import { FileActionProvider } from '../context/FileActionContext';
@@ -9,6 +10,7 @@ import AskUserQuestionPrompt from '../components/AskUserQuestionPrompt';
 import { ExitPlanModePrompt, EnterPlanModePrompt } from '../components/PlanModePrompt';
 import UnifiedLogsPanel from '../components/UnifiedLogsPanel';
 import WorkspaceSelector from '../components/WorkspaceSelector';
+import WorkspaceConfigPanel from '../components/WorkspaceConfigPanel';
 
 interface Props {
   agentDir: string;
@@ -61,6 +63,7 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
   const { messages, historyMessages, streamingMessage, isLoading, sessionId, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
   const { config } = useConfig();
   const [showLogs, setShowLogs] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
 
   // 无消息时显示居中欢迎视图（含工作区选择器）
   if (messages.length === 0 && !isLoading) {
@@ -82,6 +85,14 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
               />
             )}
             <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} injectRefText={injectRefText} onRefTextConsumed={onRefTextConsumed} queuedMessages={queuedMessages} onCancelQueued={cancelQueuedMessage} onForceExecuteQueued={forceExecuteQueuedMessage} />
+            <button
+              type="button"
+              onClick={() => setShowConfig(true)}
+              className="mt-3 flex items-center gap-1.5 text-[12px] text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors mx-auto"
+            >
+              <Settings size={12} />
+              <span>工作区设置</span>
+            </button>
           </div>
         </div>
         {pendingPermission && (
@@ -98,6 +109,11 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
         {pendingEnterPlanMode && (
           <EnterPlanModePrompt requestId={pendingEnterPlanMode.requestId} onRespond={(approved) => respondEnterPlanMode(pendingEnterPlanMode.requestId, approved)} />
         )}
+        <WorkspaceConfigPanel
+          agentDir={agentDir}
+          isOpen={showConfig}
+          onClose={() => setShowConfig(false)}
+        />
       </div>
     );
   }
@@ -128,6 +144,15 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
           onCancelQueued={cancelQueuedMessage}
           onForceExecuteQueued={forceExecuteQueuedMessage}
         />
+        {/* 工作区设置按钮 */}
+        <button
+          type="button"
+          onClick={() => setShowConfig(true)}
+          className={`absolute ${config.showDevTools ? 'right-14' : 'right-3'} bottom-2 p-1 rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors`}
+          title="工作区设置"
+        >
+          <Settings size={14} />
+        </button>
         {/* 开发者模式: Logs 按钮 */}
         {config.showDevTools && (
           <button
@@ -164,6 +189,12 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
         isVisible={showLogs}
         onClose={() => setShowLogs(false)}
         onClearAll={clearUnifiedLogs}
+      />
+
+      <WorkspaceConfigPanel
+        agentDir={agentDir}
+        isOpen={showConfig}
+        onClose={() => setShowConfig(false)}
       />
     </div>
   );
