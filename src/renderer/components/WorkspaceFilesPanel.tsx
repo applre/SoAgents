@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, Settings, Check, Plus, AtSign, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, AtSign, ExternalLink, Pencil, Trash2 } from 'lucide-react';
 import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import DiffViewer from './DiffViewer';
@@ -28,129 +28,6 @@ interface Props {
   onOpenFile?: (path: string) => void;
   onInsertReference?: (paths: string[]) => void;
 }
-
-// ── 项目配置文件定义 ─────────────────────────────────────────────
-interface ConfigFileItem {
-  name: string;
-  desc: string;
-  template: string;
-}
-
-const PROJECT_CONFIG_FILES: ConfigFileItem[] = [
-  {
-    name: 'CLAUDE.md',
-    desc: '项目指令',
-    template: `# CLAUDE.md - 项目指令
-
-## 项目概述
-<!-- 描述你的项目 -->
-
-## 技术栈
-<!-- 列出主要技术栈 -->
-
-## 开发命令
-<!-- 常用命令 -->
-
-## 核心原则
-<!-- 编码规范、架构约定 -->
-`,
-  },
-  {
-    name: 'IDENTITY.md',
-    desc: 'AI 身份',
-    template: `# IDENTITY — AI 身份
-
-## 名称
-Assistant
-
-## 角色
-通用 AI 助手
-
-## 个性特征
-- 专业严谨
-- 主动思考
-- 善于总结
-`,
-  },
-  {
-    name: 'SOUL.md',
-    desc: '行为准则',
-    template: `# SOUL — 行为准则
-
-## 交互风格
-- 简洁、专业、友好
-- 优先给出可执行的方案
-
-## 安全边界
-- 不执行破坏性操作（除非明确授权）
-- 敏感信息不对外暴露
-`,
-  },
-  {
-    name: 'USER.md',
-    desc: '用户档案',
-    template: `# USER — 用户档案
-
-## 语言偏好
-中文
-
-## 技术背景
-<!-- 填写你的技术栈、工作领域等 -->
-
-## 沟通偏好
-<!-- 例如：喜欢简洁回复、需要详细解释等 -->
-`,
-  },
-  {
-    name: 'MEMORY.md',
-    desc: '长期记忆',
-    template: `# MEMORY — 长期记忆
-
-## 重要决策
-<!-- Agent 会在此记录重要的决策和学习 -->
-
-## 用户偏好
-<!-- 从交互中学到的用户偏好 -->
-`,
-  },
-  {
-    name: 'BOOTSTRAP.md',
-    desc: '启动指令',
-    template: `# BOOTSTRAP — 启动指令
-
-<!-- 在这里写入每次对话开始时都要执行的特殊指令 -->
-`,
-  },
-  {
-    name: 'AGENTS.md',
-    desc: '工作区规则',
-    template: `# AGENTS — 工作区规则
-
-## 工作目录规则
-- 所有文件操作限制在工作区内
-- 遵循项目现有的代码风格
-
-## 任务优先级
-1. 正确性
-2. 简洁性
-3. 可维护性
-`,
-  },
-  {
-    name: 'TOOLS.md',
-    desc: '环境备注',
-    template: `# TOOLS — 环境备注
-
-> 此文件不会注入到 Agent 上下文，仅作为开发者参考。
-
-## 开发环境
-<!-- 例如：Node.js v20, Python 3.12 -->
-
-## 常用命令
-<!-- 例如：npm run dev, pytest -->
-`,
-  },
-];
 
 // ── 变动文件辅助组件 ─────────────────────────────────────────────
 const STATUS_STYLE: Record<string, { label: string; color: string; bg: string }> = {
@@ -400,12 +277,7 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
   const showHiddenRef = useRef(showHidden);
   showHiddenRef.current = showHidden;
 
-  // ── 项目设置 tab 状态 ──
-  const [activeTab, setActiveTab] = useState<'files' | 'changed' | 'config'>('files');
-  const [showConfigTab, setShowConfigTab] = useState(false);
-  const [configFileStatus, setConfigFileStatus] = useState<Record<string, boolean>>({});
-  const [configLoading, setConfigLoading] = useState(false);
-  const [creatingFile, setCreatingFile] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'files' | 'changed'>('files');
 
   // ── 变动文件 tab 状态 ──
   const [changedFiles, setChangedFiles] = useState<ChangedFileEntry[]>([]);
@@ -565,75 +437,6 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
     gitInitTriedRef.current = false;
     failCountRef.current = 0;
   }, [agentDir]);
-
-  // ── 检测配置文件存在状态 ──
-  const checkConfigFiles = useCallback(async () => {
-    if (!agentDir) return;
-    setConfigLoading(true);
-    const status: Record<string, boolean> = {};
-    await Promise.all(
-      PROJECT_CONFIG_FILES.map(async (f) => {
-        const filePath = `${agentDir}/${f.name}`;
-        try {
-          await globalApiGetJson(`/api/file-stat?path=${encodeURIComponent(filePath)}`);
-          status[f.name] = true;
-        } catch {
-          status[f.name] = false;
-        }
-      })
-    );
-    setConfigFileStatus(status);
-    setConfigLoading(false);
-  }, [agentDir]);
-
-  // 切换到 config tab 时检测文件状态
-  useEffect(() => {
-    if (activeTab === 'config') {
-      checkConfigFiles();
-    }
-  }, [activeTab, checkConfigFiles]);
-
-  // ── 创建配置文件 ──
-  const handleCreateConfigFile = useCallback(async (item: ConfigFileItem) => {
-    if (!agentDir || creatingFile) return;
-    const filePath = `${agentDir}/${item.name}`;
-    setCreatingFile(item.name);
-    try {
-      await globalApiPostJson('/api/file-write', { path: filePath, content: item.template });
-      setConfigFileStatus((prev) => ({ ...prev, [item.name]: true }));
-      onOpenFile?.(filePath);
-    } catch (e) {
-      console.error('创建配置文件失败:', e);
-    } finally {
-      setCreatingFile(null);
-    }
-  }, [agentDir, creatingFile, onOpenFile]);
-
-  // ── 点击配置文件行 ──
-  const handleConfigFileClick = useCallback((item: ConfigFileItem) => {
-    if (!agentDir) return;
-    const filePath = `${agentDir}/${item.name}`;
-    if (configFileStatus[item.name]) {
-      // 已存在 → 直接打开
-      onOpenFile?.(filePath);
-    } else {
-      // 未创建 → 创建后打开
-      handleCreateConfigFile(item);
-    }
-  }, [agentDir, configFileStatus, onOpenFile, handleCreateConfigFile]);
-
-  // ── Settings 按钮 toggle ──
-  const handleToggleSettings = useCallback(() => {
-    if (showConfigTab) {
-      // 已显示 → 切回所有文件，隐藏 tab
-      setActiveTab('files');
-      setShowConfigTab(false);
-    } else {
-      // 未显示 → 出现 tab 并激活
-      setShowConfigTab(true);
-      setActiveTab('config');
-    }
-  }, [showConfigTab]);
 
   // ── 右键菜单 + 对话框 ──
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
@@ -826,17 +629,6 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
           >
             <FolderOpen size={16} />
           </button>
-          {agentDir && (
-            <button
-              onClick={handleToggleSettings}
-              title="项目设置"
-              className={`p-1.5 rounded hover:bg-[var(--hover)] transition-colors ${
-                showConfigTab ? 'text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
-              }`}
-            >
-              <Settings size={16} />
-            </button>
-          )}
         </div>
       </div>
 
@@ -872,19 +664,6 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
             </span>
           )}
         </button>
-        {showConfigTab && (
-          <button
-            onClick={() => setActiveTab('config')}
-            className={`px-2 text-[13px] font-medium transition-colors ${
-              activeTab === 'config'
-                ? 'text-[var(--accent)] border-b-2 border-[var(--accent)]'
-                : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)] border-b-2 border-transparent'
-            }`}
-            style={{ height: 34 }}
-          >
-            项目设置
-          </button>
-        )}
       </div>
 
       {/* 内容区 */}
@@ -922,7 +701,7 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
               />
             ))
           )
-        ) : activeTab === 'files' ? (
+        ) : (
           /* ── 所有文件 tab ── */
           !agentDir ? (
             <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">未选择工作区</p>
@@ -945,44 +724,6 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
                 onContextMenu={handleContextMenu}
               />
             ))
-          )
-        ) : (
-          /* ── 项目设置 tab ── */
-          configLoading ? (
-            <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">检测文件状态…</p>
-          ) : (
-            PROJECT_CONFIG_FILES.map((item) => {
-              const exists = configFileStatus[item.name];
-              const isCreating = creatingFile === item.name;
-              return (
-                <div
-                  key={item.name}
-                  onClick={() => handleConfigFileClick(item)}
-                  className="flex items-center gap-2 px-4 py-2 hover:bg-[var(--hover)] transition-colors cursor-pointer select-none"
-                >
-                  <FileText size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-[13px] text-[var(--ink)]">{item.name}</span>
-                    <span className="ml-1.5 text-[11px] text-[var(--ink-tertiary)]">{item.desc}</span>
-                  </div>
-                  <span className="shrink-0">
-                    {isCreating ? (
-                      <RefreshCw size={12} className="animate-spin text-[var(--ink-tertiary)]" />
-                    ) : exists ? (
-                      <span className="flex items-center gap-0.5 text-[11px] text-[var(--accent)]">
-                        <Check size={12} />
-                        已创建
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-0.5 text-[11px] text-[var(--ink-tertiary)]">
-                        <Plus size={12} />
-                        创建
-                      </span>
-                    )}
-                  </span>
-                </div>
-              );
-            })
           )
         )}
       </div>
