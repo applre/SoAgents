@@ -37,11 +37,19 @@ export interface SessionMetadata {
   archived?: boolean;
 }
 
+export interface MessageAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  path: string; // 相对路径: sessionId/attachmentId.ext
+}
+
 export interface SessionMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
+  attachments?: MessageAttachment[];
   usage?: MessageUsage;
   toolCount?: number;
   durationMs?: number;

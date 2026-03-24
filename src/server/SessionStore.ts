@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, appendFileSync, readFileSync, statSync, rmdirSync } from 'node:fs';
+import { mkdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, statSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import crypto from 'node:crypto';
@@ -7,6 +7,7 @@ import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 
 const SOAGENTS_DIR = join(homedir(), '.soagents');
 const SESSIONS_DIR = join(SOAGENTS_DIR, 'sessions');
+const ATTACHMENTS_DIR = join(SOAGENTS_DIR, 'attachments');
 const SESSIONS_INDEX = join(SOAGENTS_DIR, 'sessions.json');
 const SESSIONS_LOCK = join(SOAGENTS_DIR, 'sessions.lock');
 const LOCK_MAX_RETRIES = 3;
@@ -364,4 +365,41 @@ export function unarchiveSession(sessionId: string): void {
     sessions[idx].archived = false;
     writeIndex(sessions);
   });
+}
+
+// ── 附件 API ──
+
+export function saveAttachment(
+  sessionId: string,
+  attachmentId: string,
+  _fileName: string,
+  base64Data: string,
+  mimeType: string,
+): string {
+  const sessionAttachmentsDir = join(ATTACHMENTS_DIR, sessionId);
+  if (!existsSync(sessionAttachmentsDir)) {
+    mkdirSync(sessionAttachmentsDir, { recursive: true });
+  }
+  const ext = mimeType.split('/')[1] || 'bin';
+  const safeFileName = `${attachmentId}.${ext}`;
+  const filePath = join(sessionAttachmentsDir, safeFileName);
+  const buffer = Buffer.from(base64Data, 'base64');
+  writeFileSync(filePath, buffer);
+  return `${sessionId}/${safeFileName}`;
+}
+
+export function getAttachmentPath(relativePath: string): string {
+  return join(ATTACHMENTS_DIR, relativePath);
+}
+
+export function getAttachmentDataUrl(relativePath: string, mimeType: string): string | null {
+  try {
+    const filePath = getAttachmentPath(relativePath);
+    if (!existsSync(filePath)) return null;
+    const buffer = readFileSync(filePath);
+    const base64 = buffer.toString('base64');
+    return `data:${mimeType};base64,${base64}`;
+  } catch {
+    return null;
+  }
 }

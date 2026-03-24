@@ -12,6 +12,34 @@ import type { QueuedMessageInfo } from '../../shared/types/queue';
 import type { ProviderEnv } from '../../shared/types/config';
 import { REACT_LOG_EVENT } from '../utils/frontendLogger';
 
+/** 服务端返回的附件（含 previewUrl） */
+interface ServerAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  path: string;
+  previewUrl?: string;
+}
+
+/** 将服务端消息（含 attachments）转换为前端 ContentBlock[] */
+function buildBlocksFromServer(content: string, attachments?: ServerAttachment[]): ContentBlock[] {
+  const blocks: ContentBlock[] = [];
+  if (content) {
+    blocks.push({ type: 'text' as const, text: content });
+  }
+  if (attachments?.length) {
+    for (const att of attachments) {
+      if (att.previewUrl && att.mimeType.startsWith('image/')) {
+        blocks.push({ type: 'image' as const, name: att.name, base64: att.previewUrl });
+      }
+    }
+  }
+  if (blocks.length === 0) {
+    blocks.push({ type: 'text' as const, text: '' });
+  }
+  return blocks;
+}
+
 interface Props {
   tabId: string;
   agentDir: string;
@@ -585,13 +613,13 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       // 1. 从 global sidecar 加载历史消息
       try {
         const globalUrl = await getGlobalUrl();
-        const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(globalUrl, `/chat/sessions/${sessionId}/messages`).catch(() => [] as Array<{ id: string; role: string; content: string; timestamp: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>);
+        const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string; attachments?: ServerAttachment[]; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(globalUrl, `/chat/sessions/${sessionId}/messages`).catch(() => [] as Array<{ id: string; role: string; content: string; timestamp: string; attachments?: ServerAttachment[]; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>);
         if (sessionIdRef.current !== sessionId) return; // stale
         if (msgs.length > 0) {
           const formatted = msgs.map((m) => ({
             id: m.id,
             role: m.role as 'user' | 'assistant',
-            blocks: [{ type: 'text' as const, text: m.content }],
+            blocks: buildBlocksFromServer(m.content, m.attachments),
             createdAt: new Date(m.timestamp).getTime(),
             ...(m.usage || m.durationMs ? { turnMeta: { model: m.usage?.model, inputTokens: m.usage?.inputTokens, outputTokens: m.usage?.outputTokens, cacheReadTokens: m.usage?.cacheReadTokens, cacheCreationTokens: m.usage?.cacheCreationTokens, durationMs: m.durationMs, toolCount: m.toolCount } as TurnMeta } : {}),
           }));
@@ -634,12 +662,12 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
           if (pending.question) setPendingQuestion(pending.question);
 
           // 从 sidecar 获取最新消息（覆盖 global sidecar 的历史消息）
-          const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; createdAt: number; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(url, '/chat/messages');
+          const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; createdAt: number; attachments?: ServerAttachment[]; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(url, '/chat/messages');
           if (sessionIdRef.current !== sessionId) return;
           const formatted = msgs.map((m) => ({
             id: m.id,
             role: m.role as 'user' | 'assistant',
-            blocks: [{ type: 'text' as const, text: m.content }],
+            blocks: buildBlocksFromServer(m.content, m.attachments),
             createdAt: m.createdAt,
             ...(m.usage || m.durationMs ? { turnMeta: { model: m.usage?.model, inputTokens: m.usage?.inputTokens, outputTokens: m.usage?.outputTokens, cacheReadTokens: m.usage?.cacheReadTokens, cacheCreationTokens: m.usage?.cacheCreationTokens, durationMs: m.durationMs, toolCount: m.toolCount } as TurnMeta } : {}),
           }));
@@ -698,12 +726,12 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       (async () => {
         try {
           const globalUrl = await getGlobalUrl();
-          const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(globalUrl, `/chat/sessions/${sessionId}/messages`);
+          const msgs = await apiGetJson<Array<{ id: string; role: string; content: string; timestamp: string; attachments?: ServerAttachment[]; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; model?: string }; durationMs?: number; toolCount?: number }>>(globalUrl, `/chat/sessions/${sessionId}/messages`);
           if (sessionIdRef.current !== sessionId) return;
           const formatted = msgs.map((m) => ({
             id: m.id,
             role: m.role as 'user' | 'assistant',
-            blocks: [{ type: 'text' as const, text: m.content }],
+            blocks: buildBlocksFromServer(m.content, m.attachments),
             createdAt: new Date(m.timestamp).getTime(),
             ...(m.usage || m.durationMs ? { turnMeta: { model: m.usage?.model, inputTokens: m.usage?.inputTokens, outputTokens: m.usage?.outputTokens, cacheReadTokens: m.usage?.cacheReadTokens, cacheCreationTokens: m.usage?.cacheCreationTokens, durationMs: m.durationMs, toolCount: m.toolCount } as TurnMeta } : {}),
           }));
