@@ -5,6 +5,7 @@ import WorkspaceGeneralTab from './WorkspaceGeneralTab';
 import SystemPromptsPanel, { type SystemPromptsPanelRef } from './SystemPromptsPanel';
 import SkillsCommandsTab from './SkillsCommandsTab';
 import SkillDetailPanel, { type SkillDetailPanelRef } from './SkillDetailPanel';
+import CommandDetailPanel, { type CommandDetailPanelRef } from './CommandDetailPanel';
 
 type Tab = 'general' | 'system-prompts' | 'skills';
 type DetailView =
@@ -30,6 +31,7 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
   const [detailView, setDetailView] = useState<DetailView>({ type: 'none' });
   const systemPromptsRef = useRef<SystemPromptsPanelRef>(null);
   const skillDetailRef = useRef<SkillDetailPanelRef>(null);
+  const commandDetailRef = useRef<CommandDetailPanelRef>(null);
 
   const isDetail = detailView.type !== 'none';
 
@@ -144,6 +146,17 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
             <SkillDetailPanel
               ref={skillDetailRef}
               name={detailView.name}
+              scope={detailView.scope}
+              agentDir={agentDir}
+              isNew={detailView.isNew}
+              onBack={() => setDetailView({ type: 'none' })}
+              onDeleted={() => setDetailView({ type: 'none' })}
+            />
+          )}
+          {detailView.type === 'command' && (
+            <CommandDetailPanel
+              ref={commandDetailRef}
+              fileName={detailView.name}
               scope={detailView.scope}
               agentDir={agentDir}
               isNew={detailView.isNew}
