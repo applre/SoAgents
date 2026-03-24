@@ -4,6 +4,7 @@ import { X, ChevronLeft } from 'lucide-react';
 import WorkspaceGeneralTab from './WorkspaceGeneralTab';
 import SystemPromptsPanel, { type SystemPromptsPanelRef } from './SystemPromptsPanel';
 import SkillsCommandsTab from './SkillsCommandsTab';
+import SkillDetailPanel, { type SkillDetailPanelRef } from './SkillDetailPanel';
 
 type Tab = 'general' | 'system-prompts' | 'skills';
 type DetailView =
@@ -28,6 +29,7 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
   const [activeTab, setActiveTab] = useState<Tab>('general');
   const [detailView, setDetailView] = useState<DetailView>({ type: 'none' });
   const systemPromptsRef = useRef<SystemPromptsPanelRef>(null);
+  const skillDetailRef = useRef<SkillDetailPanelRef>(null);
 
   const isDetail = detailView.type !== 'none';
 
@@ -136,6 +138,17 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
               onNewSkill={() => setDetailView({ type: 'skill', name: '', scope: 'project', isNew: true })}
               onNewCommand={() => setDetailView({ type: 'command', name: '', scope: 'project', isNew: true })}
               onNewAgent={() => setDetailView({ type: 'agent', name: '', scope: 'project', isNew: true })}
+            />
+          )}
+          {detailView.type === 'skill' && (
+            <SkillDetailPanel
+              ref={skillDetailRef}
+              name={detailView.name}
+              scope={detailView.scope}
+              agentDir={agentDir}
+              isNew={detailView.isNew}
+              onBack={() => setDetailView({ type: 'none' })}
+              onDeleted={() => setDetailView({ type: 'none' })}
             />
           )}
         </div>
