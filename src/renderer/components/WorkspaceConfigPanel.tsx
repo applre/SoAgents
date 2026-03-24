@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { X, ChevronLeft } from 'lucide-react';
 import WorkspaceGeneralTab from './WorkspaceGeneralTab';
+import SystemPromptsPanel, { type SystemPromptsPanelRef } from './SystemPromptsPanel';
 
 type Tab = 'general' | 'system-prompts' | 'skills';
 type DetailView =
@@ -25,6 +26,7 @@ interface Props {
 export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('general');
   const [detailView, setDetailView] = useState<DetailView>({ type: 'none' });
+  const systemPromptsRef = useRef<SystemPromptsPanelRef>(null);
 
   const isDetail = detailView.type !== 'none';
 
@@ -122,9 +124,7 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
             <WorkspaceGeneralTab agentDir={agentDir} />
           )}
           {activeTab === 'system-prompts' && (
-            <div className="text-[14px] text-[var(--ink-secondary)]">
-              系统提示词配置（即将实现）
-            </div>
+            <SystemPromptsPanel ref={systemPromptsRef} agentDir={agentDir} />
           )}
           {activeTab === 'skills' && (
             <div className="text-[14px] text-[var(--ink-secondary)]">
