@@ -10,6 +10,10 @@ import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
 import type { MessageAttachment } from '../shared/types/session';
 import { processImage } from './utils/imageResize';
+import { getBuiltinMcp } from './tools/builtin-mcp-registry';
+import { getOAuthToken } from './mcp-oauth';
+import './tools/gemini-image-tool';
+import './tools/edge-tts-tool';
 
 interface ChatImage {
   name: string;
@@ -115,12 +119,40 @@ interface BuildMcpServersInput {
   servers: McpServerDefinition[];
   serverEnvMap: Record<string, Record<string, string>>;  // from MCPConfigStore.getServerEnv per server
   serverArgsMap: Record<string, string[]>;               // from ConfigStore.readConfig().mcpServerArgs
+  sessionId?: string;   // for builtin MCP context
+  workspace?: string;   // for builtin MCP context
 }
 
 function buildSdkMcpServers(input: BuildMcpServersInput): Record<string, unknown> {
   const result: Record<string, unknown> = {};
 
+  // --- Pattern 1: Context-injected MCPs (auto-added based on session context) ---
+  // Future: cron-tools injection when cronContext.taskId exists
+  // Example:
+  //   const cronContext = getCronTaskContext();
+  //   if (cronContext?.taskId) {
+  //     result['cron-tools'] = cronToolsServer;
+  //   }
+
+  // --- Pattern 2: Builtin registry MCPs (command='__builtin__') ---
+  // These are user-toggled in Settings but run in-process via the registry.
+  // Filter from input.servers: command === '__builtin__' → look up in registry
+  for (const server of input.servers) {
+    if (server.command === '__builtin__') {
+      const entry = getBuiltinMcp(server.id);
+      if (entry) {
+        const serverEnv = input.serverEnvMap[server.id] ?? {};
+        entry.configure(serverEnv, { sessionId: input.sessionId ?? '', workspace: input.workspace });
+        result[server.id] = entry.server;
+        continue;
+      }
+    }
+  }
+
+  // --- Pattern 3: External MCPs (stdio/sse/http) ---
   for (const cfg of input.servers) {
+    if (cfg.command === '__builtin__') continue; // already handled above
+
     // Skip MCP servers that require config but aren't configured yet
     if (cfg.requiresConfig?.length) {
       const serverEnv = input.serverEnvMap[cfg.id] ?? {};
@@ -160,7 +192,23 @@ function buildSdkMcpServers(input: BuildMcpServersInput): Record<string, unknown
         const serverEnv = input.serverEnvMap[cfg.id] ?? {};
         url = url.replace(/\{\{(\w+)\}\}/g, (_, key) => serverEnv[key] ?? '');
       }
-      result[cfg.id] = { type: cfg.type, url };
+
+      // Inject OAuth token as Authorization header if available
+      const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
+      const oauthToken = getOAuthToken(cfg.id);
+      if (oauthToken && !headers['Authorization'] && !headers['authorization']) {
+        const isExpired = oauthToken.expiresAt && oauthToken.expiresAt < Date.now() + 60000;
+        if (!isExpired) {
+          headers['Authorization'] = `${oauthToken.tokenType || 'Bearer'} ${oauthToken.accessToken}`;
+          console.log(`[agent] MCP ${cfg.id}: Injecting OAuth token`);
+        } else {
+          console.warn(`[agent] MCP ${cfg.id}: OAuth token expired, skipping injection`);
+        }
+      }
+
+      result[cfg.id] = Object.keys(headers).length > 0
+        ? { type: cfg.type, url, headers }
+        : { type: cfg.type, url };
     }
   }
 
@@ -511,6 +559,8 @@ class SessionRunner {
           servers: pushedMcp,
           serverEnvMap,
           serverArgsMap: ConfigStore.readConfig().mcpServerArgs ?? {},
+          sessionId: this.sessionId,
+          workspace: this.sessionConfig?.agentDir,
         });
 
         if (Object.keys(mcpConfig).length > 0) {
@@ -721,6 +771,8 @@ class SessionRunner {
             servers: mcpFiltered,
             serverEnvMap,
             serverArgsMap: ConfigStore.readConfig().mcpServerArgs ?? {},
+            sessionId: this.sessionId,
+            workspace: config.agentDir,
           })
         : undefined;
 
@@ -733,6 +785,11 @@ class SessionRunner {
         const parts = toolName.split('__');
         if (parts.length < 3) return { allowed: false, reason: '无效的 MCP 工具名称' };
         const serverId = parts[1];
+
+        // Trusted built-in MCPs: always allow (e.g., future cron-tools)
+        const TRUSTED_MCP_IDS = new Set<string>(['cron-tools']);
+        if (TRUSTED_MCP_IDS.has(serverId)) return { allowed: true };
+
         if (enabledMcpServerIds.size === 0) return { allowed: false, reason: 'MCP 工具已被禁用' };
         if (enabledMcpServerIds.has(serverId)) return { allowed: true };
         return { allowed: false, reason: `MCP 服务「${serverId}」未启用` };
@@ -778,6 +835,11 @@ class SessionRunner {
         const mcpCheck = checkMcpToolPermission(toolName);
         if (!mcpCheck.allowed) {
           return { behavior: 'deny' as const, message: mcpCheck.reason };
+        }
+
+        // 0.1 Built-in trusted MCPs: skip user confirmation
+        if (toolName.startsWith('mcp__cron-tools__')) {
+          return { behavior: 'allow' as const, updatedInput: toolInput };
         }
 
         // 0.5 ExitPlanMode — 用户审批计划

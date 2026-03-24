@@ -798,6 +798,104 @@ Bun.serve({
       return Response.json({ ok: true });
     }
 
+    // ── MCP OAuth API ──
+
+    // POST /api/mcp/oauth/start - Start OAuth flow for an MCP server
+    if (req.method === 'POST' && url.pathname === '/api/mcp/oauth/start') {
+      try {
+        const payload = await req.json() as {
+          serverId: string;
+          serverUrl: string;
+          clientId: string;
+          clientSecret?: string;
+          scopes?: string[];
+          authorizationUrl?: string;
+          tokenUrl?: string;
+        };
+
+        if (!payload.serverId || !payload.serverUrl || !payload.clientId) {
+          return Response.json({ success: false, error: 'Missing serverId, serverUrl, or clientId' }, { status: 400 });
+        }
+
+        const { startOAuthFlow } = await import('./mcp-oauth');
+        const manualMetadata = (payload.authorizationUrl && payload.tokenUrl)
+          ? { authorizationUrl: payload.authorizationUrl, tokenUrl: payload.tokenUrl }
+          : undefined;
+
+        const { authUrl, waitForToken } = await startOAuthFlow(
+          payload.serverId,
+          payload.serverUrl,
+          { clientId: payload.clientId, clientSecret: payload.clientSecret, scopes: payload.scopes },
+          manualMetadata,
+        );
+
+        // Don't await the token — return the auth URL immediately
+        // The token will be stored when the callback is received
+        waitForToken.then((token) => {
+          if (token) {
+            console.log(`[api/mcp/oauth] Token obtained for ${payload.serverId}`);
+          } else {
+            console.warn(`[api/mcp/oauth] OAuth flow failed or was cancelled for ${payload.serverId}`);
+          }
+        });
+
+        return Response.json({ success: true, authUrl });
+      } catch (error) {
+        console.error('[api/mcp/oauth/start] Error:', error);
+        return Response.json(
+          { success: false, error: error instanceof Error ? error.message : 'Failed to start OAuth flow' },
+          { status: 500 }
+        );
+      }
+    }
+
+    // GET /api/mcp/oauth/status/:id - Get OAuth status for an MCP server
+    if (req.method === 'GET' && url.pathname.startsWith('/api/mcp/oauth/status/')) {
+      try {
+        const serverId = decodeURIComponent(url.pathname.slice('/api/mcp/oauth/status/'.length));
+        const { getOAuthStatus, getOAuthToken } = await import('./mcp-oauth');
+        const status = getOAuthStatus(serverId);
+        const token = getOAuthToken(serverId);
+        return Response.json({
+          success: true,
+          status,
+          hasToken: !!token,
+          expiresAt: token?.expiresAt,
+        });
+      } catch (error) {
+        console.error('[api/mcp/oauth/status] Error:', error);
+        return Response.json({ success: false, error: String(error) }, { status: 500 });
+      }
+    }
+
+    // POST /api/mcp/oauth/refresh - Refresh OAuth token for an MCP server
+    if (req.method === 'POST' && url.pathname === '/api/mcp/oauth/refresh') {
+      try {
+        const payload = await req.json() as { serverId: string };
+        const { refreshOAuthToken } = await import('./mcp-oauth');
+        const token = await refreshOAuthToken(payload.serverId);
+        return Response.json({ success: !!token, refreshed: !!token });
+      } catch (error) {
+        console.error('[api/mcp/oauth/refresh] Error:', error);
+        return Response.json({ success: false, error: String(error) }, { status: 500 });
+      }
+    }
+
+    // DELETE /api/mcp/oauth/token - Revoke/delete OAuth token for an MCP server
+    if (req.method === 'DELETE' && url.pathname === '/api/mcp/oauth/token') {
+      try {
+        const payload = await req.json() as { serverId: string };
+        const { revokeOAuthToken } = await import('./mcp-oauth');
+        revokeOAuthToken(payload.serverId);
+        return Response.json({ success: true });
+      } catch (error) {
+        console.error('[api/mcp/oauth/token] Error:', error);
+        return Response.json({ success: false, error: String(error) }, { status: 500 });
+      }
+    }
+
+    // ── END MCP OAuth API ──
+
     // Proxy hot-reload
     if (req.method === 'POST' && url.pathname === '/api/proxy/set') {
       try {

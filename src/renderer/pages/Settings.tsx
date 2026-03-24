@@ -42,6 +42,7 @@ interface McpServerDefinition {
   requiresConfig?: string[];
   configHint?: string;
   websiteUrl?: string;
+  oauth?: { clientId: string; clientSecret?: string; scopes?: string[] };
   status?: 'enabled' | 'connecting' | 'pending' | 'needs-auth' | 'error' | 'disabled';
 }
 
@@ -1949,6 +1950,11 @@ function MCPTab() {
                   {showNeedsConfig && (
                     <p className="mt-0.5 text-xs text-amber-600">
                       需要配置 API Key
+                    </p>
+                  )}
+                  {srv.oauth && (
+                    <p className="mt-0.5 text-xs text-blue-600">
+                      需要 OAuth 授权
                     </p>
                   )}
                   {toggleErrors[srv.id] && (

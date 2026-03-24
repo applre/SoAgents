@@ -42,6 +42,28 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
     websiteUrl: 'https://app.tavily.com/home',
     configHint: '免费注册即可获取 API Key（1000 次/月，无需信用卡）',
   },
+  {
+    id: 'gemini-image',
+    name: 'Gemini 图片生成',
+    description: '支持图片生成与多轮编辑（基于 Gemini）',
+    type: 'stdio',
+    command: '__builtin__',
+    args: [],
+    isBuiltin: true,
+    requiresConfig: ['GEMINI_API_KEY'],
+    websiteUrl: 'https://aistudio.google.com/apikey',
+    configHint: '在 Google AI Studio 一键创建 API Key',
+  },
+  {
+    id: 'edge-tts',
+    name: 'Edge TTS 语音合成',
+    description: '免费文字转语音，支持 400+ 语音（基于 Microsoft Edge TTS，无需 API Key）',
+    type: 'stdio',
+    command: '__builtin__',
+    args: [],
+    isBuiltin: true,
+    isFree: true,
+  },
 ];
 
 export const MCP_DISCOVERY_LINKS = [

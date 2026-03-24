@@ -13,7 +13,27 @@ export interface McpServerDefinition {
   requiresConfig?: string[];   // e.g. ['GEMINI_API_KEY']
   configHint?: string;         // UI hint for config
   websiteUrl?: string;         // where to get API key
+  oauth?: McpOAuthConfig;
 }
+
+// ── OAuth 2.0 ──
+
+export interface McpOAuthConfig {
+  clientId: string;
+  clientSecret?: string;
+  scopes?: string[];
+}
+
+export interface McpOAuthToken {
+  accessToken: string;
+  refreshToken?: string;
+  tokenType: string;
+  expiresAt: number;
+  serverUrl: string;
+  clientId: string;
+}
+
+export type McpOAuthStatus = 'disconnected' | 'connecting' | 'connected' | 'expired';
 
 // ── MCP Enable Error ──
 
