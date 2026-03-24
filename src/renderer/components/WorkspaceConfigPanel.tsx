@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { X, ChevronLeft } from 'lucide-react';
 import WorkspaceGeneralTab from './WorkspaceGeneralTab';
 import SystemPromptsPanel, { type SystemPromptsPanelRef } from './SystemPromptsPanel';
+import SkillsCommandsTab from './SkillsCommandsTab';
 
 type Tab = 'general' | 'system-prompts' | 'skills';
 type DetailView =
@@ -126,10 +127,16 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
           {activeTab === 'system-prompts' && (
             <SystemPromptsPanel ref={systemPromptsRef} agentDir={agentDir} />
           )}
-          {activeTab === 'skills' && (
-            <div className="text-[14px] text-[var(--ink-secondary)]">
-              技能管理（即将实现）
-            </div>
+          {activeTab === 'skills' && detailView.type === 'none' && (
+            <SkillsCommandsTab
+              agentDir={agentDir}
+              onOpenSkill={(name, scope) => setDetailView({ type: 'skill', name, scope })}
+              onOpenCommand={(name, scope) => setDetailView({ type: 'command', name, scope })}
+              onOpenAgent={(name, scope) => setDetailView({ type: 'agent', name, scope })}
+              onNewSkill={() => setDetailView({ type: 'skill', name: '', scope: 'project', isNew: true })}
+              onNewCommand={() => setDetailView({ type: 'command', name: '', scope: 'project', isNew: true })}
+              onNewAgent={() => setDetailView({ type: 'agent', name: '', scope: 'project', isNew: true })}
+            />
           )}
         </div>
       </div>
