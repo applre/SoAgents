@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, AtSign, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, AtSign, ExternalLink, Pencil, Trash2, Settings } from 'lucide-react';
 import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import DiffViewer from './DiffViewer';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu';
 import RenameDialog from './RenameDialog';
 import ConfirmDialog from './ConfirmDialog';
+import WorkspaceConfigPanel from './WorkspaceConfigPanel';
 
 interface FileEntry {
   name: string;
@@ -278,6 +279,7 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
   showHiddenRef.current = showHidden;
 
   const [activeTab, setActiveTab] = useState<'files' | 'changed'>('files');
+  const [showAgentConfig, setShowAgentConfig] = useState(false);
 
   // ── 变动文件 tab 状态 ──
   const [changedFiles, setChangedFiles] = useState<ChangedFileEntry[]>([]);
@@ -629,6 +631,13 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
           >
             <FolderOpen size={16} />
           </button>
+          <button
+            onClick={() => setShowAgentConfig(true)}
+            title="Agent 配置"
+            className="p-1.5 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
+          >
+            <Settings size={16} />
+          </button>
         </div>
       </div>
 
@@ -763,6 +772,15 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
             setDialog(null);
           }}
           onCancel={() => setDialog(null)}
+        />
+      )}
+
+      {/* Agent 配置面板 */}
+      {agentDir && (
+        <WorkspaceConfigPanel
+          agentDir={agentDir}
+          isOpen={showAgentConfig}
+          onClose={() => setShowAgentConfig(false)}
         />
       )}
     </div>
