@@ -682,7 +682,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
     let run_id = uuid::Uuid::new_v4().to_string();
 
     // Pre-execution setup: check guard, create run record, update task state
-    let (task_name, prompt, working_dir, provider_env, model, permission_mode, app_handle) = {
+    let (task_name, prompt, working_dir, provider_env, model, permission_mode, task_run_mode, task_persistent_session_id, app_handle) = {
         let mut mgr = state.write().await;
 
         // Re-entry guard
@@ -736,7 +736,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             let _ = app_handle.emit("cron:task-updated", t);
         }
 
-        (task.name, task.prompt, task.working_directory, task.provider_env, task.model, task.permission_mode, app_handle)
+        (task.name, task.prompt, task.working_directory, task.provider_env, task.model, task.permission_mode, task.run_mode, task.persistent_session_id, app_handle)
     };
 
     // Channel to receive sessionId as soon as session is created (before execution)
@@ -787,6 +787,8 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             model.as_deref(),
             permission_mode.as_deref(),
             Some(sid_tx),
+            task_run_mode,
+            task_persistent_session_id.as_deref(),
         ).await;
 
     // Post-execution: update run + task state
@@ -806,7 +808,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             id: run_id,
             task_id: task_id.clone(),
             task_name,
-            session_id,
+            session_id: session_id.clone(),
             status: status.clone(),
             started_at_ms: now,
             finished_at_ms: Some(finished_at),
@@ -850,6 +852,23 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             task.updated_at_ms = Utc::now().timestamp_millis();
         }
 
+        // For single_session mode, save the session ID for reuse
+        if task_run_mode == RunMode::SingleSession {
+            if let Some(ref sid) = session_id {
+                if let Some(t) = mgr.get_task_mut(&task_id) {
+                    if t.persistent_session_id.is_none() {
+                        t.persistent_session_id = Some(sid.clone());
+                        log::info!("[cron_task] Saved persistent_session_id '{}' for task '{}'", sid, task_id);
+                    }
+                }
+            }
+        }
+
+        // Increment execution count
+        if let Some(t) = mgr.get_task_mut(&task_id) {
+            t.execution_count += 1;
+        }
+
         mgr.save_tasks();
         mgr.unmark_executing(&task_id);
 
@@ -878,6 +897,8 @@ async fn execute_with_sidecar(
     model: Option<&str>,
     permission_mode: Option<&str>,
     session_id_sender: Option<tokio::sync::oneshot::Sender<String>>,
+    run_mode: RunMode,
+    persistent_session_id: Option<&str>,
 ) -> Result<String, String> {
     let bun_path = sidecar::find_bun_executable(app_handle)?;
     let script_path = sidecar::find_server_script(app_handle)?;
@@ -886,42 +907,56 @@ async fn execute_with_sidecar(
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
-    // Step 1: Create session via global sidecar to get sessionId first
-    let global_port = {
-        let sidecar_state: tauri::State<SidecarState> = app_handle.state();
-        let mut mgr = sidecar_state.lock().map_err(|e| format!("Lock error: {}", e))?;
-        mgr.get_port(sidecar::GLOBAL_SIDECAR_ID)
-            .ok_or_else(|| "Global sidecar not running".to_string())?
+    // Step 1: Get or create session ID
+    let session_id = match (run_mode, persistent_session_id) {
+        (RunMode::SingleSession, Some(existing_sid)) => {
+            log::info!(
+                "[cron_task] Reusing session '{}' for task '{}' (single_session mode)",
+                existing_sid, task_name
+            );
+            existing_sid.to_string()
+        }
+        _ => {
+            // Create new session (new_session mode, or first run of single_session)
+            let global_port = {
+                let sidecar_state: tauri::State<SidecarState> = app_handle.state();
+                let mut mgr = sidecar_state.lock().map_err(|e| format!("Lock error: {}", e))?;
+                mgr.get_port(sidecar::GLOBAL_SIDECAR_ID)
+                    .ok_or_else(|| "Global sidecar not running".to_string())?
+            };
+
+            let create_url = format!("http://127.0.0.1:{}/sessions/create", global_port);
+            let create_resp = client
+                .post(&create_url)
+                .json(&serde_json::json!({
+                    "agentDir": working_dir,
+                    "title": prompt.chars().take(50).collect::<String>(),
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("Failed to create session: {}", e))?;
+
+            if !create_resp.status().is_success() {
+                return Err(format!("Failed to create session: {}", create_resp.status()));
+            }
+
+            let create_json: serde_json::Value = create_resp.json().await
+                .map_err(|e| format!("Failed to parse create session response: {}", e))?;
+            let sid = create_json
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "No sessionId in create response".to_string())?
+                .to_string();
+
+            log::info!(
+                "[cron_task] Created session '{}' for task '{}'",
+                sid,
+                task_name
+            );
+
+            sid
+        }
     };
-
-    let create_url = format!("http://127.0.0.1:{}/sessions/create", global_port);
-    let create_resp = client
-        .post(&create_url)
-        .json(&serde_json::json!({
-            "agentDir": working_dir,
-            "title": prompt.chars().take(50).collect::<String>(),
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to create session: {}", e))?;
-
-    if !create_resp.status().is_success() {
-        return Err(format!("Failed to create session: {}", create_resp.status()));
-    }
-
-    let create_json: serde_json::Value = create_resp.json().await
-        .map_err(|e| format!("Failed to parse create session response: {}", e))?;
-    let session_id = create_json
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "No sessionId in create response".to_string())?
-        .to_string();
-
-    log::info!(
-        "[cron_task] Created session '{}' for task '{}'",
-        session_id,
-        task_name
-    );
 
     // Notify execute_task immediately with sessionId
     if let Some(tx) = session_id_sender {
