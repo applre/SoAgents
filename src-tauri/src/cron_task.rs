@@ -31,6 +31,30 @@ pub enum Schedule {
     },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    SingleSession,
+    NewSession,
+}
+
+impl Default for RunMode {
+    fn default() -> Self {
+        RunMode::NewSession
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndConditions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_executions: Option<u32>,
+    #[serde(default)]
+    pub ai_can_exit: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskProviderEnv {
@@ -70,6 +94,16 @@ pub struct ScheduledTask {
     pub permission_mode: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    #[serde(default)]
+    pub run_mode: RunMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_conditions: Option<EndConditions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistent_session_id: Option<String>,
+    #[serde(default)]
+    pub execution_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_minutes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +120,12 @@ pub struct ScheduledTaskInput {
     pub model: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub run_mode: Option<RunMode>,
+    #[serde(default)]
+    pub end_conditions: Option<EndConditions>,
+    #[serde(default)]
+    pub timeout_minutes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +240,11 @@ impl CronTaskManager {
             permission_mode: input.permission_mode,
             created_at_ms: now,
             updated_at_ms: now,
+            run_mode: input.run_mode.unwrap_or_default(),
+            end_conditions: input.end_conditions,
+            persistent_session_id: None,
+            execution_count: 0,
+            timeout_minutes: input.timeout_minutes,
         };
 
         self.tasks.insert(id, task.clone());
@@ -222,6 +267,9 @@ impl CronTaskManager {
         task.model = input.model;
         task.permission_mode = input.permission_mode;
         task.updated_at_ms = now;
+        task.run_mode = input.run_mode.unwrap_or(task.run_mode);
+        task.end_conditions = input.end_conditions.or(task.end_conditions.take());
+        task.timeout_minutes = input.timeout_minutes.or(task.timeout_minutes);
 
         if input.enabled {
             task.state.next_run_at_ms = calculate_next_run_time(&input.schedule, task.state.last_run_at_ms)?;
