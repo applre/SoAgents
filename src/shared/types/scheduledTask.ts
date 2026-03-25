@@ -1,5 +1,13 @@
 import type { ProviderEnv } from './config';
 
+export type RunMode = 'single_session' | 'new_session';
+
+export interface EndConditions {
+  deadline?: string;
+  maxExecutions?: number;
+  aiCanExit: boolean;
+}
+
 export interface Schedule {
   type: 'at' | 'every' | 'cron';
   datetime?: string;   // ISO 8601, when type = 'at'
@@ -27,6 +35,11 @@ export interface ScheduledTask {
   providerEnv?: ProviderEnv;
   model?: string;
   permissionMode?: string;
+  runMode: RunMode;
+  endConditions?: EndConditions;
+  persistentSessionId?: string | null;
+  executionCount: number;
+  timeoutMinutes?: number;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -40,6 +53,9 @@ export interface ScheduledTaskInput {
   providerEnv?: ProviderEnv;
   model?: string;
   permissionMode?: string;
+  runMode?: RunMode;
+  endConditions?: EndConditions;
+  timeoutMinutes?: number;
 }
 
 export interface ScheduledTaskRun {
