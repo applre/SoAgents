@@ -8,27 +8,47 @@
 
 ---
 
-## [0.1.8] - 2026-03-22
+## [0.1.8] - 2026-03-25
 
 ### 新增
 
+#### MCP 功能增强（Phase 1-4）
+- **Bug 修复（Phase 1）**：修复切换服务器时表单不同步、编辑覆盖 enabled 状态、错误信息不显示等问题
+- **质量改进（Phase 2）**：版本锁定、Playwright 结果精简、stdio 预热优化、JSON 编辑模式、KeyValue 编辑器、扩展状态徽章
+- **架构增强（Phase 3）**：提取 `buildSdkMcpServers()`、`resolveStdioCommand()` 运行时回退、Session 预热、前端 `mcpService` 层、Playwright 配置面板、模态框毛玻璃背景
+- **新能力（Phase 4）**：内置 MCP 注册表、Gemini Image 内置 MCP、Edge TTS 内置 MCP、OAuth 2.0 PKCE 认证流程、OAuth Token 自动注入
+- **JSON 导入兼容**：MCPEditModal JSON 模式支持 Claude Desktop 格式自动解包
+
+#### 工作区配置系统
+- **Agent 配置面板**：通用设置、系统提示词（CLAUDE.md + Rules）、技能/命令/Agent 管理
+- **后端 API**：CLAUDE.md 读写、Rules CRUD、CommandStore 斜杠命令管理、AgentStore 工作区 Agent 管理
+- **斜杠命令菜单增强**：集成自定义命令和技能
+
+#### 图片处理与附件
+- **图片缩放**：jimp + WebP 支持，超过 1568px 自动缩放，超长图自动切片
+- **消息附件**：支持图片附件存储和历史记录渲染
+
+#### UI 改进
+- **SessionTabBar 重设计**：Chrome 风格标签页（圆角顶部、分隔线、hover 关闭按钮）
+- **设计系统更新**：强调色更新为 `#c26d3a`，Markdown 渲染组件提取
+- **系统托盘**：最小化到托盘功能
+- **流式状态计时器**：显示生成耗时，session 淡入动画
+
+#### 任务中心
+- **定时任务过滤**：按实际运行记录过滤定时任务创建的 session
+
 #### Sidecar 进程管理重构
-- **非阻塞进程回收**：`kill_process` 从同步阻塞改为 SIGTERM + 后台线程 `waitpid(WNOHANG)` 轮询，超时 5 秒后 SIGKILL，避免阻塞 Mutex
-- **alive_check 健康检测**：`wait_for_health` 增加存活检测闭包，TCP 健康检查期间同步检测进程是否崩溃，快速失败而非等待超时
-- **start_sidecar 重构为独立函数**：从 `SidecarManager` 方法提取为接收 `&ManagedSidecarState` 的自由函数，健康检查期间释放锁避免阻塞其他操作
+- **非阻塞进程回收**：SIGTERM + 后台 waitpid 轮询，超时 SIGKILL
+- **alive_check 健康检测**：TCP 健康检查期间检测进程崩溃，快速失败
 
 #### Background Completion（后台完成）
-- **Rust 层完整实现**：关闭 Tab 时 AI 继续在后台运行直到完成
-  - `start_background_completion`：添加 `BackgroundCompletion` owner + 启动轮询线程
-  - `poll_background_completion`：每 2 秒检查 `/agent/state`，完成后自动释放 owner 并回收 sidecar
-  - `cancel_background_completion`：重新打开 session 时取消后台轮询
-  - 安全机制：60 分钟最大时长、连续 3 次 HTTP 失败自动终止
-- **前端集成**：
-  - `tauriClient.ts` 新增 `startBackgroundCompletion` / `cancelBackgroundCompletion` / `getBackgroundSessions` API
-  - `handleCloseTab`：正在生成时自动启动后台完成 + Toast 提示
-  - `stopSidecarCleanup`：空闲回收时若 AI 运行中，启动后台完成而非直接停止
-  - Tab 重连时自动取消后台完成，由前端接管
-  - 监听 `session:background-complete` 事件刷新 session 列表
+- 关闭 Tab 时 AI 继续在后台运行直到完成
+- 安全机制：60 分钟最大时长、连续 3 次 HTTP 失败自动终止
+
+### 修复
+- 修复 WorkspaceConfigPanel 返回按钮无响应
+- 修复 SessionTabBar 标题栏拖拽失效
+- 修复侧边栏重命名 session 延迟（乐观更新）
 
 ---
 
