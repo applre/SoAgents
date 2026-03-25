@@ -349,20 +349,42 @@ impl CronTaskManager {
 
     // ── Tick: collect due tasks ──
 
-    pub fn collect_due_tasks(&self) -> Vec<String> {
+    pub fn collect_due_tasks(&mut self) -> Vec<String> {
         let now = Utc::now().timestamp_millis();
         let mut due = Vec::new();
+        let mut to_disable = Vec::new();
 
         for (id, task) in &self.tasks {
-            if !task.enabled {
+            if !task.enabled { continue; }
+            if self.executing_tasks.contains(id) { continue; }
+
+            if let Some(reason) = check_end_conditions(task) {
+                log::info!("[cron_task] Task {} end condition met in scheduler: {}", id, reason);
+                to_disable.push(id.clone());
                 continue;
             }
-            if self.executing_tasks.contains(id) {
-                continue;
-            }
+
             if let Some(next_run) = task.state.next_run_at_ms {
                 if next_run <= now {
                     due.push(id.clone());
+                }
+            }
+        }
+
+        for id in &to_disable {
+            if let Some(task) = self.tasks.get_mut(id) {
+                task.enabled = false;
+                task.state.next_run_at_ms = None;
+                task.updated_at_ms = Utc::now().timestamp_millis();
+            }
+        }
+        if !to_disable.is_empty() {
+            self.save_tasks();
+            if let Some(ref app) = self.app_handle {
+                for id in &to_disable {
+                    if let Some(task) = self.tasks.get(id) {
+                        let _ = app.emit("cron:task-updated", task);
+                    }
                 }
             }
         }
@@ -627,6 +649,25 @@ fn calculate_next_run_time(schedule: &Schedule, last_run_at_ms: Option<i64>) -> 
     }
 }
 
+/// Returns Some(reason) if the task should be stopped, None otherwise.
+fn check_end_conditions(task: &ScheduledTask) -> Option<String> {
+    if let Some(ref ec) = task.end_conditions {
+        if let Some(ref deadline_str) = ec.deadline {
+            if let Ok(deadline) = chrono::DateTime::parse_from_rfc3339(deadline_str) {
+                if Utc::now() >= deadline.with_timezone(&Utc) {
+                    return Some("Deadline reached".to_string());
+                }
+            }
+        }
+        if let Some(max) = ec.max_executions {
+            if task.execution_count >= max {
+                return Some(format!("Max executions reached ({}/{})", task.execution_count, max));
+            }
+        }
+    }
+    None
+}
+
 // ── Cron Task Loop (free function, runs in tokio::spawn) ──
 
 pub async fn cron_task_loop(state: CronTaskState) {
@@ -659,7 +700,7 @@ pub async fn cron_task_loop(state: CronTaskState) {
 
         // Collect due tasks
         let due_task_ids = {
-            let mgr = state.read().await;
+            let mut mgr = state.write().await;
             mgr.collect_due_tasks()
         };
 
@@ -867,6 +908,16 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
         // Increment execution count
         if let Some(t) = mgr.get_task_mut(&task_id) {
             t.execution_count += 1;
+        }
+
+        if let Some(t) = mgr.get_task(&task_id) {
+            if let Some(reason) = check_end_conditions(t) {
+                log::info!("[cron_task] Task {} auto-stopped: {}", task_id, reason);
+                if let Some(t) = mgr.get_task_mut(&task_id) {
+                    t.enabled = false;
+                    t.state.next_run_at_ms = None;
+                }
+            }
         }
 
         mgr.save_tasks();
