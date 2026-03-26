@@ -118,6 +118,61 @@ export default function TaskDetail({ onNavigateToSession }: Props) {
                 {selectedTask.workingDirectory}
               </span>
             </div>
+            <div className="flex justify-between items-center">
+              <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>运行模式</span>
+              <span
+                className="text-[11px] px-1.5 py-0.5 rounded-full font-medium"
+                style={{
+                  color: selectedTask.runMode === 'single_session' ? 'var(--accent)' : 'var(--ink-secondary)',
+                  background: selectedTask.runMode === 'single_session'
+                    ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
+                    : 'var(--surface)',
+                }}
+              >
+                {selectedTask.runMode === 'single_session' ? '持续会话' : '独立会话'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>已执行次数</span>
+              <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+                {selectedTask.executionCount} 次
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>超时限制</span>
+              <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+                {selectedTask.timeoutMinutes != null ? `${selectedTask.timeoutMinutes} 分钟` : '10 分钟（默认）'}
+              </span>
+            </div>
+            {selectedTask.endConditions && (
+              <>
+                {selectedTask.endConditions.maxExecutions != null && (
+                  <div className="flex justify-between">
+                    <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>最多执行</span>
+                    <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+                      {selectedTask.endConditions.maxExecutions} 次
+                      <span className="ml-1 text-[12px]" style={{ color: 'var(--ink-tertiary)' }}>
+                        （已执行 {selectedTask.executionCount}/{selectedTask.endConditions.maxExecutions}）
+                      </span>
+                    </span>
+                  </div>
+                )}
+                {selectedTask.endConditions.deadline && (
+                  <div className="flex justify-between">
+                    <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>截止时间</span>
+                    <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+                      {selectedTask.endConditions.deadline.replace('T', ' ').slice(0, 16)}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span className="text-[13px]" style={{ color: 'var(--ink-tertiary)' }}>AI 可自主退出</span>
+                  <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>
+                    {selectedTask.endConditions.aiCanExit ? '是' : '否'}
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         </div>
 

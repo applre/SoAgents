@@ -110,9 +110,19 @@ export default function TaskList() {
 
               {/* 任务信息 */}
               <div className="flex-1 min-w-0">
-                <p className="text-[14px] font-medium truncate" style={{ color: 'var(--ink)' }}>
-                  {task.name}
-                </p>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <p className="text-[14px] font-medium truncate" style={{ color: 'var(--ink)' }}>
+                    {task.name}
+                  </p>
+                  {task.runMode === 'single_session' && (
+                    <span
+                      className="shrink-0 text-[11px] px-1.5 py-0.5 rounded-full"
+                      style={{ color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 10%, transparent)' }}
+                    >
+                      持续会话
+                    </span>
+                  )}
+                </div>
                 <p className="text-[12px] mt-0.5" style={{ color: 'var(--ink-tertiary)' }}>
                   {formatScheduleLabel(task.schedule)}
                 </p>
