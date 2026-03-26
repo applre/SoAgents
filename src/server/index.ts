@@ -79,7 +79,7 @@ Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }>; scheduledTaskId?: string; aiCanExit?: boolean };
+      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }>; scheduledTaskId?: string; aiCanExit?: boolean; metadata?: { source: string; sourceId: string; senderName?: string } };
       const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
