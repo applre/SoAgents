@@ -526,6 +526,18 @@ class SessionRunner {
   private pendingPermissionData = new Map<string, { toolName: string; toolUseId: string; toolInput: Record<string, unknown> }>();
   private pendingQuestionData = new Map<string, { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }>();
 
+  // ── IM stream callback ──
+  private imStreamCallback: ((event: 'delta' | 'block-end' | 'complete' | 'error' | 'activity', data: string) => void) | null = null;
+  private imTextBlockIndices = new Set<number>();
+
+  setImStreamCallback(cb: typeof this.imStreamCallback): void {
+    if (cb !== null && this.imStreamCallback !== null) {
+      console.warn('[agent] setImStreamCallback: replacing active callback');
+      try { this.imStreamCallback('error', '消息处理被新请求取代'); } catch { /* closed */ }
+    }
+    this.imStreamCallback = cb;
+  }
+
   // ── MCP 动态重启 ──
   private mcpRestartPending = false;
 
@@ -991,6 +1003,16 @@ class SessionRunner {
     } catch (err: unknown) {
       const e = err as Error;
       console.error(`${logPrefix} Error:`, err);
+      // IM stream: notify error/complete
+      if (this.imStreamCallback) {
+        if (this.stoppedByUser) {
+          this.imStreamCallback('complete', '');
+        } else {
+          this.imStreamCallback('error', String(err));
+        }
+        this.imStreamCallback = null;
+      }
+      this.imTextBlockIndices.clear();
       if (this.stoppedByUser) {
         // User-initiated stop — broadcast stopped (not complete/error)
         if (this.isStreaming) {
@@ -1063,6 +1085,7 @@ class SessionRunner {
           this.turnHasStreamedContent = true;
           this.turnAssistantContent += delta.text;
           broadcast('chat:message-chunk', { sessionId: activeSessionId, text: delta.text });
+          this.imStreamCallback?.('delta', delta.text);
         } else if (delta?.type === 'thinking_delta' && delta.thinking) {
           broadcast('chat:thinking-chunk', { sessionId: activeSessionId, thinking: delta.thinking });
         } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
@@ -1077,8 +1100,23 @@ class SessionRunner {
           this.turnToolCount++;
           broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
         }
+        // IM stream: track text blocks, notify non-text activity
+        if (this.imStreamCallback) {
+          const blockIndex = (streamEvent as Record<string, unknown>).index as number | undefined;
+          if (block?.type === 'text' && blockIndex !== undefined) {
+            this.imTextBlockIndices.add(blockIndex);
+          } else {
+            this.imStreamCallback('activity', block?.type ?? '');
+          }
+        }
       } else if (streamEvent.type === 'content_block_stop') {
         console.log(`${logTag} content_block_stop`);
+        // IM stream: signal text block end
+        const stopIndex = (streamEvent as Record<string, unknown>).index as number | undefined;
+        if (this.imStreamCallback && stopIndex !== undefined && this.imTextBlockIndices.has(stopIndex)) {
+          this.imStreamCallback('block-end', '');
+          this.imTextBlockIndices.delete(stopIndex);
+        }
       } else if (streamEvent.type === 'message_stop') {
         console.log(`${logTag} message_stop`);
       }
@@ -1091,6 +1129,7 @@ class SessionRunner {
           if (!this.turnHasStreamedContent) {
             this.turnAssistantContent += block.text;
             broadcast('chat:message-chunk', { sessionId: activeSessionId, text: block.text });
+            this.imStreamCallback?.('delta', block.text);
             console.log(`${logTag} assistant fallback broadcast: ${block.text.length} chars`);
           }
         }
@@ -1157,6 +1196,12 @@ class SessionRunner {
 
       // 保存助手消息（含 usage）并通知前端
       this.saveTurnAssistantContent(activeSessionId, durationMs);
+      // IM stream: notify complete
+      if (this.imStreamCallback) {
+        this.imStreamCallback('complete', '');
+        this.imStreamCallback = null;
+      }
+      this.imTextBlockIndices.clear();
       broadcast('chat:message-complete', {
         sessionId: activeSessionId,
         model: this.turnUsage.model,

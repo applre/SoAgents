@@ -143,6 +143,155 @@ Bun.serve({
       return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
     }
 
+    // ============= IM BOT API =============
+    // POST /api/im/chat — Process an IM message and return SSE stream
+    if (req.method === 'POST' && url.pathname === '/api/im/chat') {
+      try {
+        const payload = await req.json() as {
+          message: string;
+          agentDir: string;
+          permissionMode?: string;
+          providerEnv?: ProviderEnv;
+          model?: string;
+          metadata?: { source: string; sourceId: string; senderName?: string };
+        };
+
+        if (!payload.message?.trim()) {
+          return Response.json({ success: false, error: 'Message required' }, { status: 400 });
+        }
+
+        // Auto-resolve provider/model
+        let resolvedProviderEnv = payload.providerEnv;
+        let resolvedModel = payload.model;
+        if (!resolvedProviderEnv) {
+          const config = ConfigStore.readConfig();
+          const allProviders = [...PROVIDERS, ...(config.customProviders ?? [])];
+          const provider = allProviders.find(p => p.id === config.currentProviderId);
+          if (provider && provider.type !== 'subscription') {
+            const apiKey = config.apiKeys?.[provider.id];
+            if (apiKey) {
+              resolvedProviderEnv = {
+                baseUrl: provider.config?.baseUrl as string | undefined,
+                apiKey,
+                authType: provider.authType as ProviderAuthType | undefined,
+                apiProtocol: provider.apiProtocol,
+                timeout: provider.config?.timeout as number | undefined,
+                disableNonessential: provider.config?.disableNonessential as boolean | undefined,
+                maxOutputTokens: provider.maxOutputTokens,
+                upstreamFormat: provider.upstreamFormat,
+                modelAliases: getEffectiveModelAliases(provider, config.providerModelAliases),
+              };
+            }
+          }
+          if (!resolvedModel && config.currentModelId) {
+            resolvedModel = config.currentModelId;
+          } else if (!resolvedModel && provider?.primaryModel) {
+            resolvedModel = provider.primaryModel;
+          }
+          if (resolvedProviderEnv || provider?.type === 'subscription') {
+            console.log(`[im/chat] Auto-resolved provider: ${provider?.id ?? 'unknown'}, model: ${resolvedModel ?? 'default'}`);
+          }
+        }
+
+        const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
+        const mode: PermissionMode = VALID_MODES.includes(payload.permissionMode as PermissionMode)
+          ? (payload.permissionMode as PermissionMode)
+          : 'bypassPermissions';
+
+        // Reuse existing session or create new one
+        let sessionId = getCurrentSessionId();
+        if (!sessionId) {
+          const session = SessionStore.createSession(payload.agentDir, payload.message.slice(0, 50));
+          sessionId = session.id;
+        }
+        const runner = getOrCreateRunner(sessionId);
+
+        // SSE stream response
+        const encoder = new TextEncoder();
+        let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+        let closed = false;
+        let imAccText = '';
+
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(': connected\n\n'));
+
+            heartbeatTimer = setInterval(() => {
+              try { if (!closed) controller.enqueue(encoder.encode(': ping\n\n')); }
+              catch { /* closed */ }
+            }, 15000);
+
+            const sendEvent = (data: object) => {
+              if (closed) return;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+            };
+            const closeStream = () => {
+              if (closed) return;
+              closed = true;
+              if (heartbeatTimer) clearInterval(heartbeatTimer);
+              runner.setImStreamCallback(null);
+              try { controller.close(); } catch { /* already closed */ }
+            };
+
+            runner.setImStreamCallback((event, data) => {
+              if (event === 'delta') {
+                imAccText += data;
+                sendEvent({ type: 'partial', text: imAccText });
+              } else if (event === 'block-end') {
+                sendEvent({ type: 'block-end', text: imAccText });
+                imAccText = '';
+              } else if (event === 'complete') {
+                if (imAccText) {
+                  sendEvent({ type: 'block-end', text: imAccText });
+                  imAccText = '';
+                }
+                sendEvent({ type: 'complete', sessionId: getCurrentSessionId() });
+                closeStream();
+              } else if (event === 'activity') {
+                sendEvent({ type: 'activity' });
+              } else if (event === 'error') {
+                sendEvent({ type: 'error', error: data });
+                closeStream();
+              }
+            });
+
+            // Send message (async — don't block stream start)
+            runner.sendMessage(payload.message, payload.agentDir, resolvedProviderEnv, resolvedModel, mode)
+              .then(result => {
+                if (!result.ok) {
+                  sendEvent({ type: 'error', error: result.error ?? 'Failed to send' });
+                  closeStream();
+                }
+              })
+              .catch(err => {
+                sendEvent({ type: 'error', error: String(err) });
+                closeStream();
+              });
+          },
+          cancel() {
+            closed = true;
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+            runner.setImStreamCallback(null);
+          }
+        });
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        });
+      } catch (error) {
+        console.error('[im/chat] Error:', error);
+        return Response.json(
+          { success: false, error: error instanceof Error ? error.message : 'IM chat error' },
+          { status: 500 },
+        );
+      }
+    }
+
     if (req.method === 'POST' && url.pathname === '/chat/queue/cancel') {
       const body = await req.json() as { queueId: string };
       const r = getRunner();

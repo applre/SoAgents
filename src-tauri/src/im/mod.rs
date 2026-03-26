@@ -601,6 +601,7 @@ fn spawn_message_processing_loop(
                 // Build request body
                 let mut body = json!({
                     "message": text,
+                    "agentDir": task_config.workspace_path,
                     "permissionMode": task_config.permission_mode,
                 });
                 if let Some(ref model) = task_config.model {
@@ -610,7 +611,7 @@ fn spawn_message_processing_loop(
                     body["providerEnv"] = penv.clone();
                 }
 
-                let url = format!("http://127.0.0.1:{}/chat/send", port);
+                let url = format!("http://127.0.0.1:{}/api/im/chat", port);
                 ulog_info!("[im-stream] POST {} (SSE)", url);
 
                 let response = match task_stream_client
