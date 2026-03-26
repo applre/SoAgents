@@ -49,6 +49,23 @@ export default function TaskForm({ editingTask }: Props) {
   const [scheduleUI, setScheduleUI] = useState<ScheduleUI>(
     editingTask ? parseScheduleToUI(editingTask.schedule) : defaultScheduleUI()
   );
+  const [runMode, setRunMode] = useState<'single_session' | 'new_session'>(
+    editingTask?.runMode ?? 'new_session'
+  );
+  const [aiCanExit, setAiCanExit] = useState(
+    editingTask?.endConditions?.aiCanExit ?? false
+  );
+  const [maxExecutions, setMaxExecutions] = useState<string>(
+    editingTask?.endConditions?.maxExecutions?.toString() ?? ''
+  );
+  const [deadline, setDeadline] = useState(
+    editingTask?.endConditions?.deadline
+      ? new Date(editingTask.endConditions.deadline).toISOString().slice(0, 16)
+      : ''
+  );
+  const [timeoutMinutes, setTimeoutMinutes] = useState<string>(
+    editingTask?.timeoutMinutes?.toString() ?? '10'
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -90,6 +107,14 @@ export default function TaskForm({ editingTask }: Props) {
         : undefined;
       const snapshotModel = config.currentModelId ?? provider?.primaryModel;
 
+      const endConditions = (maxExecutions || deadline || aiCanExit)
+        ? {
+            maxExecutions: maxExecutions ? parseInt(maxExecutions, 10) : undefined,
+            deadline: deadline ? new Date(deadline).toISOString() : undefined,
+            aiCanExit,
+          }
+        : undefined;
+
       const input: ScheduledTaskInput = {
         name: name.trim(),
         prompt: prompt.trim(),
@@ -99,6 +124,9 @@ export default function TaskForm({ editingTask }: Props) {
         providerEnv,
         model: snapshotModel,
         permissionMode: 'bypassPermissions',
+        runMode,
+        endConditions,
+        timeoutMinutes: timeoutMinutes ? parseInt(timeoutMinutes, 10) : undefined,
       };
       if (isEditing && editingTask) {
         await updateTask(editingTask.id, input);
@@ -112,7 +140,7 @@ export default function TaskForm({ editingTask }: Props) {
     } finally {
       setSubmitting(false);
     }
-  }, [validate, name, prompt, workingDirectory, scheduleUI, editingTask, isEditing, createTask, updateTask, loadTasks, setViewMode, config, provider]);
+  }, [validate, name, prompt, workingDirectory, scheduleUI, editingTask, isEditing, createTask, updateTask, loadTasks, setViewMode, config, provider, runMode, aiCanExit, maxExecutions, deadline, timeoutMinutes]);
 
   const handleBrowse = useCallback(async () => {
     try {
@@ -283,6 +311,99 @@ export default function TaskForm({ editingTask }: Props) {
               />
             </div>
           )}
+        </div>
+
+        {/* 运行模式 */}
+        <div>
+          <label className="block text-[13px] font-medium mb-1.5" style={{ color: 'var(--ink-secondary)' }}>
+            运行模式
+          </label>
+          <div className="flex gap-2">
+            {([
+              { value: 'new_session', label: '独立会话' },
+              { value: 'single_session', label: '持续会话' },
+            ] as const).map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setRunMode(value)}
+                className="px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors"
+                style={{
+                  background: runMode === value ? 'var(--accent)' : 'var(--surface)',
+                  color: runMode === value ? 'white' : 'var(--ink)',
+                  border: `1px solid ${runMode === value ? 'var(--accent)' : 'var(--border)'}`,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[12px] mt-1.5" style={{ color: 'var(--ink-tertiary)' }}>
+            {runMode === 'new_session'
+              ? '每次执行创建新会话，历史上下文不保留'
+              : '复用同一会话，AI 可访问之前的对话历史'}
+          </p>
+        </div>
+
+        {/* 结束条件 */}
+        <div>
+          <label className="block text-[13px] font-medium mb-1.5" style={{ color: 'var(--ink-secondary)' }}>
+            结束条件
+          </label>
+          <div className="flex flex-col gap-3 rounded-lg p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            {/* 最多执行次数 */}
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] shrink-0" style={{ color: 'var(--ink-secondary)' }}>最多执行</span>
+              <input
+                type="number"
+                min={1}
+                value={maxExecutions}
+                onChange={(e) => setMaxExecutions(e.target.value)}
+                placeholder="不限"
+                className={inputStyle}
+                style={{ background: 'var(--paper)', border: '1px solid var(--border)', color: 'var(--ink)', width: 90 }}
+              />
+              <span className="text-[13px] shrink-0" style={{ color: 'var(--ink-secondary)' }}>次后停止</span>
+            </div>
+
+            {/* 截止时间 */}
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] shrink-0" style={{ color: 'var(--ink-secondary)' }}>截止时间</span>
+              <input
+                type="datetime-local"
+                value={deadline}
+                onChange={(e) => setDeadline(e.target.value)}
+                className={inputStyle}
+                style={{ background: 'var(--paper)', border: '1px solid var(--border)', color: 'var(--ink)', flex: 1 }}
+              />
+            </div>
+
+            {/* AI 自主退出 */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={aiCanExit}
+                onChange={(e) => setAiCanExit(e.target.checked)}
+                className="w-4 h-4 rounded"
+                style={{ accentColor: 'var(--accent)' }}
+              />
+              <span className="text-[13px]" style={{ color: 'var(--ink)' }}>允许 AI 自主退出任务</span>
+            </label>
+
+            {/* 超时时间 */}
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] shrink-0" style={{ color: 'var(--ink-secondary)' }}>超时时间</span>
+              <input
+                type="number"
+                min={1}
+                max={120}
+                value={timeoutMinutes}
+                onChange={(e) => setTimeoutMinutes(e.target.value)}
+                className={inputStyle}
+                style={{ background: 'var(--paper)', border: '1px solid var(--border)', color: 'var(--ink)', width: 90 }}
+              />
+              <span className="text-[13px] shrink-0" style={{ color: 'var(--ink-secondary)' }}>分钟</span>
+            </div>
+          </div>
         </div>
 
         {/* 工作目录 */}
