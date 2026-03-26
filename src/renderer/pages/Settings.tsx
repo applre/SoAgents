@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Brain, Settings2, BarChart2,
   KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Puzzle, Wrench, X,
-  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle, ChevronDown, Download,
+  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle, ChevronDown, Download, MessageSquare,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
@@ -24,6 +24,7 @@ import { atomicModifyWorkspaces } from '../config/workspaceService';
 import { isTauri } from '../utils/env';
 import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
 import UsageStatsPanel from '../components/UsageStatsPanel';
+import { ImAgentCardList } from '../components/ImAgentSettings';
 
 // ── 类型定义 ──────────────────────────────────────────────────
 
@@ -84,12 +85,13 @@ interface SubscriptionStatusData {
   verifyError?: string;
 }
 
-type NavId = 'provider' | 'mcp' | 'skills' | 'usage' | 'general' | 'about';
+type NavId = 'provider' | 'mcp' | 'skills' | 'usage' | 'general' | 'about' | 'messaging';
 
 const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucideProps> }[] = [
   { id: 'provider',        label: '模型供应商',     Icon: Brain },
   { id: 'skills',          label: 'Skills',         Icon: Puzzle },
   { id: 'mcp',             label: 'MCP',            Icon: Wrench },
+  { id: 'messaging',       label: 'Messaging',      Icon: MessageSquare },
   { id: 'usage',           label: '使用统计',       Icon: BarChart2 },
   { id: 'general',         label: '通用',           Icon: Settings2 },
   { id: 'about',           label: '关于',           Icon: Info },
@@ -2921,6 +2923,7 @@ export default function Settings({ checkForUpdate, checking }: SettingsProps) {
         {activeNav === 'provider'        && <ProviderTab />}
         {activeNav === 'mcp'             && <MCPTab />}
         {activeNav === 'skills'          && <SkillsTab />}
+        {activeNav === 'messaging'       && <ImAgentCardList />}
         {activeNav === 'usage'           && <UsageStatsPanel />}
         {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'about'           && <AboutTab checkForUpdate={checkForUpdate} checking={checking} />}
