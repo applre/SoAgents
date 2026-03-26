@@ -313,6 +313,13 @@ export default function App() {
     ));
   }, []);
 
+  // 切换 Tab 时同步 sidebar 的 activeSessionId
+  const handleSwitchTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId);
+    const tab = tabs.find(t => t.id === tabId);
+    setActiveSessionId(tab?.sessionId ?? null);
+  }, [tabs]);
+
   const handleSessionIdChange = useCallback((tabId: string, newSessionId: string) => {
     setTabs((prev) => prev.map((t) =>
       t.id === tabId ? { ...t, sessionId: newSessionId } : t
@@ -462,6 +469,7 @@ export default function App() {
         const idx = prev.findIndex((t) => t.id === tabId);
         const next = newTabs[Math.min(idx, newTabs.length - 1)];
         setActiveTabId(next.id);
+        setActiveSessionId(next.sessionId ?? null);
       }
       return newTabs;
     });
@@ -701,7 +709,7 @@ export default function App() {
             tabs={workspaceTabs}
             activeTabId={activeTabId}
             allSessions={allSessions}
-            onSwitchTab={setActiveTabId}
+            onSwitchTab={handleSwitchTab}
             onNewTab={handleAddWorkspace}
             onCloseTab={handleCloseTab}
             showFilesPanel={showFilesPanel}
