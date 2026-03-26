@@ -28,6 +28,7 @@ const BG_MAX_DURATION_SECS: u64 = 3600; // 60 minutes safety timeout
 pub enum SidecarOwner {
     Session(String),
     BackgroundCompletion(String),
+    Agent(String),
 }
 
 /// Kill a child process and its entire process group.

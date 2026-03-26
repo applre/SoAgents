@@ -10,6 +10,7 @@ mod updater;
 mod scheduled_task;
 mod local_http;
 mod tray;
+mod im;
 pub mod logger;
 
 use std::sync::{Arc, Mutex};
@@ -23,12 +24,16 @@ use tokio::sync::RwLock;
 pub fn run() {
     let sidecar_state: SidecarState = Arc::new(Mutex::new(sidecar::SidecarManager::new()));
     let scheduled_task_state: scheduled_task::ScheduledTaskState = Arc::new(RwLock::new(scheduled_task::ScheduledTaskManager::new()));
+    let im_state: im::ImManagerState = Arc::new(tokio::sync::Mutex::new(im::ImManager::new()));
 
     let cleanup_state = Arc::clone(&sidecar_state);
     let cleanup_state_for_exit = Arc::clone(&sidecar_state);
     let scheduled_task_cleanup = scheduled_task_state.clone();
     let scheduled_task_cleanup_for_exit = scheduled_task_state.clone();
     let scheduled_task_setup = scheduled_task_state.clone();
+    let im_cleanup_for_tray = im_state.clone();
+    let im_cleanup_for_window = im_state.clone();
+    let im_cleanup_for_exit = im_state.clone();
 
     // Track if cleanup has been performed to avoid duplicate cleanup
     let cleanup_done = Arc::new(AtomicBool::new(false));
@@ -48,6 +53,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(sidecar_state)
         .manage(scheduled_task_state)
+        .manage(im_state)
         .manage(sse_proxy::SseProxyState::new())
         .invoke_handler(tauri::generate_handler![
             commands::cmd_start_session_sidecar,
@@ -78,6 +84,13 @@ pub fn run() {
             scheduled_task::cmd_scheduled_task_stop,
             scheduled_task::cmd_scheduled_task_list_runs,
             scheduled_task::cmd_scheduled_task_list_all_runs,
+            im::cmd_start_agent_channel,
+            im::cmd_stop_agent_channel,
+            im::cmd_agent_channel_status,
+            im::cmd_all_agent_channels_status,
+            im::cmd_update_agent_channel_config,
+            im::cmd_im_reset_session,
+            im::cmd_im_verify_token,
         ])
         .setup(|app| {
             // Initialize logging
@@ -122,6 +135,7 @@ pub fn run() {
                     if let Ok(mut manager) = sidecar_state_for_tray_exit.lock() {
                         manager.stop_all();
                     }
+                    im::signal_all_shutdown(&im_cleanup_for_tray);
                     let cron_clone = scheduled_task_cleanup_for_tray_exit.clone();
                     tauri::async_runtime::spawn(async move {
                         let mut mgr = cron_clone.write().await;
@@ -170,6 +184,7 @@ pub fn run() {
                         if let Ok(mut manager) = cleanup_state.lock() {
                             manager.stop_all();
                         }
+                        im::signal_all_shutdown(&im_cleanup_for_window);
                         let cron_clone = scheduled_task_cleanup.clone();
                         tauri::async_runtime::spawn(async move {
                             let mut mgr = cron_clone.write().await;
@@ -194,6 +209,7 @@ pub fn run() {
                     if let Ok(mut manager) = cleanup_state_for_exit.lock() {
                         manager.stop_all();
                     }
+                    im::signal_all_shutdown(&im_cleanup_for_exit);
                     let cron_clone = scheduled_task_cleanup_for_exit.clone();
                     tauri::async_runtime::spawn(async move {
                         let mut mgr = cron_clone.write().await;
