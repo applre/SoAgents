@@ -310,7 +310,7 @@ Bun.serve({
     if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/title$/)) {
       const sessionId = url.pathname.split('/')[3];
       const body = await req.json() as { title: string };
-      SessionStore.updateTitle(sessionId, body.title);
+      SessionStore.updateTitle(sessionId, body.title, true);
       return Response.json({ ok: true });
     }
 
@@ -328,6 +328,7 @@ Bun.serve({
       const sessions = SessionStore.listSessions();
       const session = sessions.find(s => s.id === body.sessionId);
       if (!session) return Response.json({ success: false, error: 'session_not_found' });
+      if (session.manuallyRenamed) return Response.json({ success: false, error: 'manually_renamed' });
 
       try {
         const title = await generateTitle(rounds, body.model, body.providerEnv);

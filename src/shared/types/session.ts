@@ -35,6 +35,7 @@ export interface SessionMetadata {
   sdkSessionId?: string;
   stats?: SessionStats;
   archived?: boolean;
+  manuallyRenamed?: boolean;
 }
 
 export interface MessageAttachment {

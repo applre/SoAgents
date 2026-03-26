@@ -205,13 +205,16 @@ export function touchSession(sessionId: string): void {
   });
 }
 
-export function updateTitle(sessionId: string, title: string): void {
+export function updateTitle(sessionId: string, title: string, manuallyRenamed?: boolean): void {
   if (!isValidId(sessionId)) throw new Error('Invalid session ID');
   withLock(() => {
     const sessions = readIndex();
     const idx = sessions.findIndex(s => s.id === sessionId);
     if (idx === -1) return;
     sessions[idx].title = title;
+    if (manuallyRenamed !== undefined) {
+      sessions[idx].manuallyRenamed = manuallyRenamed;
+    }
     sessions[idx].lastActiveAt = new Date().toISOString();
     writeIndex(sessions);
   });
