@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, FolderPlus, LayoutList, ListFilter, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, RefreshCw, Settings } from 'lucide-react';
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, FolderPlus, LayoutList, ListFilter, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, RefreshCw, Send, Settings } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
@@ -341,6 +341,7 @@ export default function LeftSidebar({
                                     </span>
                                   )}
                                   {isPinned && <Pin size={12} className="shrink-0 text-[var(--ink-tertiary)]" />}
+                                  {s.source?.startsWith('telegram') && <Send size={12} className="shrink-0 text-[#229ED9]" />}
                                   <span className="truncate">{sessionTitle(s)}</span>
                                   <span className="ml-auto shrink-0 text-[11px] text-[var(--ink-tertiary)]">
                                     {relativeTimeCompact(s.lastActiveAt)}
