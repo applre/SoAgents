@@ -46,3 +46,15 @@ export function onRunUpdated(callback: (run: ScheduledTaskRun) => void): Promise
 export function onTaskDeleted(callback: (payload: { id: string }) => void): Promise<UnlistenFn> {
   return listen<{ id: string }>('cron:task-deleted', (event) => callback(event.payload));
 }
+
+export async function stopScheduledTask(id: string, reason?: string): Promise<void> {
+  await invoke('cmd_cron_stop_task', { id, reason });
+}
+
+export async function onTaskExitRequested(
+  handler: (data: { taskId: string; reason: string }) => void
+): Promise<UnlistenFn> {
+  return listen<{ taskId: string; reason: string }>('cron:task-exit-requested', (event) => {
+    handler(event.payload);
+  });
+}
