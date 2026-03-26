@@ -723,7 +723,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
     let run_id = uuid::Uuid::new_v4().to_string();
 
     // Pre-execution setup: check guard, create run record, update task state
-    let (task_name, prompt, working_dir, provider_env, model, permission_mode, task_run_mode, task_persistent_session_id, app_handle) = {
+    let (task_name, prompt, working_dir, provider_env, model, permission_mode, task_run_mode, task_persistent_session_id, task_timeout_minutes, task_end_conditions, app_handle) = {
         let mut mgr = state.write().await;
 
         // Re-entry guard
@@ -777,7 +777,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             let _ = app_handle.emit("cron:task-updated", t);
         }
 
-        (task.name, task.prompt, task.working_directory, task.provider_env, task.model, task.permission_mode, task.run_mode, task.persistent_session_id, app_handle)
+        (task.name, task.prompt, task.working_directory, task.provider_env, task.model, task.permission_mode, task.run_mode, task.persistent_session_id, task.timeout_minutes.unwrap_or(10), task.end_conditions, app_handle)
     };
 
     // Channel to receive sessionId as soon as session is created (before execution)
@@ -830,15 +830,18 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             Some(sid_tx),
             task_run_mode,
             task_persistent_session_id.as_deref(),
+            &task_id,
+            task_timeout_minutes,
+            task_end_conditions.as_ref(),
         ).await;
 
     // Post-execution: update run + task state
     let finished_at = Utc::now().timestamp_millis();
     let duration = finished_at - now;
 
-    let (status, error, session_id) = match &result {
-        Ok(sid) => ("success".to_string(), None, Some(sid.clone())),
-        Err(e) => ("error".to_string(), Some(e.clone()), None),
+    let (status, error, session_id, ai_requested_exit) = match &result {
+        Ok((sid, exit_flag)) => ("success".to_string(), None, Some(sid.clone()), *exit_flag),
+        Err(e) => ("error".to_string(), Some(e.clone()), None, false),
     };
 
     {
@@ -920,6 +923,20 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             }
         }
 
+        if ai_requested_exit {
+            log::info!("[cron_task] Task {} AI requested exit", task_id);
+            if let Some(t) = mgr.get_task_mut(&task_id) {
+                t.enabled = false;
+                t.state.next_run_at_ms = None;
+            }
+            if let Some(ref app) = mgr.app_handle() {
+                let _ = app.emit("cron:task-exit-requested", serde_json::json!({
+                    "taskId": task_id,
+                    "reason": "AI called exit_cron_task tool",
+                }));
+            }
+        }
+
         mgr.save_tasks();
         mgr.unmark_executing(&task_id);
 
@@ -950,7 +967,10 @@ async fn execute_with_sidecar(
     session_id_sender: Option<tokio::sync::oneshot::Sender<String>>,
     run_mode: RunMode,
     persistent_session_id: Option<&str>,
-) -> Result<String, String> {
+    task_id_str: &str,
+    timeout_minutes: u32,
+    end_conditions: Option<&EndConditions>,
+) -> Result<(String, bool), String> {
     let bun_path = sidecar::find_bun_executable(app_handle)?;
     let script_path = sidecar::find_server_script(app_handle)?;
 
@@ -1054,6 +1074,12 @@ async fn execute_with_sidecar(
     if let Some(m) = model {
         body.insert("model".to_string(), serde_json::Value::String(m.to_string()));
     }
+    body.insert("cronTaskId".to_string(), serde_json::Value::String(task_id_str.to_string()));
+    let ai_can_exit = end_conditions
+        .map(|ec| ec.ai_can_exit)
+        .unwrap_or(false);
+    body.insert("aiCanExit".to_string(), serde_json::json!(ai_can_exit));
+
     if let Some(pe) = provider_env {
         let mut env_map = serde_json::Map::new();
         if let Some(ref v) = pe.base_url {
@@ -1099,15 +1125,15 @@ async fn execute_with_sidecar(
         return Err(format!("Send failed ({}): {}", status, body));
     }
 
-    // Step 4: Poll for completion (max 10 minutes, check every 3 seconds)
+    // Step 4: Poll for completion (configurable timeout, check every 3 seconds)
     let state_url = format!("http://127.0.0.1:{}/agent/state", port);
-    let max_wait = std::time::Duration::from_secs(600);
+    let max_wait = std::time::Duration::from_secs((timeout_minutes as u64) * 60);
     let poll_interval = std::time::Duration::from_secs(3);
     let start = std::time::Instant::now();
 
     loop {
         if start.elapsed() > max_wait {
-            return Err("Task execution timed out (10 minutes)".to_string());
+            return Err(format!("Task execution timed out ({} minutes)", timeout_minutes));
         }
 
         tokio::time::sleep(poll_interval).await;
@@ -1146,7 +1172,22 @@ async fn execute_with_sidecar(
         session_id
     );
 
-    Ok(session_id)
+    // Check if AI requested exit via the dedicated endpoint
+    let ai_requested_exit = if ai_can_exit {
+        match client.get(&format!("http://127.0.0.1:{}/cron/exit-status", port)).send().await {
+            Ok(resp) => {
+                resp.json::<serde_json::Value>().await
+                    .ok()
+                    .and_then(|json| json.get("exitRequested").and_then(|v| v.as_bool()))
+                    .unwrap_or(false)
+            }
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+
+    Ok((session_id, ai_requested_exit))
 }
 
 // ── Manual Run Helper ──
@@ -1247,4 +1288,28 @@ pub async fn cmd_cron_list_all_runs(
 ) -> Result<Vec<ScheduledTaskRun>, String> {
     let mgr = state.read().await;
     Ok(mgr.load_all_runs(limit.unwrap_or(50), offset.unwrap_or(0)))
+}
+
+#[tauri::command]
+pub async fn cmd_cron_stop_task(
+    state: tauri::State<'_, CronTaskState>,
+    id: String,
+    reason: Option<String>,
+) -> Result<ScheduledTask, String> {
+    let mut mgr = state.write().await;
+    let task = mgr.tasks.get_mut(&id)
+        .ok_or_else(|| format!("Task not found: {}", id))?;
+    task.enabled = false;
+    task.state.next_run_at_ms = None;
+    task.updated_at_ms = Utc::now().timestamp_millis();
+    if let Some(r) = &reason {
+        log::info!("[cron_task] Task {} stopped: {}", id, r);
+    }
+    let result = task.clone();
+    mgr.save_tasks();
+    mgr.notify.notify_one();
+    if let Some(ref app) = mgr.app_handle {
+        let _ = app.emit("cron:task-updated", &result);
+    }
+    Ok(result)
 }
