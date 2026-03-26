@@ -213,6 +213,11 @@ impl SessionRouter {
 
     // ── Record Response ────────────────────────────────────────────
 
+    /// Get the session_id for a given session_key (for passing to Sidecar).
+    pub fn get_session_id(&self, session_key: &str) -> Option<String> {
+        self.peer_sessions.get(session_key).map(|ps| ps.session_id.clone())
+    }
+
     /// Record a successful AI response — increment message_count and refresh activity.
     pub fn record_response(&mut self, session_key: &str) {
         if let Some(ps) = self.peer_sessions.get_mut(session_key) {

@@ -153,6 +153,7 @@ Bun.serve({
           permissionMode?: string;
           providerEnv?: ProviderEnv;
           model?: string;
+          sessionId?: string;
           metadata?: { source: string; sourceId: string; senderName?: string };
         };
 
@@ -198,8 +199,8 @@ Bun.serve({
           ? (payload.permissionMode as PermissionMode)
           : 'bypassPermissions';
 
-        // Reuse existing session or create new one
-        let sessionId = getCurrentSessionId();
+        // Reuse session from Rust router, fall back to current Sidecar session, or create new
+        let sessionId = payload.sessionId ?? getCurrentSessionId();
         if (!sessionId) {
           const session = SessionStore.createSession(payload.agentDir, payload.message.slice(0, 50));
           sessionId = session.id;

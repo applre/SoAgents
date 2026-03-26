@@ -597,7 +597,10 @@ fn spawn_message_processing_loop(
                         .await;
                 }
 
-                // 5. POST to Sidecar and stream SSE response
+                // 5. Get session_id from router (for Sidecar session reuse)
+                let peer_session_id = task_router.lock().await.get_session_id(&session_key);
+
+                // 6. POST to Sidecar and stream SSE response
                 // Build request body
                 let source = format!(
                     "{}_{}",
@@ -611,6 +614,7 @@ fn spawn_message_processing_loop(
                     "message": text,
                     "agentDir": task_config.workspace_path,
                     "permissionMode": task_config.permission_mode,
+                    "sessionId": peer_session_id,
                     "metadata": {
                         "source": source,
                         "sourceId": msg.sender_id,
