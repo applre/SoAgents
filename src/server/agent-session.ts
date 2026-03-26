@@ -529,11 +529,18 @@ class SessionRunner {
   // ── IM stream callback ──
   private imStreamCallback: ((event: 'delta' | 'block-end' | 'complete' | 'error' | 'activity', data: string) => void) | null = null;
   private imTextBlockIndices = new Set<number>();
+  // Cross-turn guard: set to true when imStreamCallback is nulled or replaced during a turn.
+  // Reset before each new yield. Prevents stale turn's events from consuming a new SSE stream.
+  private imCallbackNulledDuringTurn = false;
 
   setImStreamCallback(cb: typeof this.imStreamCallback): void {
     if (cb !== null && this.imStreamCallback !== null) {
       console.warn('[agent] setImStreamCallback: replacing active callback');
+      this.imCallbackNulledDuringTurn = true;
       try { this.imStreamCallback('error', '消息处理被新请求取代'); } catch { /* closed */ }
+    }
+    if (cb === null && this.imStreamCallback !== null) {
+      this.imCallbackNulledDuringTurn = true;
     }
     this.imStreamCallback = cb;
   }
@@ -718,6 +725,7 @@ class SessionRunner {
       this.turnStartTime = Date.now();
       this.turnToolCount = 0;
       this.isStreaming = true;
+      this.imCallbackNulledDuringTurn = false;
 
       console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued})`);
       yield item.sdkMessage;
@@ -1003,8 +1011,8 @@ class SessionRunner {
     } catch (err: unknown) {
       const e = err as Error;
       console.error(`${logPrefix} Error:`, err);
-      // IM stream: notify error/complete
-      if (this.imStreamCallback) {
+      // IM stream: notify error/complete (skip if callback was replaced during turn)
+      if (this.imStreamCallback && !this.imCallbackNulledDuringTurn) {
         if (this.stoppedByUser) {
           this.imStreamCallback('complete', '');
         } else {
@@ -1085,7 +1093,7 @@ class SessionRunner {
           this.turnHasStreamedContent = true;
           this.turnAssistantContent += delta.text;
           broadcast('chat:message-chunk', { sessionId: activeSessionId, text: delta.text });
-          this.imStreamCallback?.('delta', delta.text);
+          if (!this.imCallbackNulledDuringTurn) this.imStreamCallback?.('delta', delta.text);
         } else if (delta?.type === 'thinking_delta' && delta.thinking) {
           broadcast('chat:thinking-chunk', { sessionId: activeSessionId, thinking: delta.thinking });
         } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
@@ -1101,7 +1109,7 @@ class SessionRunner {
           broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
         }
         // IM stream: track text blocks, notify non-text activity
-        if (this.imStreamCallback) {
+        if (this.imStreamCallback && !this.imCallbackNulledDuringTurn) {
           const blockIndex = (streamEvent as Record<string, unknown>).index as number | undefined;
           if (block?.type === 'text' && blockIndex !== undefined) {
             this.imTextBlockIndices.add(blockIndex);
@@ -1113,7 +1121,7 @@ class SessionRunner {
         console.log(`${logTag} content_block_stop`);
         // IM stream: signal text block end
         const stopIndex = (streamEvent as Record<string, unknown>).index as number | undefined;
-        if (this.imStreamCallback && stopIndex !== undefined && this.imTextBlockIndices.has(stopIndex)) {
+        if (this.imStreamCallback && !this.imCallbackNulledDuringTurn && stopIndex !== undefined && this.imTextBlockIndices.has(stopIndex)) {
           this.imStreamCallback('block-end', '');
           this.imTextBlockIndices.delete(stopIndex);
         }
@@ -1129,7 +1137,7 @@ class SessionRunner {
           if (!this.turnHasStreamedContent) {
             this.turnAssistantContent += block.text;
             broadcast('chat:message-chunk', { sessionId: activeSessionId, text: block.text });
-            this.imStreamCallback?.('delta', block.text);
+            if (!this.imCallbackNulledDuringTurn) this.imStreamCallback?.('delta', block.text);
             console.log(`${logTag} assistant fallback broadcast: ${block.text.length} chars`);
           }
         }
@@ -1196,8 +1204,8 @@ class SessionRunner {
 
       // 保存助手消息（含 usage）并通知前端
       this.saveTurnAssistantContent(activeSessionId, durationMs);
-      // IM stream: notify complete
-      if (this.imStreamCallback) {
+      // IM stream: notify complete (skip if callback was replaced/nulled during this turn)
+      if (this.imStreamCallback && !this.imCallbackNulledDuringTurn) {
         this.imStreamCallback('complete', '');
         this.imStreamCallback = null;
       }

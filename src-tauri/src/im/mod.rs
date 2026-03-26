@@ -1166,3 +1166,103 @@ pub async fn cmd_im_verify_token(
         _ => Err(format!("Unsupported platform: {}", platform)),
     }
 }
+
+// ===== Auto-Start on App Boot =====
+
+/// Read agent configs from ~/.soagents/config.json
+fn read_agent_configs_from_disk() -> Vec<types::AgentConfigRust> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let config_path = home.join(".soagents").join("config.json");
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    match serde_json::from_value::<Vec<types::AgentConfigRust>>(
+        json["agents"].clone(),
+    ) {
+        Ok(agents) => agents,
+        Err(e) => {
+            log::warn!("[im] Failed to parse agents from config: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+/// Schedule auto-start of enabled agent channels after app initialization.
+/// Delayed by 4 seconds to let Sidecar manager and other services initialize first.
+pub fn schedule_agent_auto_start(
+    app_handle: tauri::AppHandle,
+) {
+    use tauri::Manager;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+
+        let agents = read_agent_configs_from_disk();
+        if agents.is_empty() {
+            return;
+        }
+
+        let im_state: ImManagerState = (*app_handle.state::<ImManagerState>()).clone();
+        let sidecar_state: ManagedSidecarState =
+            (*app_handle.state::<crate::commands::SidecarState>()).clone();
+
+        for agent in &agents {
+            if !agent.enabled {
+                continue;
+            }
+            for channel in &agent.channels {
+                if !channel.enabled {
+                    continue;
+                }
+                // Check credentials
+                let has_credentials = match channel.channel_type {
+                    types::ImPlatform::Telegram => {
+                        channel.bot_token.as_ref().map_or(false, |t| !t.is_empty())
+                    }
+                    _ => false, // Phase 1: only Telegram
+                };
+                if !has_credentials {
+                    continue;
+                }
+
+                let key = channel_key(&agent.id, &channel.id);
+
+                // Skip if already running
+                {
+                    let manager = im_state.lock().await;
+                    if manager.channels.contains_key(&key) {
+                        continue;
+                    }
+                }
+
+                let config = channel.to_im_config(agent);
+                ulog_info!(
+                    "[im] Auto-starting channel {} (agent={}, platform={})",
+                    key,
+                    agent.name,
+                    channel.channel_type
+                );
+
+                let sidecar_manager = sidecar_state.clone();
+                let mut manager: tokio::sync::MutexGuard<'_, ImManager> = im_state.lock().await;
+                if let Err(e) = manager
+                    .start_channel(app_handle.clone(), sidecar_manager, config)
+                    .await
+                {
+                    ulog_error!(
+                        "[im] Auto-start failed for channel {}: {}",
+                        key,
+                        e
+                    );
+                }
+            }
+        }
+    });
+}

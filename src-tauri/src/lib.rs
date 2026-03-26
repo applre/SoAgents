@@ -125,6 +125,9 @@ pub fn run() {
                 log::error!("[App] Failed to setup system tray: {}", e);
             }
 
+            // Auto-start enabled IM agent channels (4s delay)
+            im::schedule_agent_auto_start(app.handle().clone());
+
             // Setup tray exit handler (for when user confirms exit from tray menu)
             let app_handle_for_tray = app.handle().clone();
             app.listen("tray:confirm-exit", move |_| {
