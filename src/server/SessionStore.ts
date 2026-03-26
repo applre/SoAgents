@@ -237,6 +237,18 @@ export function getSdkSessionId(sessionId: string): string | undefined {
   return sessions.find(s => s.id === sessionId)?.sdkSessionId;
 }
 
+export function updateSessionSource(sessionId: string, source: string): void {
+  if (!isValidId(sessionId)) return;
+  withLock(() => {
+    const sessions = readIndex();
+    const idx = sessions.findIndex(s => s.id === sessionId);
+    if (idx === -1) return;
+    if (sessions[idx].source) return; // already set
+    sessions[idx].source = source;
+    writeIndex(sessions);
+  });
+}
+
 // ── 统计 API ──
 
 function aggregateByModel(

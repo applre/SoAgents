@@ -36,6 +36,8 @@ export interface SessionMetadata {
   stats?: SessionStats;
   archived?: boolean;
   manuallyRenamed?: boolean;
+  /** Message source: 'desktop' (default), 'telegram_private', 'telegram_group', etc. */
+  source?: string;
 }
 
 export interface MessageAttachment {

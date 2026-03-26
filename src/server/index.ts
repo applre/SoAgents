@@ -1,4 +1,4 @@
-import { createSseHandler, setLogHistoryProvider } from './sse';
+import { broadcast, createSseHandler, setLogHistoryProvider } from './sse';
 import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
@@ -206,6 +206,20 @@ Bun.serve({
         }
         const runner = getOrCreateRunner(sessionId);
 
+        // Tag session source from IM metadata
+        const imSource = payload.metadata?.source;
+        if (imSource) {
+          SessionStore.updateSessionSource(sessionId, imSource);
+        }
+
+        // Broadcast to desktop UI that an IM message arrived
+        broadcast('im:message_received', {
+          sessionId,
+          source: imSource ?? 'unknown',
+          senderName: payload.metadata?.senderName ?? null,
+          content: payload.message.slice(0, 200),
+        });
+
         // SSE stream response
         const encoder = new TextEncoder();
         let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -246,6 +260,7 @@ Bun.serve({
                   imAccText = '';
                 }
                 sendEvent({ type: 'complete', sessionId: getCurrentSessionId() });
+                broadcast('im:response_sent', { sessionId });
                 closeStream();
               } else if (event === 'activity') {
                 sendEvent({ type: 'activity' });

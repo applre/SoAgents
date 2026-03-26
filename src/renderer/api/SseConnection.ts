@@ -33,6 +33,8 @@ export class SseConnection {
         'exit-plan-mode:request',
         'enter-plan-mode:request',
         'chat:log',
+        'im:message_received',
+        'im:response_sent',
       ];
 
       for (const eventName of knownEvents) {

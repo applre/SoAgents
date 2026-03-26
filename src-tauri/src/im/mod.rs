@@ -599,10 +599,23 @@ fn spawn_message_processing_loop(
 
                 // 5. POST to Sidecar and stream SSE response
                 // Build request body
+                let source = format!(
+                    "{}_{}",
+                    msg.platform,
+                    match msg.source_type {
+                        types::ImSourceType::Private => "private",
+                        types::ImSourceType::Group => "group",
+                    }
+                );
                 let mut body = json!({
                     "message": text,
                     "agentDir": task_config.workspace_path,
                     "permissionMode": task_config.permission_mode,
+                    "metadata": {
+                        "source": source,
+                        "sourceId": msg.sender_id,
+                        "senderName": msg.sender_name,
+                    },
                 });
                 if let Some(ref model) = task_config.model {
                     body["model"] = json!(model);
