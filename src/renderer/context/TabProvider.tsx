@@ -54,7 +54,7 @@ interface Props {
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const IDLE_CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds
-const AUTO_TITLE_MIN_ROUNDS = 3;
+const AUTO_TITLE_MIN_ROUNDS = 1;
 
 interface TitleRound { user: string; assistant: string }
 
