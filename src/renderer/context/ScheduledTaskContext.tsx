@@ -115,7 +115,7 @@ export function ScheduledTaskProvider({ children }: { children: ReactNode }) {
     }).then(fn => unlisteners.push(fn));
 
     api.onTaskExitRequested(({ taskId, reason }) => {
-      console.log(`[cron] AI requested exit for task ${taskId}: ${reason}`);
+      console.log(`[scheduled-task] AI requested exit for task ${taskId}: ${reason}`);
       // Task is already disabled by Rust side; just refresh the list
       loadTasks();
     }).then(fn => unlisteners.push(fn));

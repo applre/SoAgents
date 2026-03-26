@@ -76,7 +76,7 @@ export default function TaskDetail({ onNavigateToSession }: Props) {
           </button>
           <button
             onClick={() => setDeletingTask(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors hover:bg-red-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors hover:bg-[var(--hover)]"
             style={{ border: '1px solid var(--border)', color: 'var(--error)' }}
           >
             <Trash2 size={14} />

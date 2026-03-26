@@ -12,7 +12,7 @@ use tokio::sync::{Notify, RwLock};
 use crate::sidecar::{self, SidecarOwner};
 use crate::commands::SidecarState;
 
-pub type CronTaskState = Arc<RwLock<CronTaskManager>>;
+pub type ScheduledTaskState = Arc<RwLock<ScheduledTaskManager>>;
 
 // ── Data Types ──
 
@@ -143,9 +143,9 @@ pub struct ScheduledTaskRun {
     pub trigger: String,
 }
 
-// ── CronTaskManager ──
+// ── ScheduledTaskManager ──
 
-pub struct CronTaskManager {
+pub struct ScheduledTaskManager {
     tasks: HashMap<String, ScheduledTask>,
     storage_path: PathBuf,
     runs_dir: PathBuf,
@@ -155,14 +155,14 @@ pub struct CronTaskManager {
     notify: Arc<Notify>,
 }
 
-impl CronTaskManager {
+impl ScheduledTaskManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         let base = home.join(".soagents");
         let storage_path = base.join("scheduled-tasks.json");
         let runs_dir = base.join("scheduled-task-runs");
 
-        let mut mgr = CronTaskManager {
+        let mut mgr = ScheduledTaskManager {
             tasks: HashMap::new(),
             storage_path,
             runs_dir,
@@ -181,7 +181,7 @@ impl CronTaskManager {
         self.app_handle = Some(handle);
     }
 
-    /// Start the cron task loop in a background task
+    /// Start the scheduled task loop in a background task
     pub async fn start(&self) {
         let notify = self.notify.clone();
         // We need to read from self, but the loop will re-acquire the lock each tick.
@@ -268,8 +268,8 @@ impl CronTaskManager {
         task.permission_mode = input.permission_mode;
         task.updated_at_ms = now;
         task.run_mode = input.run_mode.unwrap_or(task.run_mode);
-        task.end_conditions = input.end_conditions.or(task.end_conditions.take());
-        task.timeout_minutes = input.timeout_minutes.or(task.timeout_minutes);
+        task.end_conditions = input.end_conditions;
+        task.timeout_minutes = input.timeout_minutes;
 
         if input.enabled {
             task.state.next_run_at_ms = calculate_next_run_time(&input.schedule, task.state.last_run_at_ms)?;
@@ -294,7 +294,7 @@ impl CronTaskManager {
         let _ = fs::remove_file(runs_file);
 
         if let Some(ref app) = self.app_handle {
-            let _ = app.emit("cron:task-deleted", id);
+            let _ = app.emit("scheduled-task:deleted", id);
         }
 
         Ok(())
@@ -317,7 +317,7 @@ impl CronTaskManager {
         self.notify.notify_one();
 
         if let Some(ref app) = self.app_handle {
-            let _ = app.emit("cron:task-updated", &toggled);
+            let _ = app.emit("scheduled-task:updated", &toggled);
         }
 
         Ok(toggled)
@@ -359,7 +359,7 @@ impl CronTaskManager {
             if self.executing_tasks.contains(id) { continue; }
 
             if let Some(reason) = check_end_conditions(task) {
-                log::info!("[cron_task] Task {} end condition met in scheduler: {}", id, reason);
+                log::info!("[scheduled_task] Task {} end condition met in scheduler: {}", id, reason);
                 to_disable.push(id.clone());
                 continue;
             }
@@ -383,7 +383,7 @@ impl CronTaskManager {
             if let Some(ref app) = self.app_handle {
                 for id in &to_disable {
                     if let Some(task) = self.tasks.get(id) {
-                        let _ = app.emit("cron:task-updated", task);
+                        let _ = app.emit("scheduled-task:updated", task);
                     }
                 }
             }
@@ -428,15 +428,15 @@ impl CronTaskManager {
                         for task in tasks {
                             self.tasks.insert(task.id.clone(), task);
                         }
-                        log::info!("[cron_task] Loaded {} tasks", self.tasks.len());
+                        log::info!("[scheduled_task] Loaded {} tasks", self.tasks.len());
                     }
                     Err(e) => {
-                        log::error!("[cron_task] Failed to parse tasks file: {}", e);
+                        log::error!("[scheduled_task] Failed to parse tasks file: {}", e);
                     }
                 }
             }
             Err(e) => {
-                log::error!("[cron_task] Failed to read tasks file: {}", e);
+                log::error!("[scheduled_task] Failed to read tasks file: {}", e);
             }
         }
     }
@@ -456,7 +456,7 @@ impl CronTaskManager {
         let data = match serde_json::to_string_pretty(&tasks) {
             Ok(d) => d,
             Err(e) => {
-                log::error!("[cron_task] Failed to serialize tasks: {}", e);
+                log::error!("[scheduled_task] Failed to serialize tasks: {}", e);
                 return;
             }
         };
@@ -469,11 +469,11 @@ impl CronTaskManager {
         match fs::write(&tmp_path, &data) {
             Ok(_) => {
                 if let Err(e) = fs::rename(&tmp_path, &self.storage_path) {
-                    log::error!("[cron_task] Failed to rename tmp file: {}", e);
+                    log::error!("[scheduled_task] Failed to rename tmp file: {}", e);
                 }
             }
             Err(e) => {
-                log::error!("[cron_task] Failed to write tmp file: {}", e);
+                log::error!("[scheduled_task] Failed to write tmp file: {}", e);
             }
         }
     }
@@ -601,7 +601,7 @@ impl CronTaskManager {
     }
 }
 
-// ── Cron Helpers ──
+// ── Schedule Helpers ──
 
 fn calculate_next_run_time(schedule: &Schedule, last_run_at_ms: Option<i64>) -> Result<Option<i64>, String> {
     match schedule {
@@ -668,10 +668,10 @@ fn check_end_conditions(task: &ScheduledTask) -> Option<String> {
     None
 }
 
-// ── Cron Task Loop (free function, runs in tokio::spawn) ──
+// ── Scheduled Task Loop (free function, runs in tokio::spawn) ──
 
-pub async fn cron_task_loop(state: CronTaskState) {
-    log::info!("[cron_task] Scheduler loop started");
+pub async fn scheduled_task_loop(state: ScheduledTaskState) {
+    log::info!("[scheduled_task] Scheduler loop started");
 
     loop {
         let (is_shutdown, delay, notify) = {
@@ -680,7 +680,7 @@ pub async fn cron_task_loop(state: CronTaskState) {
         };
 
         if is_shutdown {
-            log::info!("[cron_task] Scheduler loop shutting down");
+            log::info!("[scheduled_task] Scheduler loop shutting down");
             break;
         }
 
@@ -693,7 +693,7 @@ pub async fn cron_task_loop(state: CronTaskState) {
         {
             let mgr = state.read().await;
             if mgr.is_shutdown() {
-                log::info!("[cron_task] Scheduler loop shutting down after wake");
+                log::info!("[scheduled_task] Scheduler loop shutting down after wake");
                 break;
             }
         }
@@ -712,13 +712,13 @@ pub async fn cron_task_loop(state: CronTaskState) {
         }
     }
 
-    log::info!("[cron_task] Scheduler loop exited");
+    log::info!("[scheduled_task] Scheduler loop exited");
 }
 
 // ── Task Execution ──
 
-async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
-    log::info!("[cron_task] execute_task START: task_id={}, trigger={}", task_id, trigger);
+async fn execute_task(state: ScheduledTaskState, task_id: String, trigger: String) {
+    log::info!("[scheduled_task] execute_task START: task_id={}, trigger={}", task_id, trigger);
     let now = Utc::now().timestamp_millis();
     let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -728,14 +728,14 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
 
         // Re-entry guard
         if mgr.is_executing(&task_id) {
-            log::warn!("[cron_task] Task {} is already executing, skipping", task_id);
+            log::warn!("[scheduled_task] Task {} is already executing, skipping", task_id);
             return;
         }
 
         let task = match mgr.get_task(&task_id) {
             Some(t) => t.clone(),
             None => {
-                log::error!("[cron_task] Task {} not found", task_id);
+                log::error!("[scheduled_task] Task {} not found", task_id);
                 return;
             }
         };
@@ -743,7 +743,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
         let app_handle = match mgr.app_handle() {
             Some(h) => h.clone(),
             None => {
-                log::error!("[cron_task] No app handle available");
+                log::error!("[scheduled_task] No app handle available");
                 return;
             }
         };
@@ -772,9 +772,9 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
         }
         mgr.save_tasks();
 
-        let _ = app_handle.emit("cron:run-updated", &run);
+        let _ = app_handle.emit("scheduled-task:run-updated", &run);
         if let Some(t) = mgr.get_task(&task_id) {
-            let _ = app_handle.emit("cron:task-updated", t);
+            let _ = app_handle.emit("scheduled-task:updated", t);
         }
 
         (task.name, task.prompt, task.working_directory, task.provider_env, task.model, task.permission_mode, task.run_mode, task.persistent_session_id, task.timeout_minutes.unwrap_or(10), task.end_conditions, app_handle)
@@ -808,8 +808,8 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
                     trigger: trigger2,
                 };
                 mgr.update_run(&run);
-                let _ = app_handle2.emit("cron:run-updated", &run);
-                let _ = app_handle2.emit("cron:session-started", serde_json::json!({
+                let _ = app_handle2.emit("scheduled-task:run-updated", &run);
+                let _ = app_handle2.emit("scheduled-task:session-started", serde_json::json!({
                     "sessionId": sid,
                     "workingDirectory": working_dir2,
                 }));
@@ -861,7 +861,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
             trigger,
         };
         mgr.update_run(&run);
-        let _ = app_handle.emit("cron:run-updated", &run);
+        let _ = app_handle.emit("scheduled-task:run-updated", &run);
 
         // Update task state
         if let Some(task) = mgr.get_task_mut(&task_id) {
@@ -875,7 +875,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
                 if task.state.consecutive_errors >= 5 {
                     task.state.next_run_at_ms = None;
                     task.enabled = false;
-                    log::warn!("[cron_task] Task {} auto-disabled after 5 consecutive errors", task_id);
+                    log::warn!("[scheduled_task] Task {} auto-disabled after 5 consecutive errors", task_id);
                 }
             } else {
                 task.state.consecutive_errors = 0;
@@ -886,10 +886,10 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
                 task.enabled = false;
                 task.state.next_run_at_ms = None;
             } else if task.enabled {
-                // Calculate next run for cron
+                // Calculate next run time
                 match calculate_next_run_time(&task.schedule, task.state.last_run_at_ms) {
                     Ok(next) => task.state.next_run_at_ms = next,
-                    Err(e) => log::error!("[cron_task] Failed to calculate next run: {}", e),
+                    Err(e) => log::error!("[scheduled_task] Failed to calculate next run: {}", e),
                 }
             }
 
@@ -902,7 +902,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
                 if let Some(t) = mgr.get_task_mut(&task_id) {
                     if t.persistent_session_id.is_none() {
                         t.persistent_session_id = Some(sid.clone());
-                        log::info!("[cron_task] Saved persistent_session_id '{}' for task '{}'", sid, task_id);
+                        log::info!("[scheduled_task] Saved persistent_session_id '{}' for task '{}'", sid, task_id);
                     }
                 }
             }
@@ -915,7 +915,7 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
 
         if let Some(t) = mgr.get_task(&task_id) {
             if let Some(reason) = check_end_conditions(t) {
-                log::info!("[cron_task] Task {} auto-stopped: {}", task_id, reason);
+                log::info!("[scheduled_task] Task {} auto-stopped: {}", task_id, reason);
                 if let Some(t) = mgr.get_task_mut(&task_id) {
                     t.enabled = false;
                     t.state.next_run_at_ms = None;
@@ -924,15 +924,15 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
         }
 
         if ai_requested_exit {
-            log::info!("[cron_task] Task {} AI requested exit", task_id);
+            log::info!("[scheduled_task] Task {} AI requested exit", task_id);
             if let Some(t) = mgr.get_task_mut(&task_id) {
                 t.enabled = false;
                 t.state.next_run_at_ms = None;
             }
             if let Some(ref app) = mgr.app_handle() {
-                let _ = app.emit("cron:task-exit-requested", serde_json::json!({
+                let _ = app.emit("scheduled-task:exit-requested", serde_json::json!({
                     "taskId": task_id,
-                    "reason": "AI called exit_cron_task tool",
+                    "reason": "AI called exit_scheduled_task tool",
                 }));
             }
         }
@@ -941,14 +941,14 @@ async fn execute_task(state: CronTaskState, task_id: String, trigger: String) {
         mgr.unmark_executing(&task_id);
 
         if let Some(task) = mgr.get_task(&task_id) {
-            let _ = app_handle.emit("cron:task-updated", task);
+            let _ = app_handle.emit("scheduled-task:updated", task);
         }
 
         mgr.trim_runs(&task_id);
 
         // Notify frontend that the scheduled session has finished
         if let Some(sid) = &run.session_id {
-            let _ = app_handle.emit("cron:session-finished", serde_json::json!({
+            let _ = app_handle.emit("scheduled-task:session-finished", serde_json::json!({
                 "sessionId": sid,
                 "workingDirectory": working_dir,
             }));
@@ -982,7 +982,7 @@ async fn execute_with_sidecar(
     let session_id = match (run_mode, persistent_session_id) {
         (RunMode::SingleSession, Some(existing_sid)) => {
             log::info!(
-                "[cron_task] Reusing session '{}' for task '{}' (single_session mode)",
+                "[scheduled_task] Reusing session '{}' for task '{}' (single_session mode)",
                 existing_sid, task_name
             );
             existing_sid.to_string()
@@ -1020,7 +1020,7 @@ async fn execute_with_sidecar(
                 .to_string();
 
             log::info!(
-                "[cron_task] Created session '{}' for task '{}'",
+                "[scheduled_task] Created session '{}' for task '{}'",
                 sid,
                 task_name
             );
@@ -1057,7 +1057,7 @@ async fn execute_with_sidecar(
     .map_err(|e| format!("spawn_blocking join error: {}", e))??;
 
     log::info!(
-        "[cron_task] Sidecar started (id='{}') on port {}",
+        "[scheduled_task] Sidecar started (id='{}') on port {}",
         session_id,
         port
     );
@@ -1074,7 +1074,7 @@ async fn execute_with_sidecar(
     if let Some(m) = model {
         body.insert("model".to_string(), serde_json::Value::String(m.to_string()));
     }
-    body.insert("cronTaskId".to_string(), serde_json::Value::String(task_id_str.to_string()));
+    body.insert("scheduledTaskId".to_string(), serde_json::Value::String(task_id_str.to_string()));
     let ai_can_exit = end_conditions
         .map(|ec| ec.ai_can_exit)
         .unwrap_or(false);
@@ -1104,7 +1104,7 @@ async fn execute_with_sidecar(
     }
 
     let url = format!("http://127.0.0.1:{}/chat/send", port);
-    log::info!("[cron_task] POST {} body={}", url, serde_json::to_string(&serde_json::Value::Object(body.clone())).unwrap_or_default());
+    log::info!("[scheduled_task] POST {} body={}", url, serde_json::to_string(&serde_json::Value::Object(body.clone())).unwrap_or_default());
 
     let resp = client
         .post(&url)
@@ -1112,16 +1112,16 @@ async fn execute_with_sidecar(
         .send()
         .await
         .map_err(|e| {
-            log::error!("[cron_task] Failed to send prompt: {}", e);
+            log::error!("[scheduled_task] Failed to send prompt: {}", e);
             format!("Failed to send prompt: {}", e)
         })?;
 
-    log::info!("[cron_task] POST response status: {}", resp.status());
+    log::info!("[scheduled_task] POST response status: {}", resp.status());
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        log::error!("[cron_task] Send failed ({}): {}", status, body);
+        log::error!("[scheduled_task] Send failed ({}): {}", status, body);
         return Err(format!("Send failed ({}): {}", status, body));
     }
 
@@ -1147,7 +1147,7 @@ async fn execute_with_sidecar(
                         .unwrap_or(true);
                     if !is_running {
                         log::info!(
-                            "[cron_task] Task completed, session '{}'",
+                            "[scheduled_task] Task completed, session '{}'",
                             session_id
                         );
                         break;
@@ -1156,7 +1156,7 @@ async fn execute_with_sidecar(
             }
             Err(e) => {
                 log::warn!(
-                    "[cron_task] State poll failed for session '{}': {}",
+                    "[scheduled_task] State poll failed for session '{}': {}",
                     session_id,
                     e
                 );
@@ -1167,14 +1167,14 @@ async fn execute_with_sidecar(
     // Do NOT release sidecar — leave it alive for TabProvider to discover and connect.
     // It will be reclaimed by TabProvider's idle timeout (5 min).
     log::info!(
-        "[cron_task] Task '{}' done. Sidecar '{}' kept alive for Tab reuse.",
+        "[scheduled_task] Task '{}' done. Sidecar '{}' kept alive for Tab reuse.",
         task_name,
         session_id
     );
 
     // Check if AI requested exit via the dedicated endpoint
     let ai_requested_exit = if ai_can_exit {
-        match client.get(&format!("http://127.0.0.1:{}/cron/exit-status", port)).send().await {
+        match client.get(&format!("http://127.0.0.1:{}/scheduled-task/exit-status", port)).send().await {
             Ok(resp) => {
                 resp.json::<serde_json::Value>().await
                     .ok()
@@ -1192,7 +1192,7 @@ async fn execute_with_sidecar(
 
 // ── Manual Run Helper ──
 
-pub async fn run_task_manually(state: CronTaskState, task_id: String) -> Result<(), String> {
+pub async fn run_task_manually(state: ScheduledTaskState, task_id: String) -> Result<(), String> {
     {
         let mgr = state.read().await;
         if mgr.get_task(&task_id).is_none() {
@@ -1214,16 +1214,16 @@ pub async fn run_task_manually(state: CronTaskState, task_id: String) -> Result<
 // ── Tauri Commands ──
 
 #[tauri::command]
-pub async fn cmd_cron_list_tasks(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_list(
+    state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledTask>, String> {
     let mgr = state.read().await;
     Ok(mgr.list_tasks())
 }
 
 #[tauri::command]
-pub async fn cmd_cron_create_task(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_create(
+    state: tauri::State<'_, ScheduledTaskState>,
     input: ScheduledTaskInput,
 ) -> Result<ScheduledTask, String> {
     let mut mgr = state.write().await;
@@ -1231,8 +1231,8 @@ pub async fn cmd_cron_create_task(
 }
 
 #[tauri::command]
-pub async fn cmd_cron_update_task(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_update(
+    state: tauri::State<'_, ScheduledTaskState>,
     id: String,
     input: ScheduledTaskInput,
 ) -> Result<ScheduledTask, String> {
@@ -1241,8 +1241,8 @@ pub async fn cmd_cron_update_task(
 }
 
 #[tauri::command]
-pub async fn cmd_cron_delete_task(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_delete(
+    state: tauri::State<'_, ScheduledTaskState>,
     id: String,
 ) -> Result<(), String> {
     let mut mgr = state.write().await;
@@ -1250,8 +1250,8 @@ pub async fn cmd_cron_delete_task(
 }
 
 #[tauri::command]
-pub async fn cmd_cron_toggle_task(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_toggle(
+    state: tauri::State<'_, ScheduledTaskState>,
     id: String,
 ) -> Result<ScheduledTask, String> {
     let mut mgr = state.write().await;
@@ -1259,19 +1259,19 @@ pub async fn cmd_cron_toggle_task(
 }
 
 #[tauri::command]
-pub async fn cmd_cron_run_task(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_run(
+    state: tauri::State<'_, ScheduledTaskState>,
     id: String,
 ) -> Result<(), String> {
-    log::info!("[cron_task] cmd_cron_run_task called with id={}", id);
+    log::info!("[scheduled_task] cmd_scheduled_task_run called with id={}", id);
     let result = run_task_manually(state.inner().clone(), id).await;
-    log::info!("[cron_task] cmd_cron_run_task result: {:?}", result);
+    log::info!("[scheduled_task] cmd_scheduled_task_run result: {:?}", result);
     result
 }
 
 #[tauri::command]
-pub async fn cmd_cron_list_runs(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_list_runs(
+    state: tauri::State<'_, ScheduledTaskState>,
     task_id: String,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -1281,8 +1281,8 @@ pub async fn cmd_cron_list_runs(
 }
 
 #[tauri::command]
-pub async fn cmd_cron_list_all_runs(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_list_all_runs(
+    state: tauri::State<'_, ScheduledTaskState>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Vec<ScheduledTaskRun>, String> {
@@ -1291,8 +1291,8 @@ pub async fn cmd_cron_list_all_runs(
 }
 
 #[tauri::command]
-pub async fn cmd_cron_stop_task(
-    state: tauri::State<'_, CronTaskState>,
+pub async fn cmd_scheduled_task_stop(
+    state: tauri::State<'_, ScheduledTaskState>,
     id: String,
     reason: Option<String>,
 ) -> Result<ScheduledTask, String> {
@@ -1303,13 +1303,13 @@ pub async fn cmd_cron_stop_task(
     task.state.next_run_at_ms = None;
     task.updated_at_ms = Utc::now().timestamp_millis();
     if let Some(r) = &reason {
-        log::info!("[cron_task] Task {} stopped: {}", id, r);
+        log::info!("[scheduled_task] Task {} stopped: {}", id, r);
     }
     let result = task.clone();
     mgr.save_tasks();
     mgr.notify.notify_one();
     if let Some(ref app) = mgr.app_handle {
-        let _ = app.emit("cron:task-updated", &result);
+        let _ = app.emit("scheduled-task:updated", &result);
     }
     Ok(result)
 }

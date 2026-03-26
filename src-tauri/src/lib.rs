@@ -7,7 +7,7 @@ mod proxy;
 mod proxy_config;
 mod sse_proxy;
 mod updater;
-mod cron_task;
+mod scheduled_task;
 mod local_http;
 mod tray;
 pub mod logger;
@@ -22,13 +22,13 @@ use tokio::sync::RwLock;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let sidecar_state: SidecarState = Arc::new(Mutex::new(sidecar::SidecarManager::new()));
-    let cron_task_state: cron_task::CronTaskState = Arc::new(RwLock::new(cron_task::CronTaskManager::new()));
+    let scheduled_task_state: scheduled_task::ScheduledTaskState = Arc::new(RwLock::new(scheduled_task::ScheduledTaskManager::new()));
 
     let cleanup_state = Arc::clone(&sidecar_state);
     let cleanup_state_for_exit = Arc::clone(&sidecar_state);
-    let cron_task_cleanup = cron_task_state.clone();
-    let cron_task_cleanup_for_exit = cron_task_state.clone();
-    let cron_task_setup = cron_task_state.clone();
+    let scheduled_task_cleanup = scheduled_task_state.clone();
+    let scheduled_task_cleanup_for_exit = scheduled_task_state.clone();
+    let scheduled_task_setup = scheduled_task_state.clone();
 
     // Track if cleanup has been performed to avoid duplicate cleanup
     let cleanup_done = Arc::new(AtomicBool::new(false));
@@ -37,7 +37,7 @@ pub fn run() {
     let cleanup_done_for_tray_exit = cleanup_done.clone();
 
     let sidecar_state_for_tray_exit = Arc::clone(&sidecar_state);
-    let cron_task_cleanup_for_tray_exit = cron_task_state.clone();
+    let scheduled_task_cleanup_for_tray_exit = scheduled_task_state.clone();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
@@ -47,7 +47,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(sidecar_state)
-        .manage(cron_task_state)
+        .manage(scheduled_task_state)
         .manage(sse_proxy::SseProxyState::new())
         .invoke_handler(tauri::generate_handler![
             commands::cmd_start_session_sidecar,
@@ -69,15 +69,15 @@ pub fn run() {
             updater::restart_app,
             updater::test_update_connectivity,
             updater::cmd_shutdown_for_update,
-            cron_task::cmd_cron_list_tasks,
-            cron_task::cmd_cron_create_task,
-            cron_task::cmd_cron_update_task,
-            cron_task::cmd_cron_delete_task,
-            cron_task::cmd_cron_toggle_task,
-            cron_task::cmd_cron_run_task,
-            cron_task::cmd_cron_stop_task,
-            cron_task::cmd_cron_list_runs,
-            cron_task::cmd_cron_list_all_runs,
+            scheduled_task::cmd_scheduled_task_list,
+            scheduled_task::cmd_scheduled_task_create,
+            scheduled_task::cmd_scheduled_task_update,
+            scheduled_task::cmd_scheduled_task_delete,
+            scheduled_task::cmd_scheduled_task_toggle,
+            scheduled_task::cmd_scheduled_task_run,
+            scheduled_task::cmd_scheduled_task_stop,
+            scheduled_task::cmd_scheduled_task_list_runs,
+            scheduled_task::cmd_scheduled_task_list_all_runs,
         ])
         .setup(|app| {
             // Initialize logging
@@ -122,7 +122,7 @@ pub fn run() {
                     if let Ok(mut manager) = sidecar_state_for_tray_exit.lock() {
                         manager.stop_all();
                     }
-                    let cron_clone = cron_task_cleanup_for_tray_exit.clone();
+                    let cron_clone = scheduled_task_cleanup_for_tray_exit.clone();
                     tauri::async_runtime::spawn(async move {
                         let mut mgr = cron_clone.write().await;
                         mgr.stop();
@@ -141,15 +141,15 @@ pub fn run() {
                 updater::check_update_on_startup(app_handle).await;
             });
 
-            // Start cron task scheduler
-            let cron_task_app_handle = app.handle().clone();
+            // Start scheduled task scheduler
+            let scheduled_task_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 {
-                    let mut mgr = cron_task_setup.write().await;
-                    mgr.set_app_handle(cron_task_app_handle);
+                    let mut mgr = scheduled_task_setup.write().await;
+                    mgr.set_app_handle(scheduled_task_app_handle);
                     mgr.start().await;
                 }
-                cron_task::cron_task_loop(cron_task_setup).await;
+                scheduled_task::scheduled_task_loop(scheduled_task_setup).await;
             });
 
             Ok(())
@@ -170,7 +170,7 @@ pub fn run() {
                         if let Ok(mut manager) = cleanup_state.lock() {
                             manager.stop_all();
                         }
-                        let cron_clone = cron_task_cleanup.clone();
+                        let cron_clone = scheduled_task_cleanup.clone();
                         tauri::async_runtime::spawn(async move {
                             let mut mgr = cron_clone.write().await;
                             mgr.stop();
@@ -194,7 +194,7 @@ pub fn run() {
                     if let Ok(mut manager) = cleanup_state_for_exit.lock() {
                         manager.stop_all();
                     }
-                    let cron_clone = cron_task_cleanup_for_exit.clone();
+                    let cron_clone = scheduled_task_cleanup_for_exit.clone();
                     tauri::async_runtime::spawn(async move {
                         let mut mgr = cron_clone.write().await;
                         mgr.stop();

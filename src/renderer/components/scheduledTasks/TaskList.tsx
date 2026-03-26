@@ -135,8 +135,8 @@ export default function TaskList() {
                 style={{ background: task.enabled ? 'var(--accent)' : 'var(--border)' }}
               >
                 <span
-                  className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform shadow-sm"
-                  style={{ left: task.enabled ? 18 : 2 }}
+                  className="absolute top-0.5 w-4 h-4 rounded-full transition-transform shadow-sm"
+                  style={{ left: task.enabled ? 18 : 2, background: 'var(--paper)' }}
                 />
               </button>
 
@@ -157,7 +157,7 @@ export default function TaskList() {
                 {isMenuOpen && (
                   <div
                     className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-xl border py-1"
-                    style={{ background: 'white', borderColor: 'var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
+                    style={{ background: 'var(--paper)', borderColor: 'var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
                   >
                     <button
                       onClick={(e) => { e.stopPropagation(); handleEdit(task); }}
@@ -177,7 +177,7 @@ export default function TaskList() {
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); setMenuOpenId(null); setDeletingTask(task); }}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-red-50 transition-colors"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-[var(--hover)] transition-colors"
                       style={{ color: 'var(--error)' }}
                     >
                       <Trash2 size={14} />

@@ -19,7 +19,7 @@ import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSy
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import { setCronTaskContext, clearCronTaskContext, resetCronExitStatus, isCronExitRequested } from './tools/cron-tools';
+import { setScheduledTaskContext, resetScheduledTaskExitStatus, isScheduledTaskExitRequested } from './tools/scheduled-task-tools';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
@@ -79,7 +79,7 @@ Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }>; cronTaskId?: string; aiCanExit?: boolean };
+      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }>; scheduledTaskId?: string; aiCanExit?: boolean };
       const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
@@ -126,23 +126,21 @@ Bun.serve({
       }
       const runner = getOrCreateRunner(sessionId);
 
-      // Set cron task context if this is a scheduled task invocation
-      if (body.cronTaskId) {
-        resetCronExitStatus();
-        setCronTaskContext(sessionId, body.cronTaskId, body.aiCanExit ?? false);
+      // Set scheduled task context if this is a scheduled task invocation
+      if (body.scheduledTaskId) {
+        resetScheduledTaskExitStatus();
+        setScheduledTaskContext(sessionId, body.scheduledTaskId, body.aiCanExit ?? false);
       }
 
-      try {
-        const sendResult = await runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images);
-        if (!sendResult.ok) {
-          return Response.json({ ok: false, error: sendResult.error }, { status: 429 });
-        }
-        return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
-      } finally {
-        if (body.cronTaskId) {
-          clearCronTaskContext(sessionId);
-        }
+      // Note: scheduled task context is NOT cleared here. sendMessage() returns
+      // immediately after queuing — the agent runs asynchronously and may call
+      // exit_scheduled_task during execution. Context is reset at the start of
+      // the next execution via resetScheduledTaskExitStatus() + setScheduledTaskContext().
+      const sendResult = await runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images);
+      if (!sendResult.ok) {
+        return Response.json({ ok: false, error: sendResult.error }, { status: 429 });
       }
+      return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
     }
 
     if (req.method === 'POST' && url.pathname === '/chat/queue/cancel') {
@@ -236,8 +234,8 @@ Bun.serve({
       });
     }
 
-    if (req.method === 'GET' && url.pathname === '/cron/exit-status') {
-      return Response.json({ exitRequested: isCronExitRequested() });
+    if (req.method === 'GET' && url.pathname === '/scheduled-task/exit-status') {
+      return Response.json({ exitRequested: isScheduledTaskExitRequested() });
     }
 
     if (req.method === 'GET' && url.pathname === '/chat/sessions') {

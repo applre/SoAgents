@@ -693,7 +693,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   useEffect(() => {
     if (!sessionId) return;
     const unlisteners: Array<() => void> = [];
-    listen<{ sessionId: string; workingDirectory: string }>('cron:session-started', (event) => {
+    listen<{ sessionId: string; workingDirectory: string }>('scheduled-task:session-started', (event) => {
       if (event.payload.sessionId !== sessionId) return;
       // 发现并连接定时任务的 sidecar
       (async () => {
@@ -716,7 +716,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         } catch { /* sidecar may not be ready yet */ }
       })();
     }).then(fn => unlisteners.push(fn));
-    listen<{ sessionId: string; workingDirectory: string }>('cron:session-finished', (event) => {
+    listen<{ sessionId: string; workingDirectory: string }>('scheduled-task:session-finished', (event) => {
       if (event.payload.sessionId !== sessionId) return;
       isRunningRef.current = false;
       setIsRunning(false);

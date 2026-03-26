@@ -17,8 +17,8 @@ import { getBuiltinMcp } from './tools/builtin-mcp-registry';
 import { getOAuthToken } from './mcp-oauth';
 import './tools/gemini-image-tool';
 import './tools/edge-tts-tool';
-import './tools/cron-tools';
-import { getCronTaskContext, cronToolsServer, setCurrentSessionId } from './tools/cron-tools';
+import './tools/scheduled-task-tools';
+import { getScheduledTaskContext, scheduledTaskToolsServer, setCurrentSessionId } from './tools/scheduled-task-tools';
 
 interface ChatImage {
   name: string;
@@ -133,10 +133,10 @@ function buildSdkMcpServers(input: BuildMcpServersInput): Record<string, unknown
 
   // --- Pattern 1: Context-injected MCPs (auto-added based on session context) ---
   if (input.sessionId) {
-    const cronCtx = getCronTaskContext(input.sessionId);
-    if (cronCtx?.canExit) {
+    const scheduledCtx = getScheduledTaskContext(input.sessionId);
+    if (scheduledCtx?.canExit) {
       setCurrentSessionId(input.sessionId);
-      result['cron-tools'] = cronToolsServer;
+      result['scheduled-task-tools'] = scheduledTaskToolsServer;
     }
   }
 
@@ -792,8 +792,8 @@ class SessionRunner {
         if (parts.length < 3) return { allowed: false, reason: '无效的 MCP 工具名称' };
         const serverId = parts[1];
 
-        // Trusted built-in MCPs: always allow (e.g., future cron-tools)
-        const TRUSTED_MCP_IDS = new Set<string>(['cron-tools']);
+        // Trusted built-in MCPs: always allow (e.g., scheduled-task-tools)
+        const TRUSTED_MCP_IDS = new Set<string>(['scheduled-task-tools']);
         if (TRUSTED_MCP_IDS.has(serverId)) return { allowed: true };
 
         if (enabledMcpServerIds.size === 0) return { allowed: false, reason: 'MCP 工具已被禁用' };
@@ -844,7 +844,7 @@ class SessionRunner {
         }
 
         // 0.1 Built-in trusted MCPs: skip user confirmation
-        if (toolName.startsWith('mcp__cron-tools__')) {
+        if (toolName.startsWith('mcp__scheduled-task-tools__')) {
           return { behavior: 'allow' as const, updatedInput: toolInput };
         }
 
