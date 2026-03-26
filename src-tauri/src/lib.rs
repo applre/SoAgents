@@ -75,6 +75,7 @@ pub fn run() {
             cron_task::cmd_cron_delete_task,
             cron_task::cmd_cron_toggle_task,
             cron_task::cmd_cron_run_task,
+            cron_task::cmd_cron_stop_task,
             cron_task::cmd_cron_list_runs,
             cron_task::cmd_cron_list_all_runs,
         ])
