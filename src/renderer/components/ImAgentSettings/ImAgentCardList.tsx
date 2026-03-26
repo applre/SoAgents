@@ -11,6 +11,7 @@ import {
   getAllChannelsStatus,
   stopAgentChannel,
 } from '../../config/imAgentConfigService';
+import { ImAgentSettingsPanel } from './ImAgentSettingsPanel';
 
 interface ImAgentCardListProps {
   onSelectAgent?: (agent: ImAgentConfig) => void;
@@ -35,7 +36,7 @@ function channelStatusKey(agentId: string, channelId: string) {
   return `${agentId}:${channelId}`;
 }
 
-export function ImAgentCardList({ onSelectAgent }: ImAgentCardListProps) {
+export function ImAgentCardList({ onSelectAgent: _onSelectAgent }: ImAgentCardListProps) {
   const [agents, setAgents] = useState<ImAgentConfig[]>([]);
   const [statuses, setStatuses] = useState<Record<string, ImBotStatus>>({});
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -43,6 +44,7 @@ export function ImAgentCardList({ onSelectAgent }: ImAgentCardListProps) {
   const [newAgentWorkspace, setNewAgentWorkspace] = useState('');
   const [creating, setCreating] = useState(false);
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<ImAgentConfig | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadAgents = useCallback(async () => {
@@ -200,7 +202,7 @@ export function ImAgentCardList({ onSelectAgent }: ImAgentCardListProps) {
               return (
                 <div
                   key={agent.id}
-                  onClick={() => onSelectAgent?.(agent)}
+                  onClick={() => setSelectedAgent(agent)}
                   className="relative group p-4 rounded-lg border border-[var(--border)] bg-[var(--paper)] cursor-pointer transition-colors hover:bg-[var(--hover)]"
                 >
                   {/* Delete button */}
@@ -389,6 +391,44 @@ export function ImAgentCardList({ onSelectAgent }: ImAgentCardListProps) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Agent Settings Panel */}
+      {selectedAgent && (
+        <ImAgentSettingsPanel
+          agent={selectedAgent}
+          onClose={() => setSelectedAgent(null)}
+          onSave={(updated) => {
+            void (async () => {
+              try {
+                await persistAgent(updated);
+                await loadAgents();
+              } catch (err) {
+                console.error('Failed to save agent:', err);
+              }
+              setSelectedAgent(null);
+            })();
+          }}
+          onDelete={() => {
+            const agent = selectedAgent;
+            void (async () => {
+              for (const ch of agent.channels) {
+                try {
+                  await stopAgentChannel(agent.id, ch.id);
+                } catch {
+                  // ignore stop errors
+                }
+              }
+              try {
+                await removeAgent(agent.id);
+                await loadAgents();
+              } catch (err) {
+                console.error('Failed to remove agent:', err);
+              }
+              setSelectedAgent(null);
+            })();
+          }}
+        />
       )}
     </div>
   );
