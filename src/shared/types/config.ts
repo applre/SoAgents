@@ -1,3 +1,5 @@
+import type { ImAgentConfig } from './imAgent';
+
 /**
  * Authentication type for API providers
  * - 'auth_token': Only set ANTHROPIC_AUTH_TOKEN
@@ -141,6 +143,7 @@ export interface AppConfig {
   defaultWorkspacePath?: string;
   proxySettings?: ProxySettings;
   showDevTools?: boolean;
+  agents?: ImAgentConfig[];
 }
 
 export interface ProviderEnv {
