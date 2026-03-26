@@ -17,6 +17,8 @@ import { getBuiltinMcp } from './tools/builtin-mcp-registry';
 import { getOAuthToken } from './mcp-oauth';
 import './tools/gemini-image-tool';
 import './tools/edge-tts-tool';
+import './tools/cron-tools';
+import { getCronTaskContext, cronToolsServer, setCurrentSessionId } from './tools/cron-tools';
 
 interface ChatImage {
   name: string;
@@ -130,12 +132,13 @@ function buildSdkMcpServers(input: BuildMcpServersInput): Record<string, unknown
   const result: Record<string, unknown> = {};
 
   // --- Pattern 1: Context-injected MCPs (auto-added based on session context) ---
-  // Future: cron-tools injection when cronContext.taskId exists
-  // Example:
-  //   const cronContext = getCronTaskContext();
-  //   if (cronContext?.taskId) {
-  //     result['cron-tools'] = cronToolsServer;
-  //   }
+  if (input.sessionId) {
+    const cronCtx = getCronTaskContext(input.sessionId);
+    if (cronCtx?.canExit) {
+      setCurrentSessionId(input.sessionId);
+      result['cron-tools'] = cronToolsServer;
+    }
+  }
 
   // --- Pattern 2: Builtin registry MCPs (command='__builtin__') ---
   // These are user-toggled in Settings but run in-process via the registry.

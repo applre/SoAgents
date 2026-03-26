@@ -19,6 +19,7 @@ import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSy
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
+import { setCronTaskContext, clearCronTaskContext, resetCronExitStatus, isCronExitRequested } from './tools/cron-tools';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
@@ -78,7 +79,7 @@ Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }> };
+      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }>; cronTaskId?: string; aiCanExit?: boolean };
       const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
@@ -124,11 +125,24 @@ Bun.serve({
         sessionId = session.id;
       }
       const runner = getOrCreateRunner(sessionId);
-      const sendResult = await runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images);
-      if (!sendResult.ok) {
-        return Response.json({ ok: false, error: sendResult.error }, { status: 429 });
+
+      // Set cron task context if this is a scheduled task invocation
+      if (body.cronTaskId) {
+        resetCronExitStatus();
+        setCronTaskContext(sessionId, body.cronTaskId, body.aiCanExit ?? false);
       }
-      return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
+
+      try {
+        const sendResult = await runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images);
+        if (!sendResult.ok) {
+          return Response.json({ ok: false, error: sendResult.error }, { status: 429 });
+        }
+        return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
+      } finally {
+        if (body.cronTaskId) {
+          clearCronTaskContext(sessionId);
+        }
+      }
     }
 
     if (req.method === 'POST' && url.pathname === '/chat/queue/cancel') {
@@ -220,6 +234,10 @@ Bun.serve({
         isRunning: isRunning(),
         runningSessionIds: isRunning() && sid ? [sid] : [],
       });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/cron/exit-status') {
+      return Response.json({ exitRequested: isCronExitRequested() });
     }
 
     if (req.method === 'GET' && url.pathname === '/chat/sessions') {
