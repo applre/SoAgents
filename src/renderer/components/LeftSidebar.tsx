@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, FolderPlus, LayoutList, ListFilter, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, RefreshCw, Send, Settings } from 'lucide-react';
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, FolderPlus, LayoutList, ListFilter, MessageSquarePlus, MoreHorizontal, PanelLeft, Pencil, Pin, RefreshCw, Settings } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
@@ -341,7 +341,12 @@ export default function LeftSidebar({
                                     </span>
                                   )}
                                   {isPinned && <Pin size={12} className="shrink-0 text-[var(--ink-tertiary)]" />}
-                                  {s.source?.startsWith('telegram') && <Send size={12} className="shrink-0 text-[#229ED9]" />}
+                                  {s.source?.startsWith('telegram') && (
+                                    <span className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10">
+                                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--success)]" />
+                                      Telegram
+                                    </span>
+                                  )}
                                   <span className="truncate">{sessionTitle(s)}</span>
                                   <span className="ml-auto shrink-0 text-[11px] text-[var(--ink-tertiary)]">
                                     {relativeTimeCompact(s.lastActiveAt)}
