@@ -54,6 +54,22 @@ function PlatformIcon({ type }: { type: ChannelConfig['type'] }) {
   return null;
 }
 
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m ${seconds % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function formatRelativeTime(isoStr: string): string {
+  const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return `${Math.floor(diff / 86400)} 天前`;
+}
+
 export default function ChannelConfigPanel({
   channel,
   agentId: _agentId,
@@ -158,6 +174,38 @@ export default function ChannelConfigPanel({
           </button>
         )}
       </div>
+
+      {/* ── Runtime Status (when online) ── */}
+      {status && (status.status === 'online' || status.status === 'connecting') && (
+        <>
+          <div className="grid grid-cols-3 gap-3 rounded-lg bg-[var(--surface)] p-3">
+            <div>
+              <p className="text-[11px] text-[var(--ink-tertiary)]">运行时间</p>
+              <p className="text-[13px] font-medium text-[var(--ink)]">{formatUptime(status.uptimeSeconds)}</p>
+            </div>
+            <div>
+              <p className="text-[11px] text-[var(--ink-tertiary)]">活跃会话</p>
+              <p className="text-[13px] font-medium text-[var(--ink)]">{status.activeSessions.length}</p>
+            </div>
+            <div>
+              <p className="text-[11px] text-[var(--ink-tertiary)]">最后消息</p>
+              <p className="text-[13px] font-medium text-[var(--ink)]">
+                {status.activeSessions.length > 0 ? formatRelativeTime(status.activeSessions[0].lastActive) : '-'}
+              </p>
+            </div>
+          </div>
+          {status.errorMessage && (
+            <p className="rounded-lg bg-[var(--error)]/10 px-3 py-2 text-[12px] text-[var(--error)]">
+              {status.errorMessage}
+            </p>
+          )}
+          {status.bufferedMessages > 0 && (
+            <p className="text-[12px] text-[var(--ink-tertiary)]">
+              {status.bufferedMessages} 条消息已缓冲（等待 Sidecar 恢复后重放）
+            </p>
+          )}
+        </>
+      )}
 
       <div className="h-px bg-[var(--border)]" />
 
@@ -269,6 +317,26 @@ export default function ChannelConfigPanel({
       </label>
 
       <div className="h-px bg-[var(--border)]" />
+
+      {/* ── Proxy URL ── */}
+      {channel.type === 'telegram' && (
+        <>
+          <div className="space-y-2">
+            <label className="text-[13px] font-medium text-[var(--ink)]">代理地址</label>
+            <input
+              type="text"
+              value={channel.proxyUrl ?? ''}
+              onChange={(e) => onChange({ ...channel, proxyUrl: e.target.value || undefined })}
+              placeholder="http://127.0.0.1:7890"
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[14px] text-[var(--ink)] placeholder-[var(--ink-tertiary)] focus:border-[var(--accent)] focus:outline-none"
+            />
+            <p className="text-[12px] text-[var(--ink-tertiary)]">
+              Telegram API 在中国大陆被屏蔽，需设置 HTTP/SOCKS5 代理
+            </p>
+          </div>
+          <div className="h-px bg-[var(--border)]" />
+        </>
+      )}
 
       {/* ── Danger Zone ── */}
       <div className="space-y-2">

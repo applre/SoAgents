@@ -33,6 +33,9 @@ export interface ChannelConfig {
   groupPermissions?: GroupPermission[];
   groupActivation?: 'mention' | 'always';
 
+  // Proxy (Telegram API blocked in China)
+  proxyUrl?: string;
+
   // Per-channel AI overrides
   overrides?: ChannelOverrides;
   setupCompleted?: boolean;

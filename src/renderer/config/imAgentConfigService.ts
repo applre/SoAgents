@@ -74,6 +74,7 @@ export function buildImConfig(
     botToken: channel.botToken,
     telegramUseDraft: channel.telegramUseDraft ?? true,
     allowedUsers: channel.allowedUsers ?? [],
+    proxyUrl: channel.proxyUrl,
     providerId: effective.providerId,
     model: effective.model,
     providerEnvJson: effective.providerEnvJson,

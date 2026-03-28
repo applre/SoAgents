@@ -597,11 +597,7 @@ fn spawn_message_processing_loop(
                         .await;
                 }
 
-                // 5. Get session_id from router (for Sidecar session reuse)
-                let peer_session_id = task_router.lock().await.get_session_id(&session_key);
-
-                // 6. POST to Sidecar and stream SSE response
-                // Build request body
+                // 5. Compute source string (used by both replay and current message)
                 let source = format!(
                     "{}_{}",
                     msg.platform,
@@ -610,6 +606,65 @@ fn spawn_message_processing_loop(
                         types::ImSourceType::Group => "group",
                     }
                 );
+
+                // 6. Replay buffered messages for this session (if Sidecar just recovered)
+                if is_new_sidecar {
+                    let mut replay_count = 0u32;
+                    loop {
+                        let buffered = task_buffer.lock().await.pop_for_session(&session_key);
+                        let bm = match buffered {
+                            Some(bm) => bm,
+                            None => break,
+                        };
+                        replay_count += 1;
+                        ulog_info!(
+                            "[im] Replaying buffered message #{} for {} ({} chars)",
+                            replay_count,
+                            session_key,
+                            bm.text.len(),
+                        );
+
+                        // Build replay POST body (same format as regular messages)
+                        let replay_body = json!({
+                            "message": bm.text,
+                            "agentDir": task_config.workspace_path,
+                            "permissionMode": task_config.permission_mode,
+                            "sessionId": task_router.lock().await.get_session_id(&session_key),
+                            "metadata": {
+                                "source": source,
+                                "sourceId": bm.sender_id,
+                                "senderName": bm.sender_name,
+                            },
+                        });
+
+                        let replay_url = format!("http://127.0.0.1:{}/api/im/chat", port);
+                        match task_stream_client.post(&replay_url).json(&replay_body).send().await {
+                            Ok(resp) if resp.status().is_success() => {
+                                if let Err(e) = consume_sse_stream(resp, task_adapter.as_ref(), &bm.chat_id).await {
+                                    ulog_warn!("[im] Buffer replay stream error: {}", e);
+                                }
+                            }
+                            Ok(resp) => {
+                                ulog_warn!("[im] Buffer replay HTTP {}", resp.status());
+                            }
+                            Err(e) => {
+                                ulog_warn!("[im] Buffer replay request failed: {}", e);
+                                break; // Stop replaying if Sidecar is unreachable
+                            }
+                        }
+                    }
+                    if replay_count > 0 {
+                        ulog_info!("[im] Replayed {} buffered message(s) for {}", replay_count, session_key);
+                        if let Err(e) = task_buffer.lock().await.save_to_disk() {
+                            ulog_warn!("[im] Failed to persist buffer after replay: {}", e);
+                        }
+                    }
+                }
+
+                // 6. Get session_id from router (for Sidecar session reuse)
+                let peer_session_id = task_router.lock().await.get_session_id(&session_key);
+
+                // 8. POST to Sidecar and stream SSE response
                 let mut body = json!({
                     "message": text,
                     "agentDir": task_config.workspace_path,

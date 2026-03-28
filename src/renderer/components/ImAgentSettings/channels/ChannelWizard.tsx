@@ -54,6 +54,7 @@ export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardPro
   const [verifyState, setVerifyState] = useState<VerifyState>('idle');
   const [botUsername, setBotUsername] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [proxyUrl, setProxyUrl] = useState('');
 
   const handlePlatformSelect = (platform: Platform) => {
     if (!platform.enabled) return;
@@ -68,7 +69,7 @@ export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardPro
     setErrorMessage('');
     setBotUsername('');
     try {
-      const username = await verifyToken(selectedPlatform, trimmed);
+      const username = await verifyToken(selectedPlatform, trimmed, proxyUrl || undefined);
       setBotUsername(username);
       setVerifyState('valid');
     } catch (err) {
@@ -87,6 +88,7 @@ export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardPro
       botToken: token.trim(),
       telegramUseDraft: true,
       allowedUsers: [],
+      proxyUrl: proxyUrl || undefined,
     };
     onComplete(newChannel);
   };
@@ -230,6 +232,25 @@ export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardPro
                 </p>
               )}
             </div>
+
+            {/* Proxy URL (optional) */}
+            {selectedPlatform === 'telegram' && (
+              <div className="space-y-2">
+                <label className="text-[13px] font-medium text-[var(--ink)]">
+                  代理地址 <span className="font-normal text-[var(--ink-tertiary)]">(可选)</span>
+                </label>
+                <input
+                  type="text"
+                  value={proxyUrl}
+                  onChange={(e) => setProxyUrl(e.target.value)}
+                  placeholder="http://127.0.0.1:7890"
+                  className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[14px] text-[var(--ink)] placeholder-[var(--ink-tertiary)] focus:border-[var(--accent)] focus:outline-none"
+                />
+                <p className="text-[12px] text-[var(--ink-tertiary)]">
+                  中国大陆用户需设置代理才能连接 Telegram API
+                </p>
+              </div>
+            )}
 
             {/* Action buttons */}
             <div className="flex items-center justify-between pt-2">
