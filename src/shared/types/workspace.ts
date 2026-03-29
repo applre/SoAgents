@@ -10,5 +10,6 @@ export interface WorkspaceEntry {
     allow: string[];
     deny: string[];
   };
+  agentId?: string;                 // 关联的 IM Agent ID（主动 Agent 模式）
   lastOpenedAt: number;             // 时间戳，用于排序"最近工作区"
 }

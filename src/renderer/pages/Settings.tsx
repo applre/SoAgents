@@ -24,7 +24,7 @@ import { atomicModifyWorkspaces } from '../config/workspaceService';
 import { isTauri } from '../utils/env';
 import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
 import UsageStatsPanel from '../components/UsageStatsPanel';
-import { ImAgentCardList } from '../components/ImAgentSettings';
+import { BotPlatformRegistry } from '../components/ImAgentSettings';
 
 // ── 类型定义 ──────────────────────────────────────────────────
 
@@ -85,13 +85,13 @@ interface SubscriptionStatusData {
   verifyError?: string;
 }
 
-type NavId = 'provider' | 'mcp' | 'skills' | 'usage' | 'general' | 'about' | 'messaging';
+type NavId = 'provider' | 'mcp' | 'skills' | 'im-bot' | 'usage' | 'general' | 'about';
 
 const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucideProps> }[] = [
   { id: 'provider',        label: '模型供应商',     Icon: Brain },
   { id: 'skills',          label: 'Skills',         Icon: Puzzle },
   { id: 'mcp',             label: 'MCP',            Icon: Wrench },
-  { id: 'messaging',       label: 'Messaging',      Icon: MessageSquare },
+  { id: 'im-bot',          label: '聊天机器人 Bot', Icon: MessageSquare },
   { id: 'usage',           label: '使用统计',       Icon: BarChart2 },
   { id: 'general',         label: '通用',           Icon: Settings2 },
   { id: 'about',           label: '关于',           Icon: Info },
@@ -2923,7 +2923,7 @@ export default function Settings({ checkForUpdate, checking }: SettingsProps) {
         {activeNav === 'provider'        && <ProviderTab />}
         {activeNav === 'mcp'             && <MCPTab />}
         {activeNav === 'skills'          && <SkillsTab />}
-        {activeNav === 'messaging'       && <ImAgentCardList />}
+        {activeNav === 'im-bot'          && <BotPlatformRegistry />}
         {activeNav === 'usage'           && <UsageStatsPanel />}
         {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'about'           && <AboutTab checkForUpdate={checkForUpdate} checking={checking} />}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Eye, EyeOff, Loader2, Send, X } from 'lucide-react';
+import { Check, Eye, EyeOff, Loader2, Send } from 'lucide-react';
 import type { ChannelConfig } from '../../../../shared/types/imAgent';
 import { verifyToken } from '../../../config/imAgentConfigService';
 
@@ -46,7 +46,7 @@ const PLATFORMS: Platform[] = [
   },
 ];
 
-export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardProps) {
+export default function ChannelWizard({ onComplete, onCancel: _onCancel }: ChannelWizardProps) {
   const [step, setStep] = useState<1 | 2>(1);
   const [selectedPlatform, setSelectedPlatform] = useState<'telegram' | 'feishu' | 'dingtalk'>('telegram');
   const [token, setToken] = useState('');
@@ -103,49 +103,21 @@ export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardPro
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[480px] rounded-2xl bg-[var(--paper)] p-6 shadow-2xl">
-        {/* Header */}
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-[18px] font-semibold text-[var(--ink)]">
-            {step === 1 ? '添加频道' : '配置 Bot Token'}
-          </h2>
-          <button
-            onClick={onCancel}
-            className="rounded-lg p-1 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="mb-5">
+        <h2 className="text-[18px] font-semibold text-[var(--ink)]">
+          {step === 1 ? '选择平台' : '配置 Bot Token'}
+        </h2>
+        <p className="mt-1 text-[12px] text-[var(--ink-tertiary)]">
+          {step === 1 ? '选择要接入的 IM 平台' : '前往 Telegram 的 @BotFather 创建 Bot 并获取 Token'}
+        </p>
+      </div>
 
-        {/* Step indicator */}
-        <div className="mb-6 flex items-center gap-2">
-          <div
-            className={`flex h-6 w-6 items-center justify-center rounded-full text-[12px] font-medium ${
-              step === 1
-                ? 'bg-[var(--accent)] text-white'
-                : 'bg-[var(--success-bg)] text-[var(--success)]'
-            }`}
-          >
-            {step === 1 ? '1' : <Check className="h-3.5 w-3.5" />}
-          </div>
-          <div className="h-px flex-1 bg-[var(--border)]" />
-          <div
-            className={`flex h-6 w-6 items-center justify-center rounded-full text-[12px] font-medium ${
-              step === 2
-                ? 'bg-[var(--accent)] text-white'
-                : 'bg-[var(--surface)] text-[var(--ink-tertiary)]'
-            }`}
-          >
-            2
-          </div>
-        </div>
-
-        {/* Step 1: Platform Select */}
+      {/* Step 1: Platform Select */}
         {step === 1 && (
           <div className="space-y-4">
-            <p className="text-[14px] text-[var(--ink-secondary)]">选择要接入的 IM 平台</p>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               {PLATFORMS.map((platform) => (
                 <button
                   key={platform.id}
@@ -173,9 +145,6 @@ export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardPro
         {/* Step 2: Token Input */}
         {step === 2 && (
           <div className="space-y-5">
-            <p className="text-[14px] text-[var(--ink-secondary)]">
-              前往 Telegram 的 @BotFather 创建 Bot 并获取 Token
-            </p>
 
             {/* Token input row */}
             <div className="space-y-2">
@@ -270,7 +239,6 @@ export default function ChannelWizard({ onComplete, onCancel }: ChannelWizardPro
             </div>
           </div>
         )}
-      </div>
     </div>
   );
 }

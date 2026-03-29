@@ -1,10 +1,20 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Shield, ShieldCheck, Zap } from 'lucide-react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { Shield, ShieldCheck, Zap, HeartPulse } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useConfigData, useConfigActions } from '../context/ConfigContext';
 import type { PermissionMode } from '../../shared/types/permission';
 import type { McpServerDefinition } from '../../shared/types/mcp';
+import type { ImAgentConfig } from '../../shared/types/imAgent';
+import type { ImBotStatus } from '../../shared/types/im';
+import { DEFAULT_IM_AGENT_CONFIG } from '../../shared/types/imAgent';
+import {
+  getAgentById,
+  persistAgent,
+  getAllChannelsStatus,
+  stopAgentChannel,
+} from '../config/imAgentConfigService';
 import { fetchMcpServers } from '../services/mcpService';
+import { AgentChannelsSection } from './ImAgentSettings/sections/AgentChannelsSection';
 import CustomSelect from './CustomSelect';
 
 // ── Permission modes ──
@@ -74,6 +84,121 @@ export default function WorkspaceGeneralTab({ agentDir }: Props) {
       .catch(() => {
         // silently ignore — MCP not critical for this view
       });
+  }, []);
+
+  // ── Agent mode state ──
+
+  const [agent, setAgent] = useState<ImAgentConfig | null>(null);
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, ImBotStatus>>({});
+  const [toggling, setToggling] = useState(false);
+  const statusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isProactive = !!(agent?.enabled);
+
+  // Load agent config when workspace has agentId
+  const loadAgent = useCallback(async () => {
+    const agentId = wsEntry?.agentId;
+    if (!agentId) {
+      setAgent(null);
+      return;
+    }
+    try {
+      const loaded = await getAgentById(agentId);
+      setAgent(loaded ?? null);
+    } catch {
+      setAgent(null);
+    }
+  }, [wsEntry?.agentId]);
+
+  useEffect(() => {
+    void loadAgent();
+  }, [loadAgent]);
+
+  // Poll channel statuses when agent is active
+  const pollStatuses = useCallback(async () => {
+    try {
+      const result = await getAllChannelsStatus();
+      setAgentStatuses(result);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const channelCount = agent?.channels.length ?? 0;
+
+  useEffect(() => {
+    if (statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current);
+      statusIntervalRef.current = null;
+    }
+    if (isProactive && channelCount > 0) {
+      const initialTimer = setTimeout(() => { void pollStatuses(); }, 0);
+      statusIntervalRef.current = setInterval(() => {
+        void pollStatuses();
+      }, 5000);
+      return () => {
+        clearTimeout(initialTimer);
+        if (statusIntervalRef.current) {
+          clearInterval(statusIntervalRef.current);
+          statusIntervalRef.current = null;
+        }
+      };
+    }
+    return () => {
+      if (statusIntervalRef.current) {
+        clearInterval(statusIntervalRef.current);
+        statusIntervalRef.current = null;
+      }
+    };
+  }, [isProactive, channelCount, pollStatuses]);
+
+  // Toggle proactive agent mode
+  const handleToggleProactive = useCallback(async () => {
+    if (toggling) return;
+    setToggling(true);
+    try {
+      if (agent && agent.enabled) {
+        // Disable — stop all running channels
+        for (const ch of agent.channels) {
+          try {
+            await stopAgentChannel(agent.id, ch.id);
+          } catch { /* channel may not be running */ }
+        }
+        const updated = { ...agent, enabled: false };
+        await persistAgent(updated);
+        setAgent(updated);
+      } else if (agent && !agent.enabled) {
+        // Re-enable
+        const updated = { ...agent, enabled: true };
+        await persistAgent(updated);
+        setAgent(updated);
+      } else {
+        // Create new agent config for this workspace
+        const dirName = agentDir.split('/').pop() || 'Agent';
+        const newAgent: ImAgentConfig = {
+          ...DEFAULT_IM_AGENT_CONFIG,
+          id: crypto.randomUUID(),
+          name: dirName,
+          workspacePath: agentDir,
+          enabled: true,
+          permissionMode: selectedPermissionMode || 'bypassPermissions',
+          channels: [],
+        } as ImAgentConfig;
+        await persistAgent(newAgent);
+        await updateWorkspaceConfig(agentDir, { agentId: newAgent.id });
+        setAgent(newAgent);
+      }
+    } catch (e) {
+      console.error('[WorkspaceGeneralTab] Toggle proactive failed:', e);
+    } finally {
+      setToggling(false);
+    }
+  }, [agent, agentDir, selectedPermissionMode, toggling, updateWorkspaceConfig]);
+
+  // Handle agent config changes from AgentChannelsSection
+  const handleAgentChange = useCallback(async (updated: ImAgentConfig) => {
+    setAgent(updated);
+    await persistAgent(updated);
   }, []);
 
   // ── Provider availability (stable Set derived from apiKeys) ──
@@ -347,6 +472,58 @@ export default function WorkspaceGeneralTab({ agentDir }: Props) {
             )}
           </>
         )}
+      </section>
+
+      {/* ── Section 5: 主动 Agent 模式 ── */}
+      <section className="flex flex-col gap-3">
+        <h3 className="text-[13px] font-semibold text-[var(--ink-secondary)] uppercase tracking-wide">
+          主动 Agent 模式
+        </h3>
+
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--paper)] p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex-1 pr-4">
+              <div className="flex items-center gap-2">
+                <HeartPulse size={16} className="text-[var(--accent)] flex-shrink-0" />
+                <span className="text-[14px] font-medium text-[var(--ink)]">
+                  主动 Agent 模式
+                </span>
+              </div>
+              <p className="mt-1 text-[12px] text-[var(--ink-tertiary)] ml-6">
+                启用后可添加聊天机器人（如 Telegram）主动与你互动
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isProactive}
+              disabled={toggling}
+              onClick={() => { void handleToggleProactive(); }}
+              className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-150 focus:outline-none ${
+                toggling ? 'cursor-wait opacity-50' : 'cursor-pointer'
+              } ${
+                isProactive ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-150 ${
+                  isProactive ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Channels section when proactive is enabled */}
+          {isProactive && agent && (
+            <div className="mt-5 border-t border-[var(--border)] pt-5">
+              <AgentChannelsSection
+                agent={agent}
+                onChange={(updated) => { void handleAgentChange(updated); }}
+                statuses={agentStatuses}
+              />
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );
