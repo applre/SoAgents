@@ -4,7 +4,7 @@ import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, Square, File
 import type { QueuedMessageInfo } from '../../shared/types/queue';
 import QueuedMessagesPanel from './QueuedMessagesPanel';
 import type { LucideIcon } from 'lucide-react';
-import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
+import SlashCommandMenu, { filterSlashCommands, type CommandItem } from './SlashCommandMenu';
 import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { fetchMcpServers, pushEffectiveMcpServers } from '../services/mcpService';
@@ -83,7 +83,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const [showSlash, setShowSlash] = useState(false);
   const [slashPosition, setSlashPosition] = useState<number | null>(null);
   const [slashSearchQuery, setSlashSearchQuery] = useState('');
-  const [_selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   // @ 文件搜索
   const [showFileSearch, setShowFileSearch] = useState(false);
   const [atPosition, setAtPosition] = useState<number | null>(null);
@@ -407,37 +407,6 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     textareaRef.current?.focus();
   }, [atPosition, text]);
 
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // @ 文件搜索键盘导航 — 由 FileSearchMenu 内部处理
-      if (showFileSearch) {
-        // 阻止 Enter 发送消息和其他键盘事件传播到 textarea
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setShowFileSearch(false);
-          setAtPosition(null);
-          return;
-        }
-        return;
-      }
-      // / 技能键盘导航（由 SlashCommandMenu 内部处理，这里仅阻止 Enter 发送）
-      if (showSlash) {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setShowSlash(false);
-          setSlashPosition(null);
-          return;
-        }
-        if (e.key === 'Enter' || e.key === 'ArrowDown' || e.key === 'ArrowUp') return; // 交给 SlashCommandMenu
-      }
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend, showSlash, showFileSearch]
-  );
-
   // 追加 skill 到 selectedSkills（不重复）
   const addSkill = useCallback(async (name: string) => {
     if (selectedSkills.some((s) => s.name === name)) return;
@@ -488,6 +457,59 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setSlashPosition(null);
     textareaRef.current?.focus();
   }, [slashPosition, text, slashSearchQuery, addSkill]);
+
+  // Compute filtered slash commands for keyboard nav
+  const filteredSlashCommands = useMemo(
+    () => filterSlashCommands(skillCommands, slashSearchQuery),
+    [skillCommands, slashSearchQuery],
+  );
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // @ 文件搜索键盘导航 — 由 FileSearchMenu 内部处理
+      if (showFileSearch) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowFileSearch(false);
+          setAtPosition(null);
+          return;
+        }
+        return;
+      }
+      // / 技能键盘导航 — 在父组件中处理
+      if (showSlash && filteredSlashCommands.length > 0) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowSlash(false);
+          setSlashPosition(null);
+          return;
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setSelectedSlashIndex((i) => Math.min(i + 1, filteredSlashCommands.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setSelectedSlashIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const cmd = filteredSlashCommands[selectedSlashIndex];
+          if (cmd) handleSlashSelect(cmd.name);
+          return;
+        }
+      }
+      // IME composition guard — 防止中文输入法 Enter 触发发送
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      }
+    },
+    [handleSend, handleSlashSelect, showSlash, showFileSearch, filteredSlashCommands, selectedSlashIndex]
+  );
 
   const handleSkillToggle = useCallback(async (name: string) => {
     if (selectedSkills.some((s) => s.name === name)) {
@@ -736,8 +758,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         {showSlash && (
           <SlashCommandMenu
             query={slashSearchQuery}
+            selectedIndex={selectedSlashIndex}
             onSelect={handleSlashSelect}
-            onClose={() => { setShowSlash(false); setSlashPosition(null); }}
             skillCommands={skillCommands}
           />
         )}

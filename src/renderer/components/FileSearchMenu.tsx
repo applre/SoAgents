@@ -35,6 +35,8 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const expandedDirRef = useRef<string | null>(null);
   const pendingExpandRef = useRef<string | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   // Build flat visible list (browse: root items + inline expanded children; search: flat results)
   const flatItems: FlatItem[] = useMemo(() => {
@@ -90,16 +92,16 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
     selectedRef.current?.scrollIntoView({ block: 'nearest' });
   }, [selectedIndex]);
 
-  // Click outside to close
+  // Click outside to close (use ref to avoid re-registering on every parent render)
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [onClose]);
+  }, []);
 
   const expandDir = useCallback(async (dirPath: string) => {
     if (expandedDirRef.current === dirPath) return;
