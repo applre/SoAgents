@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { TabContext, TabApiContext, TabActiveContext, type TabState, type TabApiContextValue } from './TabContext';
 import { SseConnection } from '../api/SseConnection';
 import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl, listRunningSidecars, cancelBackgroundCompletion, startBackgroundCompletion } from '../api/tauriClient';
-import { apiGetJson, apiPostJson } from '../api/apiFetch';
+import { apiGetJson, apiPostJson, apiPutJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import type { Message, ContentBlock, ChatImage, TurnMeta } from '../types/chat';
 import type { LogEntry } from '../../shared/types/log';
@@ -118,7 +118,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   const [sidecarReady, setSidecarReady] = useState(false);
   const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
+  const [, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
   const queuedMessagesRef = useRef<QueuedMessageInfo[]>([]);
   // Track queueIds that have already started (queue:started arrived before .then() replaced opt-)
   const startedQueueIdsRef = useRef(new Set<string>());
@@ -444,6 +444,15 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         stopTimeoutRef.current = null;
       }
 
+      // 活跃 tab 完成助手回复 → 更新 lastViewedAt，避免任务中心显示蓝点
+      if (isActiveRef.current) {
+        const sid = sessionIdRef.current;
+        const url = serverUrlRef.current;
+        if (sid && url) {
+          apiPutJson(url, `/chat/sessions/${sid}/viewed`, {}).catch(() => {});
+        }
+      }
+
       // 非活跃 tab 收到完成事件 → 标记未读
       if (!isActiveRef.current) {
         onUnreadChangeRef.current?.(true);
@@ -496,17 +505,24 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     });
 
     sse.on('queue:started', (data) => {
-      const evt = data as { queueId: string; text: string };
+      const evt = data as { queueId: string; text?: string; userMessage?: { id: string; content: string; attachments?: unknown[] }; midTurnBreak?: boolean };
       if (!evt.queueId) return;
       // Track started IDs to prevent .then() from re-adding
       startedQueueIdsRef.current.add(evt.queueId);
       // Remove both real queueId and any opt- entry
       queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== evt.queueId && !q.queueId.startsWith('opt-'));
       setQueuedMessages(queuedMessagesRef.current);
+
+      // Mid-turn break: finalize current streaming message into history first
+      if (evt.midTurnBreak) {
+        moveStreamingToHistory();
+      }
+
+      const displayText = evt.userMessage?.content ?? evt.text ?? '';
       const userMsg: Message = {
-        id: crypto.randomUUID(),
+        id: evt.userMessage?.id ?? crypto.randomUUID(),
         role: 'user',
-        blocks: [{ type: 'text', text: evt.text }],
+        blocks: [{ type: 'text', text: displayText }],
         createdAt: Date.now(),
       };
       setHistoryMessages((prev) => [...prev, userMsg]);
@@ -1040,24 +1056,6 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     [getGlobalUrl]
   );
 
-  const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
-    const url = serverUrlRef.current;
-    if (!url) return null;
-    const resp = await apiPostJson<{ ok: boolean; text?: string }>(url, '/chat/queue/cancel', { queueId });
-    if (resp.ok) {
-      queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== queueId);
-      setQueuedMessages(queuedMessagesRef.current);
-      return resp.text ?? null;
-    }
-    return null;
-  }, []);
-
-  const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
-    const url = serverUrlRef.current;
-    if (!url) return false;
-    const resp = await apiPostJson<{ ok: boolean }>(url, '/chat/queue/force', { queueId });
-    return resp.ok;
-  }, []);
 
   const respondPermission = useCallback(async (toolUseId: string, decision: 'deny' | 'allow_once' | 'always_allow') => {
     const url = serverUrlRef.current;
@@ -1121,11 +1119,8 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       updateSessionTitle,
       unifiedLogs,
       clearUnifiedLogs,
-      queuedMessages,
-      cancelQueuedMessage,
-      forceExecuteQueuedMessage,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, deleteSession, updateSessionTitle, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage]
+    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, deleteSession, updateSessionTitle, unifiedLogs, clearUnifiedLogs]
   );
 
   return (

@@ -31,6 +31,14 @@ export async function apiPostJson<T>(baseUrl: string, path: string, body: unknow
   return JSON.parse(text) as T;
 }
 
+export async function apiPutJson<T>(baseUrl: string, path: string, body: unknown): Promise<T> {
+  const text = await proxyFetch(`${baseUrl}${path}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+  return JSON.parse(text) as T;
+}
+
 // 全局 Sidecar API（Settings/Launcher 页面使用）
 async function getGlobalUrl(): Promise<string> {
   // Wait for global sidecar to be ready (blocks until startGlobalSidecar succeeds)
