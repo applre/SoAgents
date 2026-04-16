@@ -26,6 +26,8 @@ export interface SessionStats {
   totalCacheCreationTokens?: number;
 }
 
+export type SessionStatus = 'active' | 'approval' | 'inactive' | 'archived';
+
 export interface SessionMetadata {
   id: string;
   agentDir: string;
@@ -38,6 +40,8 @@ export interface SessionMetadata {
   manuallyRenamed?: boolean;
   /** Message source: 'desktop' (default), 'telegram_private', 'telegram_group', etc. */
   source?: string;
+  lastMessageRole?: 'user' | 'assistant';
+  lastViewedAt?: string;
 }
 
 export interface MessageAttachment {
