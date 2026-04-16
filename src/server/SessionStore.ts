@@ -128,7 +128,7 @@ export function saveMessage(sessionId: string, msg: SessionMessage): void {
     totalOutputTokens: msg.usage?.outputTokens ?? 0,
     totalCacheReadTokens: msg.usage?.cacheReadTokens ?? 0,
     totalCacheCreationTokens: msg.usage?.cacheCreationTokens ?? 0,
-  });
+  }, msg.role as 'user' | 'assistant');
 }
 
 export function getSessionMessages(sessionId: string): SessionMessage[] {
@@ -163,7 +163,7 @@ export function listSessions(filter?: { archived?: boolean }): SessionMetadata[]
   });
 }
 
-export function updateSessionStats(sessionId: string, delta: Partial<SessionStats>): void {
+export function updateSessionStats(sessionId: string, delta: Partial<SessionStats>, lastMessageRole?: 'user' | 'assistant'): void {
   if (!isValidId(sessionId)) return;
   withLock(() => {
     const sessions = readIndex();
@@ -187,6 +187,9 @@ export function updateSessionStats(sessionId: string, delta: Partial<SessionStat
     }
     if (delta.totalCacheCreationTokens) {
       session.stats.totalCacheCreationTokens = (session.stats.totalCacheCreationTokens ?? 0) + delta.totalCacheCreationTokens;
+    }
+    if (lastMessageRole) {
+      session.lastMessageRole = lastMessageRole;
     }
     session.lastActiveAt = new Date().toISOString();
     sessions[idx] = session;
@@ -245,6 +248,17 @@ export function updateSessionSource(sessionId: string, source: string): void {
     if (idx === -1) return;
     if (sessions[idx].source) return; // already set
     sessions[idx].source = source;
+    writeIndex(sessions);
+  });
+}
+
+export function markViewed(sessionId: string): void {
+  if (!isValidId(sessionId)) return;
+  withLock(() => {
+    const sessions = readIndex();
+    const idx = sessions.findIndex(s => s.id === sessionId);
+    if (idx === -1) return;
+    sessions[idx].lastViewedAt = new Date().toISOString();
     writeIndex(sessions);
   });
 }
