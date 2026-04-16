@@ -1,5 +1,5 @@
 import { broadcast, createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers, stripYamlFrontmatter, waitForSessionIdle, enqueueUserMessage } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -455,6 +455,13 @@ Bun.serve({
       } catch {
         return Response.json([]);
       }
+    }
+
+    // PUT /chat/sessions/:id/viewed — mark session as viewed
+    if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/viewed$/)) {
+      const sessionId = url.pathname.split('/')[3];
+      SessionStore.markViewed(sessionId);
+      return Response.json({ ok: true });
     }
 
     if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/archive$/)) {
@@ -1764,8 +1771,170 @@ Bun.serve({
       }
     }
 
+    // ── Agent Heartbeat & Memory Auto-Update API ──
+
+    // POST /api/agent/heartbeat — Execute HEARTBEAT.md as autonomous prompt
+    if (req.method === 'POST' && url.pathname === '/api/agent/heartbeat') {
+      try {
+        const body = await req.json() as { agentId?: string; workspacePath?: string; ackMaxChars?: number };
+
+        // Resolve agent dir
+        const runner = getRunner();
+        if (!runner) {
+          return Response.json({ status: 'error', text: 'No active runner' });
+        }
+        const sid = getCurrentSessionId();
+        if (!sid) {
+          return Response.json({ status: 'error', text: 'No active session' });
+        }
+        const allSessions = SessionStore.listSessions();
+        const sessionMeta = allSessions.find(s => s.id === sid);
+        const agentDir = body.workspacePath ?? sessionMeta?.agentDir;
+        if (!agentDir) {
+          return Response.json({ status: 'error', text: 'No agentDir' });
+        }
+
+        // 1. Read HEARTBEAT.md
+        const heartbeatMdPath = join(agentDir, 'HEARTBEAT.md');
+        let heartbeatContent = '';
+        try {
+          const raw = readFileSync(heartbeatMdPath, 'utf-8');
+          heartbeatContent = stripYamlFrontmatter(raw);
+        } catch {
+          // File not found — create default with frontmatter only (no body = skip)
+          try {
+            const defaultContent = `---\ndescription: >\n  心跳清单 — Agent 按心跳间隔定时苏醒时会读取本文件的正文部分作为指令执行。\n  正文为空时心跳会直接跳过，不请求 AI（节省 token）。\n---\n`;
+            writeFileSync(heartbeatMdPath, defaultContent, 'utf-8');
+          } catch { /* ignore write failure */ }
+        }
+
+        // 2. Skip if HEARTBEAT.md body is empty
+        if (!heartbeatContent.trim()) {
+          return Response.json({ status: 'silent', reason: 'empty_heartbeat_md' });
+        }
+
+        // 3. Build prompt
+        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        const prompt = `<system-reminder>\n<HEARTBEAT>\nThis is a heartbeat from the system.\nRead HEARTBEAT.md if it exists (workspace context). Follow it strictly.\nDo not infer or repeat old tasks from prior chats.\nIf there is nothing that needs attention, reply exactly: HEARTBEAT_OK\nIf something needs attention, do NOT include "HEARTBEAT_OK"\n\nCurrent time: ${now}\n</HEARTBEAT>\n</system-reminder>`;
+
+        // 4. Inject with bypassPermissions
+        const result = await enqueueUserMessage(prompt, agentDir, 'bypassPermissions');
+        if (!result.ok) {
+          return Response.json({ status: 'error', text: result.error ?? 'enqueue failed' });
+        }
+
+        // 5. Wait for completion (5 min timeout)
+        const completed = await waitForSessionIdle(300000, 500);
+        if (!completed) {
+          return Response.json({ status: 'error', text: 'Heartbeat timeout' });
+        }
+
+        // 6. Extract last assistant message
+        const messages = SessionStore.getSessionMessages(sid);
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+        if (!lastAssistant?.content) {
+          return Response.json({ status: 'silent', reason: 'no_response' });
+        }
+
+        // 7. Check HEARTBEAT_OK
+        const text = lastAssistant.content;
+        const ackMaxChars = body.ackMaxChars ?? 300;
+        const hbResult = stripHeartbeatToken(text, ackMaxChars);
+        console.log(`[Heartbeat] ${hbResult.status} for session ${sid?.slice(0, 8)}`);
+        return Response.json(hbResult);
+      } catch (error) {
+        console.error('[Heartbeat] Error:', error);
+        return Response.json(
+          { status: 'error', text: error instanceof Error ? error.message : String(error) },
+          { status: 500 }
+        );
+      }
+    }
+
+    // POST /api/agent/memory-update — Inject UPDATE_MEMORY.md as autonomous prompt
+    if (req.method === 'POST' && url.pathname === '/api/agent/memory-update') {
+      try {
+        const body = await req.json() as { source?: string };
+        const source = body.source ?? 'manual';
+
+        // 1. Resolve agent dir from current runner
+        const runner = getRunner();
+        if (!runner) {
+          return Response.json({ status: 'skipped', reason: 'No active runner' });
+        }
+
+        // Read agentDir from the current session's config
+        const sid = getCurrentSessionId();
+        if (!sid) {
+          return Response.json({ status: 'skipped', reason: 'No active session' });
+        }
+        const allSessions = SessionStore.listSessions();
+        const sessionMeta = allSessions.find(s => s.id === sid);
+        const agentDir = sessionMeta?.agentDir;
+        if (!agentDir) {
+          return Response.json({ status: 'skipped', reason: 'No agentDir for session' });
+        }
+
+        // 2. Read UPDATE_MEMORY.md
+        const updateMdPath = join(agentDir, 'UPDATE_MEMORY.md');
+        let rawContent: string;
+        try {
+          rawContent = readFileSync(updateMdPath, 'utf-8');
+        } catch {
+          return Response.json({ status: 'skipped', reason: 'UPDATE_MEMORY.md not found' });
+        }
+
+        // 3. Strip YAML frontmatter
+        const promptContent = stripYamlFrontmatter(rawContent);
+        if (!promptContent.trim()) {
+          return Response.json({ status: 'skipped', reason: 'UPDATE_MEMORY.md body is empty' });
+        }
+
+        // 4. Build injection prompt
+        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        const prompt = `<system-reminder>\n<MEMORY_UPDATE>\n${promptContent}\n\nCurrent time: ${now}\n\n完成所有记忆维护操作后（包括文件读写和 git 操作），仅回复 MEMORY_UPDATE_OK，不要输出其他内容。\n</MEMORY_UPDATE>\n</system-reminder>`;
+
+        // 5. Inject with bypassPermissions (fullAgency)
+        const result = await enqueueUserMessage(prompt, agentDir, 'bypassPermissions');
+        if (!result.ok) {
+          return Response.json({ status: 'skipped', reason: result.error ?? 'enqueue failed' });
+        }
+
+        // 6. Wait for session idle (60 min timeout, 1s poll)
+        const completed = await waitForSessionIdle(3600000, 1000);
+
+        console.log(`[MemoryUpdate] ${source} update ${completed ? 'completed' : 'timed out'} for session ${sid?.slice(0, 8)}`);
+        return Response.json({ status: completed ? 'completed' : 'timeout' });
+      } catch (error) {
+        console.error('[MemoryUpdate] Error:', error);
+        return Response.json(
+          { status: 'error', reason: error instanceof Error ? error.message : String(error) },
+          { status: 500 }
+        );
+      }
+    }
+
     return new Response("Not Found", { status: 404 });
   },
 });
+
+// ── Heartbeat helpers ──
+
+function stripHeartbeatToken(text: string, ackMaxChars: number): { status: string; text?: string; reason?: string } {
+  if (!text?.trim()) {
+    return { status: 'silent', reason: 'empty' };
+  }
+  if (!/HEARTBEAT_OK/i.test(text)) {
+    return { status: 'content', text };
+  }
+  const stripped = text
+    .replace(/\*{0,2}HEARTBEAT_OK\*{0,2}/gi, '')
+    .replace(/`HEARTBEAT_OK`/gi, '')
+    .trim();
+  if (stripped.length <= ackMaxChars) {
+    return { status: 'silent', reason: 'heartbeat_ok' };
+  }
+  return { status: 'content', text: stripped };
+}
 
 console.log(`[Sidecar] Bun server listening on port ${port}`);
