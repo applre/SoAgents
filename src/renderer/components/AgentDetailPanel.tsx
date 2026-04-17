@@ -271,7 +271,7 @@ const AgentDetailPanel = forwardRef<AgentDetailPanelRef, Props>(
     // ── Render: Edit mode ──
     if (isEditMode) {
       return (
-        <div className="flex flex-col h-full -m-6" style={{ height: 'calc(100% + 48px)' }}>
+        <div className="flex flex-col h-full">
           {/* Basic form fields */}
           <div className="flex flex-col gap-4 px-6 pt-6 pb-4 border-b border-[var(--border)]">
             {/* Name */}
@@ -450,7 +450,7 @@ const AgentDetailPanel = forwardRef<AgentDetailPanelRef, Props>(
     const info = agentDetail;
 
     return (
-      <div className="flex flex-col h-full -m-6" style={{ height: 'calc(100% + 48px)' }}>
+      <div className="flex flex-col h-full">
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-5 border-b border-[var(--border)]">
           <div className="flex flex-col gap-2 flex-1 min-w-0 mr-4">

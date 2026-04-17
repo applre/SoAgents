@@ -4,6 +4,8 @@ import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '../../shared/types/session';
 import { relativeTimeCompact } from '../utils/formatTime';
+import { computeSessionStatus } from '../utils/sessionStatus';
+import { StatusDot } from './StatusDot';
 
 interface Props {
   sessions: SessionMetadata[];
@@ -23,10 +25,12 @@ interface Props {
   onOpenSettings: () => void;
   onOpenScheduledTasks: () => void;
   onOpenTaskCenter: () => void;
+  onOpenWorkspaces: () => void;
   onCollapse: () => void;
   isSettingsActive?: boolean;
   isScheduledTasksActive?: boolean;
   isTaskCenterActive?: boolean;
+  isWorkspacesActive?: boolean;
   updateReady?: boolean;
   updateVersion?: string | null;
   onRestartAndUpdate?: () => void;
@@ -58,10 +62,12 @@ export default function LeftSidebar({
   onOpenSettings,
   onOpenScheduledTasks,
   onOpenTaskCenter,
+  onOpenWorkspaces,
   onCollapse,
   isSettingsActive = false,
   isScheduledTasksActive = false,
   isTaskCenterActive = false,
+  isWorkspacesActive = false,
   updateReady = false,
   updateVersion,
   onRestartAndUpdate,
@@ -214,6 +220,17 @@ export default function LeftSidebar({
             <Clock size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
             定时任务
           </button>
+          <button
+            onClick={onOpenWorkspaces}
+            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium transition-colors text-left ${
+              isWorkspacesActive
+                ? 'bg-[var(--hover)] text-[var(--ink)]'
+                : 'text-[var(--ink)] hover:bg-[var(--hover)]'
+            }`}
+          >
+            <FolderOpen size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
+            工作区
+          </button>
         </div>
       </div>
 
@@ -222,15 +239,16 @@ export default function LeftSidebar({
         <div className="shrink-0 flex items-center justify-between" style={{ padding: '12px 22px 6px' }}>
           <span className="text-[13px] font-semibold text-[var(--ink-secondary)]">最近对话</span>
           <div className="relative flex items-center gap-2">
-            <button onClick={onNewWorkspace} title="新建工作区">
-              <FolderPlus size={16} className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors" />
+            <button onClick={onNewWorkspace} title="新建工作区" className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-tertiary)] hover:text-[var(--ink)] hover:bg-[var(--hover)] transition-colors">
+              <FolderPlus size={16} />
             </button>
             <button
               onClick={() => setShowFilterMenu(v => !v)}
+              title="筛选"
               className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
                 sessionFilter !== 'active'
                   ? 'text-[var(--accent)]'
-                  : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+                  : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)] hover:bg-[var(--hover)]'
               }`}
             >
               <ListFilter size={14} />
@@ -274,10 +292,10 @@ export default function LeftSidebar({
               return (
                 <div key={agentDirKey}>
                   {/* Group header */}
-                  <div className="group/gh flex items-center">
+                  <div className="group/gh relative">
                     <button
                       onClick={() => toggleGroup(agentDirKey)}
-                      className="flex flex-1 min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--hover)] transition-colors"
+                      className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 pr-8 text-left hover:bg-[var(--hover)] transition-colors"
                     >
                       {isCollapsed
                         ? <ChevronRight size={12} className="shrink-0 text-[var(--ink-tertiary)]" />
@@ -294,7 +312,7 @@ export default function LeftSidebar({
                     <button
                       onClick={(e) => { e.stopPropagation(); onNewChatInDir(agentDirKey); }}
                       title="新建对话"
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded opacity-0 group-hover/gh:opacity-100 text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-all"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded opacity-0 group-hover/gh:opacity-100 text-[var(--ink-tertiary)] hover:text-[var(--ink)] hover:bg-[var(--hover)] transition-all"
                     >
                       <MessageSquarePlus size={14} />
                     </button>
@@ -334,12 +352,10 @@ export default function LeftSidebar({
                                   }`}
                                   style={{ paddingLeft: 26 }}
                                 >
-                                  {runningSessions?.has(s.id) && (
-                                    <span className="relative flex h-2 w-2 shrink-0">
-                                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--running-light)] opacity-75" />
-                                      <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--running)]" />
-                                    </span>
-                                  )}
+                                  <StatusDot
+                                    status={computeSessionStatus(s, runningSessions ?? new Set())}
+                                    suppressApproval={isActive}
+                                  />
                                   {isPinned && <Pin size={12} className="shrink-0 text-[var(--ink-tertiary)]" />}
                                   {s.source?.startsWith('telegram') && (
                                     <span className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10">

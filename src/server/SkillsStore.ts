@@ -279,8 +279,17 @@ export function list(agentDir?: string): SkillInfo[] {
   const builtinNames = getBuiltinSkillNames();
 
   // 合并 ~/.soagents/skills/ 和 ~/.claude/skills/，soagents 优先
-  const soagentsSkills = scanSkillsDir(GLOBAL_SKILLS_DIR, 'user');
-  const claudeSkills = scanSkillsDir(CLAUDE_SKILLS_DIR, 'user');
+  // 同一目录内可能存在 frontmatter name 冲突（不同目录名但声明了相同 name），需要去重
+  const dedup = (skills: Omit<SkillInfo, 'isBuiltin' | 'enabled'>[]) => {
+    const seen = new Set<string>();
+    return skills.filter((s) => {
+      if (seen.has(s.name)) return false;
+      seen.add(s.name);
+      return true;
+    });
+  };
+  const soagentsSkills = dedup(scanSkillsDir(GLOBAL_SKILLS_DIR, 'user'));
+  const claudeSkills = dedup(scanSkillsDir(CLAUDE_SKILLS_DIR, 'user'));
   const soagentsNameSet = new Set(soagentsSkills.map(s => s.name));
   const uniqueClaudeSkills = claudeSkills.filter(s => !soagentsNameSet.has(s.name));
   const globalSkills = [...soagentsSkills, ...uniqueClaudeSkills];

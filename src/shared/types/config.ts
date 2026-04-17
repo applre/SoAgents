@@ -1,4 +1,4 @@
-import type { ImAgentConfig } from './imAgent';
+import type { AgentConfig } from './agentConfig';
 
 /**
  * Authentication type for API providers
@@ -143,7 +143,7 @@ export interface AppConfig {
   defaultWorkspacePath?: string;
   proxySettings?: ProxySettings;
   showDevTools?: boolean;
-  agents?: ImAgentConfig[];
+  agents?: AgentConfig[];
 }
 
 export interface ProviderEnv {

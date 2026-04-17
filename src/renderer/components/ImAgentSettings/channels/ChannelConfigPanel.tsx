@@ -14,9 +14,9 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { ChannelConfig } from '../../../../shared/types/imAgent';
+import type { ChannelConfig } from '../../../../shared/types/agentConfig';
 import type { ImBotStatus } from '../../../../shared/types/im';
-import { verifyToken } from '../../../config/imAgentConfigService';
+import { verifyToken } from '../../../config/agentConfigService';
 
 interface ChannelConfigPanelProps {
   channel: ChannelConfig;

@@ -2,7 +2,9 @@
  * BotPlatformRegistry — "聊天机器人 Bot" section in Settings
  *
  * Shows supported IM platforms and a step-by-step guide for adding bots.
- * Currently Telegram is built-in; other platforms are "coming soon".
+ * Telegram / Feishu / DingTalk are all supported; configuration goes through
+ * the Agent → Channels flow (either in this Settings tab or in the workspace
+ * General Tab).
  */
 
 import { Send } from 'lucide-react';
@@ -40,8 +42,8 @@ const PLATFORMS: PlatformEntry[] = [
         </svg>
       </div>
     ),
-    badge: '即将推出',
-    enabled: false,
+    badge: '已支持',
+    enabled: true,
   },
   {
     id: 'dingtalk',
@@ -54,8 +56,8 @@ const PLATFORMS: PlatformEntry[] = [
         </svg>
       </div>
     ),
-    badge: '即将推出',
-    enabled: false,
+    badge: '已支持',
+    enabled: true,
   },
 ];
 

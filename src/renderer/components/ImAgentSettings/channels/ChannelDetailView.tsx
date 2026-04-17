@@ -1,5 +1,5 @@
-// Channel detail view — MyAgents-style accordion layout inside overlay.
-// Sections: Header, Credentials, User Binding, Draft Streaming, Proxy, Danger Zone.
+// Channel detail view — accordion layout inside overlay.
+// Sections: Header, Credentials, User Binding, Group Permissions, Draft Streaming, Proxy, Danger Zone.
 import { useCallback, useState } from 'react';
 import {
   Check,
@@ -15,9 +15,19 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { ChannelConfig } from '../../../../shared/types/imAgent';
-import type { ImBotStatus } from '../../../../shared/types/im';
-import { verifyToken } from '../../../config/imAgentConfigService';
+import type { ChannelConfig } from '../../../../shared/types/agentConfig';
+import type { ImBotStatus, GroupPermission } from '../../../../shared/types/im';
+import {
+  verifyToken,
+  verifyFeishuCredentials,
+  verifyDingtalkCredentials,
+  approveGroupPermission,
+  rejectGroupPermission,
+  removeGroupPermission,
+} from '../../../config/agentConfigService';
+import FeishuCredentialInput from './FeishuCredentialInput';
+import DingtalkCredentialInput from './DingtalkCredentialInput';
+import GroupPermissionList from './GroupPermissionList';
 
 interface ChannelDetailViewProps {
   channel: ChannelConfig;
@@ -87,9 +97,42 @@ function AccordionSection({
   );
 }
 
+// ── Platform icons ──
+function PlatformIcon({ type }: { type: string }) {
+  if (type === 'feishu') {
+    return (
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: '#00b96b' }}>
+        <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+        </svg>
+      </div>
+    );
+  }
+  if (type === 'dingtalk') {
+    return (
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: '#2d6ef5' }}>
+        <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+        </svg>
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0088cc]">
+      <Send className="h-4 w-4 text-white" />
+    </div>
+  );
+}
+
+const platformName = (type: string) => {
+  if (type === 'feishu') return '飞书';
+  if (type === 'dingtalk') return '钉钉';
+  return 'Telegram';
+};
+
 export default function ChannelDetailView({
   channel,
-  agentId: _agentId,
+  agentId,
   status,
   onChange,
   onDelete,
@@ -98,15 +141,21 @@ export default function ChannelDetailView({
   onBack: _onBack,
 }: ChannelDetailViewProps) {
   // Accordion states
-  const hasToken = !!channel.botToken;
+  const hasCredentials = !!(channel.botToken || channel.feishuAppId || channel.dingtalkClientId);
   const hasUsers = (channel.allowedUsers?.length ?? 0) > 0;
-  const [credentialsExpanded, setCredentialsExpanded] = useState(!hasToken);
+  const hasGroupPerms = (channel.groupPermissions?.length ?? 0) > 0;
+  const [credentialsExpanded, setCredentialsExpanded] = useState(!hasCredentials);
   const [bindingExpanded, setBindingExpanded] = useState(!hasUsers);
+  const [groupPermsExpanded, setGroupPermsExpanded] = useState(hasGroupPerms);
 
-  // Token verify
+  // Token verify (Telegram)
   const [tokenVisible, setTokenVisible] = useState(false);
   const [reVerifyState, setReVerifyState] = useState<ReVerifyState>('idle');
   const [reVerifyMsg, setReVerifyMsg] = useState('');
+
+  // Feishu/DingTalk re-verify
+  const [credVerifyState, setCredVerifyState] = useState<ReVerifyState>('idle');
+  const [credVerifyMsg, setCredVerifyMsg] = useState('');
 
   // User management
   const [newUser, setNewUser] = useState('');
@@ -135,20 +184,56 @@ export default function ChannelDetailView({
     : undefined;
   const sessionCount = status?.activeSessions?.length ?? 0;
 
+  // Group permissions from status (runtime) + config (persisted)
+  const runtimeGroupPerms: GroupPermission[] = (status as { groupPermissions?: GroupPermission[] } | undefined)?.groupPermissions ?? [];
+  const configGroupPerms: GroupPermission[] = channel.groupPermissions ?? [];
+  // Merge: runtime has latest (pending + approved), config is the source of truth for approved
+  const mergedGroupPerms: GroupPermission[] = runtimeGroupPerms.length > 0 ? runtimeGroupPerms : configGroupPerms;
+
   // ── Handlers ──
 
-  const handleReVerify = async () => {
+  const handleReVerifyTelegram = async () => {
     if (!channel.botToken) return;
     setReVerifyState('loading');
     setReVerifyMsg('');
     try {
-      const username = await verifyToken(channel.type, channel.botToken, channel.proxyUrl);
-      onChange({ ...channel, name: username });
+      const username = await verifyToken('telegram', channel.botToken, channel.proxyUrl);
+      onChange({ ...channel, name: username.replace('@', '') });
       setReVerifyState('valid');
-      setReVerifyMsg(`已验证：@${username}`);
+      setReVerifyMsg(`已验证：${username}`);
     } catch (err) {
       setReVerifyState('invalid');
       setReVerifyMsg(err instanceof Error ? err.message : 'Token 验证失败');
+    }
+  };
+
+  const handleReVerifyFeishu = async () => {
+    if (!channel.feishuAppId || !channel.feishuAppSecret) return;
+    setCredVerifyState('loading');
+    setCredVerifyMsg('');
+    try {
+      const name = await verifyFeishuCredentials(channel.feishuAppId, channel.feishuAppSecret);
+      onChange({ ...channel, name });
+      setCredVerifyState('valid');
+      setCredVerifyMsg(`已验证: ${name}`);
+    } catch (err) {
+      setCredVerifyState('invalid');
+      setCredVerifyMsg(err instanceof Error ? err.message : '凭证验证失败');
+    }
+  };
+
+  const handleReVerifyDingtalk = async () => {
+    if (!channel.dingtalkClientId || !channel.dingtalkClientSecret) return;
+    setCredVerifyState('loading');
+    setCredVerifyMsg('');
+    try {
+      const name = await verifyDingtalkCredentials(channel.dingtalkClientId, channel.dingtalkClientSecret);
+      onChange({ ...channel, name });
+      setCredVerifyState('valid');
+      setCredVerifyMsg(`已验证: ${name}`);
+    } catch (err) {
+      setCredVerifyState('invalid');
+      setCredVerifyMsg(err instanceof Error ? err.message : '凭证验证失败');
     }
   };
 
@@ -156,20 +241,14 @@ export default function ChannelDetailView({
     const trimmed = newUser.trim();
     if (!trimmed) return;
     const current = channel.allowedUsers ?? [];
-    if (current.includes(trimmed)) {
-      setNewUser('');
-      return;
-    }
+    if (current.includes(trimmed)) { setNewUser(''); return; }
     onChange({ ...channel, allowedUsers: [...current, trimmed] });
     setNewUser('');
   }, [newUser, channel, onChange]);
 
   const handleRemoveUser = useCallback(
     (user: string) => {
-      onChange({
-        ...channel,
-        allowedUsers: (channel.allowedUsers ?? []).filter((u) => u !== user),
-      });
+      onChange({ ...channel, allowedUsers: (channel.allowedUsers ?? []).filter((u) => u !== user) });
     },
     [channel, onChange],
   );
@@ -178,23 +257,37 @@ export default function ChannelDetailView({
     onChange({ ...channel, telegramUseDraft: !(channel.telegramUseDraft ?? true) });
   }, [channel, onChange]);
 
-  const handleConfirmDelete = () => {
-    onDelete();
-  };
+  const handleGroupApprove = useCallback(async (groupId: string) => {
+    await approveGroupPermission(agentId, channel.id, groupId);
+    // Update local config
+    const updated = (channel.groupPermissions ?? []).map((g) =>
+      g.groupId === groupId ? { ...g, status: 'approved' as const } : g,
+    );
+    onChange({ ...channel, groupPermissions: updated });
+  }, [agentId, channel, onChange]);
+
+  const handleGroupReject = useCallback(async (groupId: string) => {
+    await rejectGroupPermission(agentId, channel.id, groupId);
+    const updated = (channel.groupPermissions ?? []).filter((g) => g.groupId !== groupId);
+    onChange({ ...channel, groupPermissions: updated });
+  }, [agentId, channel, onChange]);
+
+  const handleGroupRemove = useCallback(async (groupId: string) => {
+    await removeGroupPermission(agentId, channel.id, groupId);
+    const updated = (channel.groupPermissions ?? []).filter((g) => g.groupId !== groupId);
+    onChange({ ...channel, groupPermissions: updated });
+  }, [agentId, channel, onChange]);
 
   return (
     <div className="space-y-6">
-      {/* ── Header: icon + name + status + start/stop ── */}
+      {/* ── Header ── */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          {/* Platform icon */}
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0088cc]">
-            <Send className="h-4 w-4 text-white" />
-          </div>
+          <PlatformIcon type={channel.type} />
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-[18px] font-semibold text-[var(--ink)]">
-                {channel.name ? `@${channel.name}` : 'Telegram'}
+                {channel.name ? (channel.type === 'telegram' ? `@${channel.name}` : channel.name) : platformName(channel.type)}
               </h2>
               <div className="flex items-center gap-1.5">
                 <div className="h-1.5 w-1.5 rounded-full" style={{ background: statusColor }} />
@@ -207,7 +300,7 @@ export default function ChannelDetailView({
                 <span className="text-[12px] text-[var(--ink-tertiary)]">{sessionCount} 个会话</span>
               )}
             </div>
-            <p className="text-[12px] text-[var(--ink-tertiary)]">Telegram Channel</p>
+            <p className="text-[12px] text-[var(--ink-tertiary)]">{platformName(channel.type)} Channel</p>
           </div>
         </div>
 
@@ -225,7 +318,7 @@ export default function ChannelDetailView({
         </button>
       </div>
 
-      {/* ── Error / Buffer messages ── */}
+      {/* Error / Buffer messages */}
       {status?.errorMessage && (
         <div className="flex items-center gap-3 rounded-xl border border-[var(--error)]/30 bg-[var(--error)]/5 px-4 py-3">
           <p className="text-[13px] text-[var(--error)]">{status.errorMessage}</p>
@@ -237,70 +330,129 @@ export default function ChannelDetailView({
         </p>
       )}
 
-      {/* ══ Section 1: Credentials (Accordion) ══ */}
+      {/* ══ Section 1: Credentials ══ */}
       <AccordionSection
-        title="Telegram Bot"
-        badge={hasToken ? (reVerifyState === 'valid' ? reVerifyMsg : channel.name ? `已验证: @${channel.name}` : '已配置') : undefined}
+        title={channel.type === 'telegram' ? 'Telegram Bot' : channel.type === 'feishu' ? '飞书应用凭证' : '钉钉应用凭证'}
+        badge={hasCredentials ? (credVerifyState === 'valid' || reVerifyState === 'valid' ? '已验证' : channel.name || '已配置') : undefined}
         expanded={credentialsExpanded}
         onToggle={() => setCredentialsExpanded(!credentialsExpanded)}
       >
-        <div className="space-y-3">
-          <label className="text-[13px] font-medium text-[var(--ink)]">Bot Token</label>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 font-mono text-[13px] text-[var(--ink-secondary)] select-all">
-              {tokenVisible ? (channel.botToken ?? '') : maskToken(channel.botToken ?? '')}
+        {/* Telegram credentials */}
+        {channel.type === 'telegram' && (
+          <div className="space-y-3">
+            <label className="text-[13px] font-medium text-[var(--ink)]">Bot Token</label>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 font-mono text-[13px] text-[var(--ink-secondary)] select-all">
+                {tokenVisible ? (channel.botToken ?? '') : maskToken(channel.botToken ?? '')}
+              </div>
+              <button
+                type="button"
+                onClick={() => setTokenVisible(!tokenVisible)}
+                className="rounded-lg border border-[var(--border)] p-2 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                title={tokenVisible ? '隐藏' : '显示'}
+              >
+                {tokenVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleReVerifyTelegram()}
+                disabled={reVerifyState === 'loading' || !channel.botToken}
+                className="flex items-center gap-1 rounded-lg border border-[var(--border)] px-2.5 py-2 text-[13px] text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
+                title="重新验证"
+              >
+                {reVerifyState === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                验证
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setTokenVisible(!tokenVisible)}
-              className="rounded-lg border border-[var(--border)] p-2 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-              title={tokenVisible ? '隐藏' : '显示'}
-            >
-              {tokenVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </button>
-            <button
-              type="button"
-              onClick={handleReVerify}
-              disabled={reVerifyState === 'loading' || !channel.botToken}
-              className="flex items-center gap-1 rounded-lg border border-[var(--border)] px-2.5 py-2 text-[13px] text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
-              title="重新验证"
-            >
-              {reVerifyState === 'loading' ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3.5 w-3.5" />
-              )}
-              验证
-            </button>
+            {reVerifyState === 'valid' && (
+              <p className="flex items-center gap-1 text-[12px] text-[var(--success)]">
+                <Check className="h-3.5 w-3.5" />{reVerifyMsg}
+              </p>
+            )}
+            {reVerifyState === 'invalid' && (
+              <p className="text-[12px] text-[var(--error)]">{reVerifyMsg}</p>
+            )}
           </div>
-          {reVerifyState === 'valid' && (
-            <p className="flex items-center gap-1 text-[12px] text-[var(--success)]">
-              <Check className="h-3.5 w-3.5" />
-              {reVerifyMsg}
-            </p>
-          )}
-          {reVerifyState === 'invalid' && (
-            <p className="text-[12px] text-[var(--error)]">{reVerifyMsg}</p>
-          )}
-        </div>
+        )}
+
+        {/* Feishu credentials */}
+        {channel.type === 'feishu' && (
+          <div className="space-y-4">
+            <FeishuCredentialInput
+              appId={channel.feishuAppId ?? ''}
+              appSecret={channel.feishuAppSecret ?? ''}
+              onAppIdChange={(v) => onChange({ ...channel, feishuAppId: v })}
+              onAppSecretChange={(v) => onChange({ ...channel, feishuAppSecret: v })}
+              verifyStatus={credVerifyState === 'loading' ? 'verifying' : credVerifyState === 'valid' ? 'valid' : credVerifyState === 'invalid' ? 'invalid' : 'idle'}
+              botName={channel.name}
+              showGuide={false}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleReVerifyFeishu()}
+                disabled={credVerifyState === 'loading' || !channel.feishuAppId || !channel.feishuAppSecret}
+                className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-2 text-[13px] text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
+              >
+                {credVerifyState === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                重新验证
+              </button>
+              {credVerifyState === 'valid' && <span className="flex items-center gap-1 text-[12px] text-[var(--success)]"><Check className="h-3.5 w-3.5" />{credVerifyMsg}</span>}
+              {credVerifyState === 'invalid' && <span className="text-[12px] text-[var(--error)]">{credVerifyMsg}</span>}
+            </div>
+          </div>
+        )}
+
+        {/* DingTalk credentials */}
+        {channel.type === 'dingtalk' && (
+          <div className="space-y-4">
+            <DingtalkCredentialInput
+              clientId={channel.dingtalkClientId ?? ''}
+              clientSecret={channel.dingtalkClientSecret ?? ''}
+              onClientIdChange={(v) => onChange({ ...channel, dingtalkClientId: v })}
+              onClientSecretChange={(v) => onChange({ ...channel, dingtalkClientSecret: v })}
+              verifyStatus={credVerifyState === 'loading' ? 'verifying' : credVerifyState === 'valid' ? 'valid' : credVerifyState === 'invalid' ? 'invalid' : 'idle'}
+              botName={channel.name}
+              showGuide={false}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleReVerifyDingtalk()}
+                disabled={credVerifyState === 'loading' || !channel.dingtalkClientId || !channel.dingtalkClientSecret}
+                className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-2 text-[13px] text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
+              >
+                {credVerifyState === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                重新验证
+              </button>
+              {credVerifyState === 'valid' && <span className="flex items-center gap-1 text-[12px] text-[var(--success)]"><Check className="h-3.5 w-3.5" />{credVerifyMsg}</span>}
+              {credVerifyState === 'invalid' && <span className="text-[12px] text-[var(--error)]">{credVerifyMsg}</span>}
+            </div>
+          </div>
+        )}
       </AccordionSection>
 
-      {/* ══ Section 2: User Binding (Accordion) ══ */}
+      {/* ══ Section 2: User Binding ══ */}
       <AccordionSection
-        title="用户绑定"
+        title="用户白名单"
         badge={hasUsers ? `${channel.allowedUsers!.length} 个用户` : undefined}
         badgeColor="var(--ink-tertiary)"
         expanded={bindingExpanded}
         onToggle={() => setBindingExpanded(!bindingExpanded)}
       >
         <div className="space-y-3">
+          <p className="text-[12px] text-[var(--ink-tertiary)]">
+            {channel.type === 'telegram'
+              ? '添加允许使用的 Telegram User ID（数字 ID）'
+              : '添加允许使用的用户 ID'}
+          </p>
           <div className="flex items-center gap-2">
             <input
               type="text"
               value={newUser}
               onChange={(e) => setNewUser(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAddUser()}
-              placeholder="Telegram User ID"
+              placeholder={channel.type === 'telegram' ? 'Telegram User ID' : '用户 ID'}
               className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-[14px] text-[var(--ink)] placeholder-[var(--ink-tertiary)] focus:border-[var(--accent)] focus:outline-none"
             />
             <button
@@ -329,14 +481,30 @@ export default function ChannelDetailView({
               ))}
             </div>
           ) : (
-            <p className="text-[12px] text-[var(--ink-tertiary)]">
-              未设置白名单，允许所有用户
-            </p>
+            <p className="text-[12px] text-[var(--ink-tertiary)]">未设置白名单，允许所有用户</p>
           )}
         </div>
       </AccordionSection>
 
-      {/* ══ Section 3: Draft Streaming (Static card) ══ */}
+      {/* ══ Section 3: Group Permissions (Feishu + DingTalk) ══ */}
+      {(channel.type === 'feishu' || channel.type === 'dingtalk') && (
+        <AccordionSection
+          title="群聊权限"
+          badge={mergedGroupPerms.length > 0 ? `${mergedGroupPerms.filter((g) => g.status === 'pending').length} 待审核` : undefined}
+          badgeColor="#eab308"
+          expanded={groupPermsExpanded}
+          onToggle={() => setGroupPermsExpanded(!groupPermsExpanded)}
+        >
+          <GroupPermissionList
+            permissions={mergedGroupPerms}
+            onApprove={handleGroupApprove}
+            onReject={handleGroupReject}
+            onRemove={handleGroupRemove}
+          />
+        </AccordionSection>
+      )}
+
+      {/* ══ Section 4: Draft Streaming (Telegram only) ══ */}
       {channel.type === 'telegram' && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--paper)] p-5">
           <div className="flex items-center justify-between gap-3">
@@ -365,7 +533,7 @@ export default function ChannelDetailView({
         </div>
       )}
 
-      {/* ══ Section 4: Proxy URL (Static card, Telegram only) ══ */}
+      {/* ══ Section 5: Proxy URL (Telegram only) ══ */}
       {channel.type === 'telegram' && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--paper)] p-5">
           <div className="space-y-2">
@@ -384,13 +552,13 @@ export default function ChannelDetailView({
         </div>
       )}
 
-      {/* ══ Section 5: Danger Zone ══ */}
+      {/* ══ Section 6: Danger Zone ══ */}
       <div className="rounded-xl border border-[var(--error)]/20 bg-[var(--error-bg)]/50 p-5">
         <h3 className="mb-3 text-[14px] font-semibold text-[var(--error)]">危险操作</h3>
         {showDeleteConfirm ? (
           <div className="flex items-center gap-2">
             <button
-              onClick={handleConfirmDelete}
+              onClick={onDelete}
               className="flex items-center gap-2 rounded-lg bg-[var(--error)] px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
             >
               <Trash2 className="h-4 w-4" />

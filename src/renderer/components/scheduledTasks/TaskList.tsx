@@ -51,6 +51,18 @@ export default function TaskList() {
     setDeletingTask(null);
   }, [deletingTask, deleteTask, loadTasks]);
 
+  const formatNextRun = useCallback((ms: number): string => {
+    const dt = new Date(ms);
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const timeStr = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    if (dt.toDateString() === now.toDateString()) return timeStr;
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (dt.toDateString() === tomorrow.toDateString()) return `明天 ${timeStr}`;
+    return `${pad(dt.getMonth() + 1)}/${pad(dt.getDate())} ${timeStr}`;
+  }, []);
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -123,9 +135,17 @@ export default function TaskList() {
                     </span>
                   )}
                 </div>
-                <p className="text-[12px] mt-0.5" style={{ color: 'var(--ink-tertiary)' }}>
-                  {formatScheduleLabel(task.schedule)}
-                </p>
+                <div className="flex items-center gap-2 text-[12px] mt-0.5" style={{ color: 'var(--ink-tertiary)' }}>
+                  <span>{task.workingDirectory.split('/').filter(Boolean).pop() ?? task.workingDirectory}</span>
+                  <span>·</span>
+                  <span>{formatScheduleLabel(task.schedule)}</span>
+                  {task.enabled && task.state.nextRunAtMs && (
+                    <>
+                      <span>·</span>
+                      <span>下次: {formatNextRun(task.state.nextRunAtMs)}</span>
+                    </>
+                  )}
+                </div>
               </div>
 
               {/* Toggle 开关 */}

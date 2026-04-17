@@ -191,7 +191,7 @@
 - **定时任务系统**：Rust scheduler + Sidecar owner 管理 + 前端任务视图 UI，支持 cron 表达式和固定间隔（every）调度模式
 - **Tool 渲染增强**：新增 6 个工具专用渲染器（Bash/KillShell/Agent/Read/Edit/Glob），CodeBlock 组件独立抽取，Message 组件重构
 - **ChatInput @ 文件引用**：输入 `@` 触发文件搜索，选择后插入路径引用；Skill 多选支持
-- **Provider 配置对齐**：Provider 类型/预设供应商/订阅验证/缓存机制与 MyAgents 对齐
+- **Provider 配置对齐**：Provider 类型/预设供应商/订阅验证/缓存机制统一对齐
 - **Provider upstreamFormat & maxOutputTokens**：支持 OpenAI Bridge 所需的协议格式和输出 token 限制配置
 - **UI 交互增强**：文件 Tab 拖拽排序、停止按钮、会话运行指示器
 - **CodeMirror Merge Diff**：差异视图增强

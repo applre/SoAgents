@@ -58,7 +58,7 @@ export function WorkspaceTrigger({ agentDir, onAgentDirChange }: { agentDir: str
 }
 
 export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, onOpenUrl: _onOpenUrl }: Props) {
-  const { messages, historyMessages, streamingMessage, isLoading, sessionId, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage } = useTabState();
+  const { messages, historyMessages, streamingMessage, isLoading, sessionId, sendMessage, stopResponse, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, unifiedLogs, clearUnifiedLogs } = useTabState();
   const { config } = useConfig();
   const [showLogs, setShowLogs] = useState(false);
 
@@ -81,7 +81,7 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
                 onRespond={(answers) => respondQuestion(pendingQuestion.toolUseId, answers)}
               />
             )}
-            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} injectRefText={injectRefText} onRefTextConsumed={onRefTextConsumed} queuedMessages={queuedMessages} onCancelQueued={cancelQueuedMessage} onForceExecuteQueued={forceExecuteQueuedMessage} />
+            <ChatInput onSend={sendMessage} onStop={stopResponse} isLoading={isLoading} agentDir={agentDir} injectText={injectText} onInjectConsumed={onInjectConsumed} injectRefText={injectRefText} onRefTextConsumed={onRefTextConsumed} />
           </div>
         </div>
         {pendingPermission && (
@@ -124,9 +124,6 @@ export default function Chat({ agentDir, onAgentDirChange, injectText, onInjectC
           onInjectConsumed={onInjectConsumed}
           injectRefText={injectRefText}
           onRefTextConsumed={onRefTextConsumed}
-          queuedMessages={queuedMessages}
-          onCancelQueued={cancelQueuedMessage}
-          onForceExecuteQueued={forceExecuteQueuedMessage}
         />
         {/* 开发者模式: Logs 按钮 */}
         {config.showDevTools && (

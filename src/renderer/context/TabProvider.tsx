@@ -444,7 +444,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         stopTimeoutRef.current = null;
       }
 
-      // 活跃 tab 完成助手回复 → 更新 lastViewedAt，避免任务中心显示蓝点
+      // 活跃 tab 完成助手回复 → 更新 lastViewedAt，避免任务中心显示 approval 点
       if (isActiveRef.current) {
         const sid = sessionIdRef.current;
         const url = serverUrlRef.current;
@@ -453,10 +453,16 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         }
       }
 
-      // 非活跃 tab 收到完成事件 → 标记未读
+      // 非活跃 tab 收到完成事件 → 标记未读（保留旧字段兼容，UI 主要靠 lastMessageRole 计算）
       if (!isActiveRef.current) {
         onUnreadChangeRef.current?.(true);
       }
+
+      // Dispatch 全局事件 → 让 useSidebarSessions 立即刷新 session 列表，
+      // 保证左侧栏/任务中心/tab 栏的 approval 点实时出现，不等 10s 轮询
+      window.dispatchEvent(new CustomEvent('soagents:session-activity', {
+        detail: { sessionId: sessionIdRef.current }
+      }));
     });
 
     sse.on('chat:message-stopped', () => {

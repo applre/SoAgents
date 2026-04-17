@@ -128,6 +128,26 @@ pub struct ImConfig {
     /// HTTP/SOCKS5 proxy URL for Telegram API requests (needed in China)
     #[serde(default)]
     pub proxy_url: Option<String>,
+    // Feishu credentials
+    #[serde(default)]
+    pub feishu_app_id: Option<String>,
+    #[serde(default)]
+    pub feishu_app_secret: Option<String>,
+    // DingTalk credentials
+    #[serde(default)]
+    pub dingtalk_client_id: Option<String>,
+    #[serde(default)]
+    pub dingtalk_client_secret: Option<String>,
+    #[serde(default)]
+    pub dingtalk_use_ai_card: Option<bool>,
+    #[serde(default)]
+    pub dingtalk_card_template_id: Option<String>,
+    // Group permissions (persisted, passed to adapter on startup)
+    #[serde(default)]
+    pub group_permissions: Vec<GroupPermission>,
+    // Group activation mode: "mention" or "always"
+    #[serde(default)]
+    pub group_activation: Option<String>,
 }
 
 fn default_platform() -> ImPlatform {
@@ -191,6 +211,25 @@ pub struct ActiveSessionInfo {
     pub last_active: String,
 }
 
+/// Group permission status
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupPermissionStatus {
+    Pending,
+    Approved,
+}
+
+/// Group permission entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupPermission {
+    pub group_id: String,
+    pub group_name: String,
+    pub platform: ImPlatform,
+    pub status: GroupPermissionStatus,
+    pub discovered_at: String,
+}
+
 /// IM Bot runtime status returned to frontend
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +241,7 @@ pub struct ImBotStatusResponse {
     pub error_message: Option<String>,
     pub restart_count: u32,
     pub buffered_messages: usize,
+    pub group_permissions: Vec<GroupPermission>,
 }
 
 // ===== Health State =====
@@ -344,9 +384,23 @@ pub struct ChannelConfigRust {
     #[serde(default)]
     pub dingtalk_client_secret: Option<String>,
 
+    // DingTalk AI Card settings
+    #[serde(default)]
+    pub dingtalk_use_ai_card: Option<bool>,
+    #[serde(default)]
+    pub dingtalk_card_template_id: Option<String>,
+
     // User management
     #[serde(default)]
     pub allowed_users: Vec<String>,
+
+    // Group permissions (persisted)
+    #[serde(default)]
+    pub group_permissions: Vec<GroupPermission>,
+
+    // Group activation: "mention" or "always"
+    #[serde(default)]
+    pub group_activation: Option<String>,
 
     // Overrides
     #[serde(default)]
@@ -386,6 +440,12 @@ pub struct AgentConfigRust {
     #[serde(default)]
     pub mcp_servers_json: Option<String>,
 
+    // Heartbeat & Memory Auto-Update
+    #[serde(default)]
+    pub heartbeat: Option<HeartbeatConfig>,
+    #[serde(default)]
+    pub memory_auto_update: Option<MemoryAutoUpdateConfig>,
+
     // Channels
     #[serde(default)]
     pub channels: Vec<ChannelConfigRust>,
@@ -396,6 +456,91 @@ pub struct AgentConfigRust {
 
 fn default_permission_mode() -> String {
     "plan".to_string()
+}
+
+// ===== Heartbeat & Memory Auto-Update Config =====
+
+/// Active hours window for heartbeat scheduling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveHours {
+    /// Start time in HH:MM format (inclusive)
+    pub start: String,
+    /// End time in HH:MM format (exclusive)
+    pub end: String,
+    /// IANA timezone name (e.g. "Asia/Shanghai")
+    pub timezone: String,
+}
+
+/// Heartbeat configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatConfig {
+    #[serde(default = "default_hb_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_hb_interval")]
+    pub interval_minutes: u32,
+    #[serde(default)]
+    pub active_hours: Option<ActiveHours>,
+    /// Max chars for HEARTBEAT_OK detection (default: 300)
+    #[serde(default)]
+    pub ack_max_chars: Option<u32>,
+}
+
+fn default_hb_enabled() -> bool { true }
+fn default_hb_interval() -> u32 { 30 }
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_minutes: 30,
+            active_hours: None,
+            ack_max_chars: None,
+        }
+    }
+}
+
+/// Memory auto-update configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryAutoUpdateConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_mau_interval")]
+    pub interval_hours: u32,
+    #[serde(default = "default_mau_threshold")]
+    pub query_threshold: u32,
+    #[serde(default = "default_mau_window_start")]
+    pub update_window_start: String,
+    #[serde(default = "default_mau_window_end")]
+    pub update_window_end: String,
+    #[serde(default)]
+    pub update_window_timezone: Option<String>,
+    #[serde(default)]
+    pub last_batch_at: Option<String>,
+    #[serde(default)]
+    pub last_batch_session_count: Option<u32>,
+}
+
+fn default_mau_interval() -> u32 { 24 }
+fn default_mau_threshold() -> u32 { 5 }
+fn default_mau_window_start() -> String { "00:00".to_string() }
+fn default_mau_window_end() -> String { "06:00".to_string() }
+
+impl Default for MemoryAutoUpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_hours: 24,
+            query_threshold: 5,
+            update_window_start: "00:00".to_string(),
+            update_window_end: "06:00".to_string(),
+            update_window_timezone: None,
+            last_batch_at: None,
+            last_batch_session_count: None,
+        }
+    }
 }
 
 impl ChannelConfigRust {
@@ -425,6 +570,14 @@ impl ChannelConfigRust {
             mcp_enabled_servers: agent.mcp_enabled_servers.clone(),
             mcp_servers_json: agent.mcp_servers_json.clone(),
             proxy_url: self.proxy_url.clone(),
+            feishu_app_id: self.feishu_app_id.clone(),
+            feishu_app_secret: self.feishu_app_secret.clone(),
+            dingtalk_client_id: self.dingtalk_client_id.clone(),
+            dingtalk_client_secret: self.dingtalk_client_secret.clone(),
+            dingtalk_use_ai_card: self.dingtalk_use_ai_card,
+            dingtalk_card_template_id: self.dingtalk_card_template_id.clone(),
+            group_permissions: self.group_permissions.clone(),
+            group_activation: self.group_activation.clone(),
         }
     }
 }

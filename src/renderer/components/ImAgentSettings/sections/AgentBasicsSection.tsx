@@ -1,13 +1,16 @@
+/**
+ * @deprecated Use WorkspaceGeneralTab Card 1 instead.
+ */
 import { useEffect, useState } from 'react';
 import { Folder } from 'lucide-react';
-import type { ImAgentConfig } from '../../../../shared/types/imAgent';
+import type { AgentConfig } from '../../../../shared/types/agentConfig';
 import type { Provider } from '../../../../shared/types/config';
 import { loadAppConfig } from '../../../config/configService';
 import CustomSelect from '../../CustomSelect';
 
 interface AgentBasicsSectionProps {
-  agent: ImAgentConfig;
-  onChange: (updated: ImAgentConfig) => void;
+  agent: AgentConfig;
+  onChange: (updated: AgentConfig) => void;
 }
 
 type PermissionMode = 'plan' | 'acceptEdits' | 'bypassPermissions';

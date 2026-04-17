@@ -3,6 +3,8 @@
 
 pub mod adapter;
 pub mod buffer;
+pub mod feishu;
+pub mod dingtalk;
 pub mod health;
 pub mod router;
 pub mod telegram;
@@ -16,7 +18,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde_json::json;
 use tauri::AppHandle;
-use tokio::sync::{mpsc, watch, Mutex, Semaphore};
+use tokio::sync::{mpsc, watch, Mutex, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::sidecar::ManagedSidecarState;
@@ -27,8 +29,11 @@ use buffer::MessageBuffer;
 use health::HealthManager;
 use router::{create_sidecar_stream_client, SessionRouter, GLOBAL_CONCURRENCY};
 use telegram::TelegramAdapter;
+use feishu::FeishuAdapter;
+use dingtalk::DingtalkAdapter;
 use types::{
-    ImBotStatusResponse, ImConfig, ImMessage, ImPlatform, ImStatus, RouteError,
+    GroupPermission, GroupPermissionStatus, ImBotStatusResponse, ImConfig, ImMessage,
+    ImPlatform, ImStatus, RouteError,
 };
 
 // ===== Channel Instance =====
@@ -48,23 +53,22 @@ pub struct ChannelInstance {
     pub health_handle: JoinHandle<()>,
     pub config: ImConfig,
     /// Shared mutable whitelist
-    pub allowed_users: Arc<tokio::sync::RwLock<Vec<String>>>,
+    pub allowed_users: Arc<RwLock<Vec<String>>>,
+    /// Runtime group permissions (shared with adapter for live updates)
+    pub group_permissions: Arc<RwLock<Vec<GroupPermission>>>,
 }
 
 // ===== IM Manager =====
 
-/// ImManager holds all running IM channel instances.
 pub struct ImManager {
     channels: HashMap<String, ChannelInstance>,
     concurrency_semaphore: Arc<Semaphore>,
 }
 
-/// Canonical key for a channel instance: "{agent_id}:{channel_id}"
 fn channel_key(agent_id: &str, channel_id: &str) -> String {
     format!("{}:{}", agent_id, channel_id)
 }
 
-/// Managed state type for IM Manager
 pub type ImManagerState = Arc<Mutex<ImManager>>;
 
 impl ImManager {
@@ -75,7 +79,6 @@ impl ImManager {
         }
     }
 
-    /// Start a new IM channel.
     pub async fn start_channel(
         &mut self,
         app: AppHandle,
@@ -84,7 +87,6 @@ impl ImManager {
     ) -> Result<(), String> {
         let key = channel_key(&config.agent_id, &config.channel_id);
 
-        // Stop existing channel if running
         if self.channels.contains_key(&key) {
             ulog_info!("[im] Channel {} already running, restarting...", key);
             self.stop_channel(&config.agent_id, &config.channel_id)
@@ -98,50 +100,61 @@ impl ImManager {
             config.workspace_path
         );
 
-        // Initialize health manager
         let health_path =
             health::agent_channel_health_path(&config.agent_id, &config.channel_id);
         let health = Arc::new(HealthManager::new(health_path));
         health.set_status(ImStatus::Connecting).await;
 
-        // Initialize message buffer
         let buffer_path =
             health::agent_channel_buffer_path(&config.agent_id, &config.channel_id);
         let buffer = Arc::new(Mutex::new(MessageBuffer::load_from_disk(&buffer_path)));
 
-        // Initialize session router
         let default_workspace = std::path::PathBuf::from(&config.workspace_path);
         let mut router_inner =
             SessionRouter::new(default_workspace, config.agent_id.clone());
 
-        // Restore peer sessions from previous run
         let prev_sessions = health.get_state().await.active_sessions;
         router_inner.restore_sessions(&prev_sessions);
         let router = Arc::new(Mutex::new(router_inner));
 
-        // Shutdown channel
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let allowed_users = Arc::new(RwLock::new(config.allowed_users.clone()));
 
-        // Shared mutable whitelist
-        let allowed_users =
-            Arc::new(tokio::sync::RwLock::new(config.allowed_users.clone()));
+        // Group permissions: start from persisted config, live-updated by adapter
+        let group_permissions: Arc<RwLock<Vec<GroupPermission>>> =
+            Arc::new(RwLock::new(config.group_permissions.clone()));
 
-        // Create mpsc channel for incoming messages
         let (msg_tx, msg_rx) = mpsc::channel::<ImMessage>(256);
 
-        // Create platform adapter (Phase 1: Telegram only)
-        let adapter: Arc<TelegramAdapter> = match config.platform {
+        // Dedup path for Feishu/DingTalk
+        let dedup_path = dirs::home_dir().map(|h| {
+            h.join(".soagents")
+                .join("im")
+                .join(&config.agent_id)
+                .join(format!("{}.dedup.json", config.channel_id))
+        });
+
+        // Create platform adapter
+        let adapter: Arc<dyn ImStreamAdapter> = match config.platform {
             ImPlatform::Telegram => Arc::new(TelegramAdapter::new(
                 &config,
                 msg_tx.clone(),
                 Arc::clone(&allowed_users),
             )),
-            _ => {
-                return Err(format!(
-                    "Platform {:?} not yet supported",
-                    config.platform
-                ));
-            }
+            ImPlatform::Feishu => Arc::new(FeishuAdapter::new(
+                &config,
+                msg_tx.clone(),
+                Arc::clone(&allowed_users),
+                Arc::clone(&group_permissions),
+                dedup_path,
+            )),
+            ImPlatform::Dingtalk => Arc::new(DingtalkAdapter::new(
+                &config,
+                msg_tx.clone(),
+                Arc::clone(&allowed_users),
+                Arc::clone(&group_permissions),
+                dedup_path,
+            )),
         };
 
         // Verify bot connection
@@ -165,22 +178,18 @@ impl ImManager {
             }
         }
 
-        // Register bot commands
         if let Err(e) = adapter.register_commands().await {
             ulog_warn!("[im] Failed to register bot commands: {}", e);
         }
 
-        // Start health persist loop
         let health_handle = Arc::clone(&health).start_persist_loop(shutdown_rx.clone());
 
-        // Start listen loop (long-polling)
         let adapter_for_listen = Arc::clone(&adapter);
         let listen_shutdown_rx = shutdown_rx.clone();
         let listen_handle = tokio::spawn(async move {
             let _ = adapter_for_listen.listen_loop(listen_shutdown_rx).await;
         });
 
-        // Start message processing loop
         let processing_handle = spawn_message_processing_loop(
             msg_rx,
             shutdown_rx.clone(),
@@ -194,14 +203,12 @@ impl ImManager {
             config.clone(),
         );
 
-        // Start idle session collection loop
         let idle_handle = spawn_idle_collection_loop(
             shutdown_rx.clone(),
             Arc::clone(&router),
             sidecar_manager.clone(),
         );
 
-        // Store channel instance
         self.channels.insert(
             key.clone(),
             ChannelInstance {
@@ -218,6 +225,7 @@ impl ImManager {
                 health_handle,
                 config,
                 allowed_users,
+                group_permissions,
             },
         );
 
@@ -225,7 +233,6 @@ impl ImManager {
         Ok(())
     }
 
-    /// Stop a running IM channel.
     pub async fn stop_channel(
         &mut self,
         agent_id: &str,
@@ -239,45 +246,28 @@ impl ImManager {
 
         ulog_info!("[im] Stopping channel {}...", key);
 
-        // Signal shutdown
         let _ = instance.shutdown_tx.send(true);
-
-        // Abort listen loop (cancel in-flight long-poll)
         instance.listen_handle.abort();
 
-        // Wait for processing loop to finish gracefully (up to 10s)
         match tokio::time::timeout(Duration::from_secs(10), instance.processing_handle)
             .await
         {
-            Ok(_) => ulog_info!("[im] Processing loop for {} exited gracefully", key),
-            Err(_) => {
-                ulog_warn!(
-                    "[im] Processing loop for {} did not exit within 10s",
-                    key
-                )
-            }
+            Ok(_) => ulog_info!("[im] Processing loop for {} exited", key),
+            Err(_) => ulog_warn!("[im] Processing loop for {} timed out", key),
         }
 
-        // Wait for idle loop
         instance.idle_handle.abort();
         let _ = tokio::time::timeout(Duration::from_secs(2), instance.idle_handle).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), instance.health_handle).await;
 
-        // Wait for health loop
-        let _ =
-            tokio::time::timeout(Duration::from_secs(2), instance.health_handle).await;
-
-        // Persist buffer
         if let Err(e) = instance.buffer.lock().await.save_to_disk() {
             ulog_warn!("[im] Failed to persist buffer on shutdown: {}", e);
         }
 
-        // Persist active sessions in health state
         instance
             .health
             .set_active_sessions(instance.router.lock().await.get_active_sessions())
             .await;
-
-        // Mark as stopped and persist
         instance.health.set_status(ImStatus::Stopped).await;
         let _ = instance.health.persist().await;
 
@@ -285,7 +275,6 @@ impl ImManager {
         Ok(())
     }
 
-    /// Stop all running channels (for app exit).
     pub async fn stop_all(&mut self) {
         let keys: Vec<String> = self.channels.keys().cloned().collect();
         for key in keys {
@@ -300,7 +289,6 @@ impl ImManager {
         }
     }
 
-    /// Get status for a specific channel.
     pub async fn channel_status(
         &self,
         agent_id: &str,
@@ -316,6 +304,7 @@ impl ImManager {
         let active_sessions = instance.router.lock().await.get_active_sessions();
         let buffered = instance.buffer.lock().await.len();
         let uptime = instance.started_at.elapsed().as_secs();
+        let group_perms = instance.group_permissions.read().await.clone();
 
         Ok(ImBotStatusResponse {
             bot_username: health_state.bot_username,
@@ -325,19 +314,18 @@ impl ImManager {
             error_message: health_state.error_message,
             restart_count: health_state.restart_count,
             buffered_messages: buffered,
+            group_permissions: group_perms,
         })
     }
 
-    /// Get status for all running channels.
-    pub async fn all_channels_status(
-        &self,
-    ) -> HashMap<String, ImBotStatusResponse> {
+    pub async fn all_channels_status(&self) -> HashMap<String, ImBotStatusResponse> {
         let mut result = HashMap::new();
         for (key, instance) in &self.channels {
             let health_state = instance.health.get_state().await;
             let active_sessions = instance.router.lock().await.get_active_sessions();
             let buffered = instance.buffer.lock().await.len();
             let uptime = instance.started_at.elapsed().as_secs();
+            let group_perms = instance.group_permissions.read().await.clone();
 
             result.insert(
                 key.clone(),
@@ -349,13 +337,13 @@ impl ImManager {
                     error_message: health_state.error_message,
                     restart_count: health_state.restart_count,
                     buffered_messages: buffered,
+                    group_permissions: group_perms,
                 },
             );
         }
         result
     }
 
-    /// Update allowed users for a running channel.
     pub async fn update_channel_config(
         &mut self,
         agent_id: &str,
@@ -368,11 +356,9 @@ impl ImManager {
             .get_mut(&key)
             .ok_or_else(|| format!("Channel {} not found", key))?;
 
-        // Parse partial config update
         let patch: serde_json::Value = serde_json::from_str(config_json)
             .map_err(|e| format!("Invalid config JSON: {}", e))?;
 
-        // Update allowed users if present
         if let Some(users) = patch.get("allowedUsers") {
             if let Some(arr) = users.as_array() {
                 let new_users: Vec<String> = arr
@@ -380,14 +366,12 @@ impl ImManager {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect();
                 *instance.allowed_users.write().await = new_users;
-                ulog_info!("[im] Updated allowed users for channel {}", key);
             }
         }
 
         Ok(())
     }
 
-    /// Reset a session for a specific channel (e.g., /new command).
     pub async fn reset_session(
         &self,
         agent_id: &str,
@@ -402,17 +386,75 @@ impl ImManager {
 
         let mut router = instance.router.lock().await;
         router.reset_session(session_key).await;
-        ulog_info!(
-            "[im] Reset session {} for channel {}",
-            session_key,
-            key
-        );
+        Ok(())
+    }
+
+    // ── Group permission management ──────────────────────────────────────────
+
+    pub async fn approve_group(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+        group_id: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let mut perms = instance.group_permissions.write().await;
+        if let Some(p) = perms.iter_mut().find(|p| p.group_id == group_id) {
+            p.status = GroupPermissionStatus::Approved;
+            ulog_info!("[im] Approved group {} in channel {}", group_id, key);
+            Ok(())
+        } else {
+            Err(format!("Group {} not found in channel {}", group_id, key))
+        }
+    }
+
+    pub async fn reject_group(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+        group_id: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let mut perms = instance.group_permissions.write().await;
+        let before = perms.len();
+        perms.retain(|p| p.group_id != group_id);
+        if perms.len() < before {
+            ulog_info!("[im] Rejected group {} in channel {}", group_id, key);
+            Ok(())
+        } else {
+            Err(format!("Group {} not found in channel {}", group_id, key))
+        }
+    }
+
+    pub async fn remove_group(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+        group_id: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let mut perms = instance.group_permissions.write().await;
+        perms.retain(|p| p.group_id != group_id);
+        ulog_info!("[im] Removed group {} from channel {}", group_id, key);
         Ok(())
     }
 }
 
-/// Signal all running channels to shut down (sync, for use in app exit handlers).
-/// Best-effort: uses try_lock to avoid blocking if mutex is held.
 pub fn signal_all_shutdown(im_state: &ImManagerState) {
     if let Ok(manager) = im_state.try_lock() {
         for (key, instance) in manager.channels.iter() {
@@ -423,23 +465,18 @@ pub fn signal_all_shutdown(im_state: &ImManagerState) {
             instance.idle_handle.abort();
             instance.health_handle.abort();
         }
-    } else {
-        log::warn!(
-            "[im] Could not acquire lock for shutdown signal, IM channels may linger"
-        );
     }
 }
 
 // ===== Message Processing Loop =====
 
-/// Spawn the message processing loop as a tokio task.
 fn spawn_message_processing_loop(
     mut msg_rx: mpsc::Receiver<ImMessage>,
     mut shutdown_rx: watch::Receiver<bool>,
     router: Arc<Mutex<SessionRouter>>,
     buffer: Arc<Mutex<MessageBuffer>>,
     health: Arc<HealthManager>,
-    adapter: Arc<TelegramAdapter>,
+    adapter: Arc<dyn ImStreamAdapter>,
     app: AppHandle,
     sidecar_manager: ManagedSidecarState,
     semaphore: Arc<Semaphore>,
@@ -475,9 +512,7 @@ fn spawn_message_processing_loop(
             let message_id = msg.message_id.clone();
             let text = msg.text.trim().to_string();
 
-            // ── Bot command dispatch ──
-
-            // /new — reset session
+            // Bot command dispatch
             if text == "/new" {
                 let _ = adapter.ack_processing(&chat_id, &message_id).await;
                 let result = router.lock().await.reset_session(&session_key).await;
@@ -499,7 +534,6 @@ fn spawn_message_processing_loop(
                 continue;
             }
 
-            // /start — welcome message
             if text == "/start" {
                 let _ = adapter
                     .send_message(
@@ -514,8 +548,6 @@ fn spawn_message_processing_loop(
                 continue;
             }
 
-            // ── Regular message → process via Sidecar ──
-
             ulog_info!(
                 "[im] Routing message from {} to Sidecar (session_key={}, {} chars)",
                 msg.sender_name.as_deref().unwrap_or("?"),
@@ -523,7 +555,6 @@ fn spawn_message_processing_loop(
                 text.len(),
             );
 
-            // Clone shared state for the processing task
             let task_router = Arc::clone(&router);
             let task_adapter = Arc::clone(&adapter);
             let task_app = app.clone();
@@ -535,22 +566,15 @@ fn spawn_message_processing_loop(
             let task_config = config.clone();
             let task_provider_env = provider_env.clone();
 
-            // Spawn concurrent task for this message
             tokio::spawn(async move {
-                // 1. Acquire global semaphore
                 let _permit = match task_sem.acquire_owned().await {
                     Ok(p) => p,
-                    Err(_) => {
-                        ulog_error!("[im] Semaphore closed");
-                        return;
-                    }
+                    Err(_) => return,
                 };
 
-                // 2. ACK + typing
                 let _ = task_adapter.ack_processing(&chat_id, &message_id).await;
                 let _ = task_adapter.send_typing(&chat_id).await;
 
-                // 3. Ensure Sidecar is running
                 let (port, is_new_sidecar) = match task_router
                     .lock()
                     .await
@@ -564,16 +588,12 @@ fn spawn_message_processing_loop(
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ =
-                            task_adapter.ack_clear(&chat_id, &message_id).await;
+                        let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
                         let err_msg = format!("Failed to start Sidecar: {}", e);
                         ulog_error!("[im] {}", err_msg);
-
-                        // Buffer on unavailable
                         if matches!(e, RouteError::Unavailable(_)) {
                             task_buffer.lock().await.push(&msg);
                         }
-
                         let _ = task_adapter
                             .send_message(&chat_id, &format!("Error: {}", err_msg))
                             .await;
@@ -581,7 +601,6 @@ fn spawn_message_processing_loop(
                     }
                 };
 
-                // 4. Sync AI config to newly created Sidecar
                 if is_new_sidecar {
                     let router_guard = task_router.lock().await;
                     router_guard
@@ -597,7 +616,6 @@ fn spawn_message_processing_loop(
                         .await;
                 }
 
-                // 5. Compute source string (used by both replay and current message)
                 let source = format!(
                     "{}_{}",
                     msg.platform,
@@ -607,24 +625,17 @@ fn spawn_message_processing_loop(
                     }
                 );
 
-                // 6. Replay buffered messages for this session (if Sidecar just recovered)
+                // Replay buffered messages for this session
                 if is_new_sidecar {
                     let mut replay_count = 0u32;
                     loop {
-                        let buffered = task_buffer.lock().await.pop_for_session(&session_key);
+                        let buffered =
+                            task_buffer.lock().await.pop_for_session(&session_key);
                         let bm = match buffered {
                             Some(bm) => bm,
                             None => break,
                         };
                         replay_count += 1;
-                        ulog_info!(
-                            "[im] Replaying buffered message #{} for {} ({} chars)",
-                            replay_count,
-                            session_key,
-                            bm.text.len(),
-                        );
-
-                        // Build replay POST body (same format as regular messages)
                         let replay_body = json!({
                             "message": bm.text,
                             "agentDir": task_config.workspace_path,
@@ -636,35 +647,61 @@ fn spawn_message_processing_loop(
                                 "senderName": bm.sender_name,
                             },
                         });
-
-                        let replay_url = format!("http://127.0.0.1:{}/api/im/chat", port);
-                        match task_stream_client.post(&replay_url).json(&replay_body).send().await {
+                        let replay_url =
+                            format!("http://127.0.0.1:{}/api/im/chat", port);
+                        match task_stream_client
+                            .post(&replay_url)
+                            .json(&replay_body)
+                            .send()
+                            .await
+                        {
                             Ok(resp) if resp.status().is_success() => {
-                                if let Err(e) = consume_sse_stream(resp, task_adapter.as_ref(), &bm.chat_id).await {
-                                    ulog_warn!("[im] Buffer replay stream error: {}", e);
+                                if let Err(e) = consume_sse_stream(
+                                    resp,
+                                    task_adapter.as_ref(),
+                                    &bm.chat_id,
+                                )
+                                .await
+                                {
+                                    ulog_warn!(
+                                        "[im] Buffer replay stream error: {}",
+                                        e
+                                    );
                                 }
                             }
                             Ok(resp) => {
-                                ulog_warn!("[im] Buffer replay HTTP {}", resp.status());
+                                ulog_warn!(
+                                    "[im] Buffer replay HTTP {}",
+                                    resp.status()
+                                );
                             }
                             Err(e) => {
-                                ulog_warn!("[im] Buffer replay request failed: {}", e);
-                                break; // Stop replaying if Sidecar is unreachable
+                                ulog_warn!(
+                                    "[im] Buffer replay request failed: {}",
+                                    e
+                                );
+                                break;
                             }
                         }
                     }
                     if replay_count > 0 {
-                        ulog_info!("[im] Replayed {} buffered message(s) for {}", replay_count, session_key);
+                        ulog_info!(
+                            "[im] Replayed {} buffered message(s) for {}",
+                            replay_count,
+                            session_key
+                        );
                         if let Err(e) = task_buffer.lock().await.save_to_disk() {
-                            ulog_warn!("[im] Failed to persist buffer after replay: {}", e);
+                            ulog_warn!(
+                                "[im] Failed to persist buffer after replay: {}",
+                                e
+                            );
                         }
                     }
                 }
 
-                // 6. Get session_id from router (for Sidecar session reuse)
-                let peer_session_id = task_router.lock().await.get_session_id(&session_key);
+                let peer_session_id =
+                    task_router.lock().await.get_session_id(&session_key);
 
-                // 8. POST to Sidecar and stream SSE response
                 let mut body = json!({
                     "message": text,
                     "agentDir": task_config.workspace_path,
@@ -695,14 +732,10 @@ fn spawn_message_processing_loop(
                     Ok(resp) => resp,
                     Err(e) => {
                         ulog_error!("[im] SSE request failed: {}", e);
-                        let _ =
-                            task_adapter.ack_clear(&chat_id, &message_id).await;
+                        let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
                         task_buffer.lock().await.push(&msg);
                         let _ = task_adapter
-                            .send_message(
-                                &chat_id,
-                                &format!("Connection error: {}", e),
-                            )
+                            .send_message(&chat_id, &format!("Connection error: {}", e))
                             .await;
                         return;
                     }
@@ -710,15 +743,9 @@ fn spawn_message_processing_loop(
 
                 if !response.status().is_success() {
                     let status = response.status().as_u16();
-                    let error_text =
-                        response.text().await.unwrap_or_default();
-                    ulog_error!(
-                        "[im] Sidecar returned {}: {}",
-                        status,
-                        error_text
-                    );
-                    let _ =
-                        task_adapter.ack_clear(&chat_id, &message_id).await;
+                    let error_text = response.text().await.unwrap_or_default();
+                    ulog_error!("[im] Sidecar returned {}: {}", status, error_text);
+                    let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
                     let _ = task_adapter
                         .send_message(
                             &chat_id,
@@ -728,44 +755,25 @@ fn spawn_message_processing_loop(
                     return;
                 }
 
-                // 6. Consume SSE stream
-                let stream_result = consume_sse_stream(
-                    response,
-                    task_adapter.as_ref(),
-                    &chat_id,
-                )
-                .await;
+                let stream_result =
+                    consume_sse_stream(response, task_adapter.as_ref(), &chat_id)
+                        .await;
 
                 match stream_result {
                     Ok(_) => {
-                        ulog_info!(
-                            "[im] Stream complete for {}",
-                            session_key,
-                        );
+                        ulog_info!("[im] Stream complete for {}", session_key);
                     }
                     Err(e) => {
-                        ulog_error!(
-                            "[im] Stream error for {}: {}",
-                            session_key,
-                            e
-                        );
+                        ulog_error!("[im] Stream error for {}: {}", session_key, e);
                         let _ = task_adapter
-                            .send_message(
-                                &chat_id,
-                                &format!("Error: {}", e),
-                            )
+                            .send_message(&chat_id, &format!("Error: {}", e))
                             .await;
                     }
                 }
 
-                // 7. Clear ACK
-                let _ =
-                    task_adapter.ack_clear(&chat_id, &message_id).await;
+                let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
 
-                // 8. Record response
                 task_router.lock().await.record_response(&session_key);
-
-                // 9. Update health
                 task_health
                     .set_last_message_at(chrono::Utc::now().to_rfc3339())
                     .await;
@@ -786,23 +794,18 @@ fn spawn_message_processing_loop(
 
 // ===== SSE Stream Consumption =====
 
-/// Consume SSE stream from Sidecar and relay AI response to IM.
-/// Uses draft-based streaming: sends initial message, then edits with updates.
 async fn consume_sse_stream(
     response: reqwest::Response,
-    adapter: &TelegramAdapter,
+    adapter: &dyn ImStreamAdapter,
     chat_id: &str,
 ) -> Result<(), String> {
     let mut byte_stream = response.bytes_stream();
     let mut sse_buffer = String::new();
 
-    // Current text block state
     let mut block_text = String::new();
     let mut draft_id: Option<String> = None;
     let mut last_edit = Instant::now();
     let mut any_text_sent = false;
-
-    // Placeholder state
     let mut placeholder_id: Option<String> = None;
     let mut first_content_sent = false;
 
@@ -812,9 +815,8 @@ async fn consume_sse_stream(
 
         while let Some(pos) = sse_buffer.find("\n\n") {
             let event_str: String = sse_buffer.drain(..pos).collect();
-            sse_buffer.drain(..2); // consume "\n\n"
+            sse_buffer.drain(..2);
 
-            // Skip heartbeat comments
             if event_str.starts_with(':') {
                 continue;
             }
@@ -834,13 +836,11 @@ async fn consume_sse_stream(
                     if let Some(text) = json_val["text"].as_str() {
                         block_text = text.to_string();
 
-                        // First meaningful text: create draft
                         if draft_id.is_none()
                             && !block_text.trim().is_empty()
                             && has_sentence_boundary(&block_text)
                         {
                             if let Some(pid) = placeholder_id.take() {
-                                // Adopt placeholder as draft
                                 draft_id = Some(pid);
                                 let display = format_draft_text(
                                     &block_text,
@@ -873,7 +873,6 @@ async fn consume_sse_stream(
                             first_content_sent = true;
                         }
 
-                        // Throttled edit
                         if let Some(ref did) = draft_id {
                             let throttle = Duration::from_millis(
                                 adapter.preferred_throttle_ms(),
@@ -884,15 +883,13 @@ async fn consume_sse_stream(
                                     &block_text,
                                     adapter.max_message_length(),
                                 );
-                                let _ = adapter
-                                    .edit_message(chat_id, did, &display)
-                                    .await;
+                                let _ =
+                                    adapter.edit_message(chat_id, did, &display).await;
                             }
                         }
                     }
                 }
                 "activity" => {
-                    // Non-text block started (thinking, tool_use)
                     if !first_content_sent {
                         match adapter
                             .send_message_returning_id(chat_id, "Generating...")
@@ -913,7 +910,6 @@ async fn consume_sse_stream(
                         .unwrap_or_else(|| block_text.clone());
 
                     if final_text.trim().is_empty() {
-                        // Delete orphaned draft
                         if let Some(ref did) = draft_id {
                             let _ = adapter.delete_message(chat_id, did).await;
                         }
@@ -926,7 +922,6 @@ async fn consume_sse_stream(
                     draft_id = None;
                 }
                 "complete" => {
-                    // Flush any remaining text
                     if !block_text.trim().is_empty() {
                         finalize_block(
                             adapter,
@@ -947,16 +942,12 @@ async fn consume_sse_stream(
                                 .await
                                 .is_err()
                             {
+                                let _ = adapter.delete_message(chat_id, pid).await;
                                 let _ =
-                                    adapter.delete_message(chat_id, pid).await;
-                                let _ = adapter
-                                    .send_message(chat_id, "(No response)")
-                                    .await;
+                                    adapter.send_message(chat_id, "(No response)").await;
                             }
                         } else {
-                            let _ = adapter
-                                .send_message(chat_id, "(No response)")
-                                .await;
+                            let _ = adapter.send_message(chat_id, "(No response)").await;
                         }
                     }
                     return Ok(());
@@ -964,7 +955,6 @@ async fn consume_sse_stream(
                 "error" => {
                     let error =
                         json_val["error"].as_str().unwrap_or("Unknown error");
-                    // Clean up draft and placeholder
                     if let Some(ref did) = draft_id {
                         let _ = adapter.delete_message(chat_id, did).await;
                     }
@@ -973,12 +963,11 @@ async fn consume_sse_stream(
                     }
                     return Err(error.to_string());
                 }
-                _ => {} // Ignore unknown types
+                _ => {}
             }
         }
     }
 
-    // Stream disconnected unexpectedly — flush remaining text
     if !block_text.trim().is_empty() {
         finalize_block(adapter, chat_id, draft_id.clone(), &block_text).await;
         any_text_sent = true;
@@ -1004,9 +993,6 @@ async fn consume_sse_stream(
     Ok(())
 }
 
-// ===== SSE Helper Functions =====
-
-/// Extract data payload from SSE event string.
 fn extract_sse_data(event_str: &str) -> String {
     event_str
         .lines()
@@ -1020,9 +1006,8 @@ fn extract_sse_data(event_str: &str) -> String {
         .join("\n")
 }
 
-/// Finalize a text block: edit draft with final text or send new message.
 async fn finalize_block(
-    adapter: &TelegramAdapter,
+    adapter: &dyn ImStreamAdapter,
     chat_id: &str,
     draft_id: Option<String>,
     text: &str,
@@ -1035,24 +1020,20 @@ async fn finalize_block(
         .as_ref()
         .map_or(false, |id| id.starts_with("draft:"));
     if is_draft {
-        // Draft mode: delete draft + send permanent message
         if let Some(ref did) = draft_id {
             let _ = adapter.delete_message(chat_id, did).await;
         }
         let _ = adapter.send_message(chat_id, text).await;
     } else if let Some(ref mid) = draft_id {
-        // Standard mode: edit the message with final text using finalize_message
         if let Err(e) = adapter.edit_message(chat_id, mid, text).await {
-            ulog_warn!("[im-stream] finalize edit failed: {}, sending new message", e);
+            ulog_warn!("[im-stream] finalize edit failed: {}, sending new", e);
             let _ = adapter.send_message(chat_id, text).await;
         }
     } else {
-        // No draft — send new message
         let _ = adapter.send_message(chat_id, text).await;
     }
 }
 
-/// Format text for draft display (truncate if too long).
 fn format_draft_text(text: &str, max_len: usize) -> String {
     let limit = max_len.saturating_sub(10);
     if text.len() > limit {
@@ -1066,7 +1047,6 @@ fn format_draft_text(text: &str, max_len: usize) -> String {
     }
 }
 
-/// Check if text has enough content for a meaningful first send.
 fn has_sentence_boundary(text: &str) -> bool {
     const MIN_FIRST_SEND_LEN: usize = 20;
     if text.chars().count() >= MIN_FIRST_SEND_LEN {
@@ -1084,7 +1064,6 @@ fn has_sentence_boundary(text: &str) -> bool {
 
 // ===== Idle Session Collection Loop =====
 
-/// Periodically collect idle sessions (30-min timeout).
 fn spawn_idle_collection_loop(
     mut shutdown_rx: watch::Receiver<bool>,
     router: Arc<Mutex<SessionRouter>>,
@@ -1096,7 +1075,6 @@ fn spawn_idle_collection_loop(
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
-                        ulog_info!("[im] Idle collection loop shutting down");
                         break;
                     }
                     continue;
@@ -1122,16 +1100,16 @@ pub async fn cmd_start_agent_channel(
     app: AppHandle,
     im_state: tauri::State<'_, ImManagerState>,
     sidecar_state: tauri::State<'_, crate::commands::SidecarState>,
-    config_json: String,
+    agent_id: String,
+    channel_id: String,
+    agent_config: types::AgentConfigRust,
+    channel_config: types::ChannelConfigRust,
 ) -> Result<(), String> {
-    let config: ImConfig = serde_json::from_str(&config_json)
-        .map_err(|e| format!("Invalid config JSON: {}", e))?;
-
+    let config = channel_config.to_im_config(&agent_config);
+    let _ = (agent_id, channel_id); // embedded in config
     let sidecar_manager = (*sidecar_state).clone();
     let mut manager = im_state.lock().await;
-    manager
-        .start_channel(app, sidecar_manager, config)
-        .await
+    manager.start_channel(app, sidecar_manager, config).await
 }
 
 #[tauri::command]
@@ -1196,7 +1174,6 @@ pub async fn cmd_im_verify_token(
 ) -> Result<String, String> {
     match platform.as_str() {
         "telegram" => {
-            // Build a temporary client to verify the token
             let mut builder = reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .connect_timeout(Duration::from_secs(5));
@@ -1224,14 +1201,10 @@ pub async fn cmd_im_verify_token(
                 .map_err(|e| format!("Invalid response: {}", e))?;
 
             if body["ok"].as_bool() == Some(true) {
-                let username = body["result"]["username"]
-                    .as_str()
-                    .unwrap_or("unknown");
+                let username = body["result"]["username"].as_str().unwrap_or("unknown");
                 Ok(format!("@{}", username))
             } else {
-                let desc = body["description"]
-                    .as_str()
-                    .unwrap_or("Unknown error");
+                let desc = body["description"].as_str().unwrap_or("Unknown error");
                 Err(format!("Token verification failed: {}", desc))
             }
         }
@@ -1239,9 +1212,57 @@ pub async fn cmd_im_verify_token(
     }
 }
 
+#[tauri::command]
+pub async fn cmd_im_verify_feishu_credentials(
+    app_id: String,
+    app_secret: String,
+) -> Result<String, String> {
+    feishu::verify_feishu_credentials(&app_id, &app_secret).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_verify_dingtalk_credentials(
+    client_id: String,
+    client_secret: String,
+) -> Result<String, String> {
+    dingtalk::verify_dingtalk_credentials(&client_id, &client_secret).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_approve_group(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    let manager = im_state.lock().await;
+    manager.approve_group(&agent_id, &channel_id, &group_id).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_reject_group(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    let manager = im_state.lock().await;
+    manager.reject_group(&agent_id, &channel_id, &group_id).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_remove_group(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    let manager = im_state.lock().await;
+    manager.remove_group(&agent_id, &channel_id, &group_id).await
+}
+
 // ===== Auto-Start on App Boot =====
 
-/// Read agent configs from ~/.soagents/config.json
 fn read_agent_configs_from_disk() -> Vec<types::AgentConfigRust> {
     let home = match dirs::home_dir() {
         Some(h) => h,
@@ -1256,9 +1277,7 @@ fn read_agent_configs_from_disk() -> Vec<types::AgentConfigRust> {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
-    match serde_json::from_value::<Vec<types::AgentConfigRust>>(
-        json["agents"].clone(),
-    ) {
+    match serde_json::from_value::<Vec<types::AgentConfigRust>>(json["agents"].clone()) {
         Ok(agents) => agents,
         Err(e) => {
             log::warn!("[im] Failed to parse agents from config: {}", e);
@@ -1267,11 +1286,7 @@ fn read_agent_configs_from_disk() -> Vec<types::AgentConfigRust> {
     }
 }
 
-/// Schedule auto-start of enabled agent channels after app initialization.
-/// Delayed by 4 seconds to let Sidecar manager and other services initialize first.
-pub fn schedule_agent_auto_start(
-    app_handle: tauri::AppHandle,
-) {
+pub fn schedule_agent_auto_start(app_handle: tauri::AppHandle) {
     use tauri::Manager;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
@@ -1293,12 +1308,32 @@ pub fn schedule_agent_auto_start(
                 if !channel.enabled {
                     continue;
                 }
-                // Check credentials
+
+                // Check platform credentials
                 let has_credentials = match channel.channel_type {
-                    types::ImPlatform::Telegram => {
+                    ImPlatform::Telegram => {
                         channel.bot_token.as_ref().map_or(false, |t| !t.is_empty())
                     }
-                    _ => false, // Phase 1: only Telegram
+                    ImPlatform::Feishu => {
+                        channel
+                            .feishu_app_id
+                            .as_ref()
+                            .map_or(false, |t| !t.is_empty())
+                            && channel
+                                .feishu_app_secret
+                                .as_ref()
+                                .map_or(false, |t| !t.is_empty())
+                    }
+                    ImPlatform::Dingtalk => {
+                        channel
+                            .dingtalk_client_id
+                            .as_ref()
+                            .map_or(false, |t| !t.is_empty())
+                            && channel
+                                .dingtalk_client_secret
+                                .as_ref()
+                                .map_or(false, |t| !t.is_empty())
+                    }
                 };
                 if !has_credentials {
                     continue;
@@ -1306,7 +1341,6 @@ pub fn schedule_agent_auto_start(
 
                 let key = channel_key(&agent.id, &channel.id);
 
-                // Skip if already running
                 {
                     let manager = im_state.lock().await;
                     if manager.channels.contains_key(&key) {
@@ -1323,16 +1357,12 @@ pub fn schedule_agent_auto_start(
                 );
 
                 let sidecar_manager = sidecar_state.clone();
-                let mut manager: tokio::sync::MutexGuard<'_, ImManager> = im_state.lock().await;
+                let mut manager = im_state.lock().await;
                 if let Err(e) = manager
                     .start_channel(app_handle.clone(), sidecar_manager, config)
                     .await
                 {
-                    ulog_error!(
-                        "[im] Auto-start failed for channel {}: {}",
-                        key,
-                        e
-                    );
+                    ulog_error!("[im] Auto-start failed for channel {}: {}", key, e);
                 }
             }
         }

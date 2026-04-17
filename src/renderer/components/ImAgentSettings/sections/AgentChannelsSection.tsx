@@ -3,15 +3,15 @@
 import { useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, Loader2, MessageSquare, Send, X } from 'lucide-react';
-import type { ImAgentConfig, ChannelConfig } from '../../../../shared/types/imAgent';
+import type { AgentConfig, ChannelConfig } from '../../../../shared/types/agentConfig';
 import type { ImBotStatus } from '../../../../shared/types/im';
-import { startAgentChannel, stopAgentChannel } from '../../../config/imAgentConfigService';
+import { startAgentChannel, stopAgentChannel } from '../../../config/agentConfigService';
 import ChannelWizard from '../channels/ChannelWizard';
 import ChannelDetailView from '../channels/ChannelDetailView';
 
 interface AgentChannelsSectionProps {
-  agent: ImAgentConfig;
-  onChange: (updated: ImAgentConfig) => void;
+  agent: AgentConfig;
+  onChange: (updated: AgentConfig) => void;
   statuses: Record<string, ImBotStatus>;
 }
 

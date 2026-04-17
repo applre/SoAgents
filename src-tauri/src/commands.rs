@@ -1,8 +1,11 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use crate::heartbeat::HeartbeatManager;
 use crate::sidecar::{self, ManagedSidecarState, SidecarOwner, GLOBAL_SIDECAR_ID};
 
 pub type SidecarState = ManagedSidecarState;
+pub type HeartbeatManagerState = Arc<HeartbeatManager>;
 
 #[tauri::command]
 pub fn cmd_start_session_sidecar(
@@ -161,4 +164,76 @@ pub fn cmd_get_background_sessions(
     state: tauri::State<'_, SidecarState>,
 ) -> Result<Vec<String>, String> {
     Ok(sidecar::get_background_session_ids(&state))
+}
+
+// ── Heartbeat Commands ──
+
+/// Sync heartbeat configuration for a single agent (start/stop/restart runner).
+#[tauri::command]
+pub async fn cmd_heartbeat_sync(
+    app_handle: tauri::AppHandle,
+    agent_id: String,
+    state: tauri::State<'_, HeartbeatManagerState>,
+) -> Result<(), String> {
+    // Read latest agent config from disk
+    let config_path = dirs::home_dir()
+        .ok_or("No home dir")?
+        .join(".soagents")
+        .join("config.json");
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Read config: {}", e))?;
+    let config: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Parse: {}", e))?;
+
+    let agents = config
+        .get("agents")
+        .and_then(|a| a.as_array())
+        .ok_or("No agents array")?;
+
+    let agent = agents
+        .iter()
+        .find(|a| a.get("id").and_then(|v| v.as_str()) == Some(&agent_id))
+        .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+    let agent_config: crate::im::types::AgentConfigRust =
+        serde_json::from_value(agent.clone()).map_err(|e| format!("Parse agent: {}", e))?;
+
+    state
+        .sync_agent(
+            &agent_id,
+            agent_config.heartbeat,
+            &agent_config.workspace_path,
+            agent_config.memory_auto_update,
+            &app_handle,
+        )
+        .await;
+
+    Ok(())
+}
+
+/// Resume a paused heartbeat runner.
+#[tauri::command]
+pub async fn cmd_heartbeat_resume(
+    agent_id: String,
+    state: tauri::State<'_, HeartbeatManagerState>,
+) -> Result<(), String> {
+    state.resume(&agent_id).await;
+    Ok(())
+}
+
+/// Get heartbeat status for a single agent.
+#[tauri::command]
+pub async fn cmd_heartbeat_status(
+    agent_id: String,
+    state: tauri::State<'_, HeartbeatManagerState>,
+) -> Result<Option<crate::heartbeat::HeartbeatRunStatus>, String> {
+    Ok(state.get_status(&agent_id).await)
+}
+
+/// Get heartbeat status for all agents.
+#[tauri::command]
+pub async fn cmd_heartbeat_all_status(
+    state: tauri::State<'_, HeartbeatManagerState>,
+) -> Result<Vec<crate::heartbeat::HeartbeatRunStatus>, String> {
+    Ok(state.get_all_status().await)
 }

@@ -24,7 +24,8 @@ import { atomicModifyWorkspaces } from '../config/workspaceService';
 import { isTauri } from '../utils/env';
 import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
 import UsageStatsPanel from '../components/UsageStatsPanel';
-import { BotPlatformRegistry } from '../components/ImAgentSettings';
+import { ImBotSettingsTab } from '../components/ImAgentSettings';
+import GlobalAgentsPanel from '../components/GlobalAgentsPanel';
 
 // ── 类型定义 ──────────────────────────────────────────────────
 
@@ -62,7 +63,7 @@ interface SkillInfo {
   description: string;
   content: string;
   rawContent: string;
-  source: 'global' | 'project';
+  source: 'user' | 'project';
   path: string;
   isBuiltin: boolean;
   enabled: boolean;
@@ -2179,7 +2180,7 @@ function SkillEditModal({
   onClose,
 }: {
   skill: SkillInfo | null; // null = new
-  onSave: (data: { name: string; description: string; content: string; scope: 'global' | 'project' }) => Promise<void>;
+  onSave: (data: { name: string; description: string; content: string; scope: 'user' | 'project' }) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -2189,7 +2190,7 @@ function SkillEditModal({
     name: skill?.name ?? '',
     description: skill?.description ?? '',
     content: skill?.rawContent ?? '',
-    scope: (skill?.source ?? 'global') as 'global' | 'project',
+    scope: (skill?.source ?? 'user') as 'user' | 'project',
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -2266,10 +2267,10 @@ function SkillEditModal({
             <CustomSelect
               value={form.scope}
               options={[
-                { value: 'global', label: '全局' },
+                { value: 'user', label: '全局' },
                 { value: 'project', label: '项目' },
               ]}
-              onChange={(v) => setForm((f) => ({ ...f, scope: v as 'global' | 'project' }))}
+              onChange={(v) => setForm((f) => ({ ...f, scope: v as 'user' | 'project' }))}
               className="w-full"
             />
           </div>
@@ -2315,6 +2316,17 @@ function SkillEditModal({
 // ── Skills Tab ────────────────────────────────────────────────
 
 function SkillsTab() {
+  const [agentsInDetail, setAgentsInDetail] = useState(false);
+
+  return (
+    <div className="space-y-10">
+      {!agentsInDetail && <SkillsSection />}
+      <GlobalAgentsPanel onDetailChange={setAgentsInDetail} />
+    </div>
+  );
+}
+
+function SkillsSection() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [editSkill, setEditSkill] = useState<SkillInfo | 'new' | null>(null);
@@ -2327,7 +2339,7 @@ function SkillsTab() {
 
   useEffect(() => { void loadSkills(); }, []);
 
-  const handleSave = async (data: { name: string; description: string; content: string; scope: 'global' | 'project' }) => {
+  const handleSave = async (data: { name: string; description: string; content: string; scope: 'user' | 'project' }) => {
     if (editSkill === 'new') {
       await globalApiPostJson('/api/skills', data);
     } else if (editSkill) {
@@ -2381,8 +2393,8 @@ function SkillsTab() {
               >
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-sm text-[var(--ink)]">{skill.name}</span>
-                  <span className={`text-xs rounded px-1.5 py-0.5 ${skill.source === 'global' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-500'}`}>
-                    {skill.source === 'global' ? '全局' : '项目'}
+                  <span className={`text-xs rounded px-1.5 py-0.5 ${skill.source === 'user' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-500'}`}>
+                    {skill.source === 'user' ? '全局' : '项目'}
                   </span>
                   {skill.isBuiltin && (
                     <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
@@ -2923,7 +2935,7 @@ export default function Settings({ checkForUpdate, checking }: SettingsProps) {
         {activeNav === 'provider'        && <ProviderTab />}
         {activeNav === 'mcp'             && <MCPTab />}
         {activeNav === 'skills'          && <SkillsTab />}
-        {activeNav === 'im-bot'          && <BotPlatformRegistry />}
+        {activeNav === 'im-bot'          && <ImBotSettingsTab />}
         {activeNav === 'usage'           && <UsageStatsPanel />}
         {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'about'           && <AboutTab checkForUpdate={checkForUpdate} checking={checking} />}

@@ -9,8 +9,14 @@ export type { CommandItem, CommandDetail, SlashCommand };
 const GLOBAL_COMMANDS_DIR = join(homedir(), '.soagents', 'commands');
 
 const BUILTIN_COMMANDS: SlashCommand[] = [
-  { name: 'clear', description: '清空对话历史', source: 'builtin' },
-  { name: 'reset', description: '重置当前会话', source: 'builtin' },
+  { name: 'compact', description: '压缩对话历史，释放上下文空间', source: 'builtin' },
+  { name: 'context', description: '显示或管理当前上下文', source: 'builtin' },
+  { name: 'cost', description: '查看 token 使用量和费用', source: 'builtin' },
+  { name: 'init', description: '初始化项目配置 (CLAUDE.md)', source: 'builtin' },
+  { name: 'pr-comments', description: '生成 Pull Request 评论', source: 'builtin' },
+  { name: 'release-notes', description: '根据最近提交生成发布说明', source: 'builtin' },
+  { name: 'review', description: '对代码进行审查', source: 'builtin' },
+  { name: 'security-review', description: '进行安全相关的代码审查', source: 'builtin' },
 ];
 
 function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
@@ -380,15 +386,13 @@ export function listSlashCommands(agentDir?: string): SlashCommand[] {
     });
   }
 
-  // 3. Project-level skills (user-invocable only)
+  // 3. Project-level skills (default user-invocable, unless explicitly false)
   if (agentDir) {
     const allSkills = SkillsStore.list(agentDir);
     const projectSkills = allSkills.filter((s) => s.source === 'project');
     for (const skill of projectSkills) {
       const { meta } = parseFrontmatter(skill.rawContent);
-      const isUserInvocable =
-        meta['user-invocable'] === 'true' || meta['user-invocable'] === 'yes';
-      if (!isUserInvocable) continue;
+      if (meta['user-invocable'] === 'false' || meta['user-invocable'] === 'no') continue;
       addIfNew({
         name: skill.name,
         description: skill.description,
@@ -399,14 +403,12 @@ export function listSlashCommands(agentDir?: string): SlashCommand[] {
     }
   }
 
-  // 4. User-level skills (enabled + user-invocable only)
+  // 4. User-level skills (enabled, default user-invocable unless explicitly false)
   const allUserSkills = SkillsStore.list(agentDir);
   const userSkills = allUserSkills.filter((s) => s.source === 'user' && s.enabled);
   for (const skill of userSkills) {
     const { meta } = parseFrontmatter(skill.rawContent);
-    const isUserInvocable =
-      meta['user-invocable'] === 'true' || meta['user-invocable'] === 'yes';
-    if (!isUserInvocable) continue;
+    if (meta['user-invocable'] === 'false' || meta['user-invocable'] === 'no') continue;
     addIfNew({
       name: skill.name,
       description: skill.description,

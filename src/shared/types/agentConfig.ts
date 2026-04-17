@@ -1,6 +1,15 @@
-import type { ImPlatform, GroupPermission, HeartbeatConfig } from './im';
+import type { ImPlatform, GroupPermission, GroupActivation, HeartbeatConfig, MemoryAutoUpdateConfig } from './im';
 
 export type ChannelType = ImPlatform;
+
+/**
+ * Last active channel tracking for heartbeat/cron routing
+ */
+export interface LastActiveChannel {
+  channelId: string;
+  sessionKey: string;
+  lastActiveAt: string; // ISO timestamp
+}
 
 export interface ChannelOverrides {
   providerId?: string;
@@ -16,39 +25,40 @@ export interface ChannelConfig {
   name?: string;
   enabled: boolean;
 
-  // Telegram
+  // Platform credentials
   botToken?: string;
   telegramUseDraft?: boolean;
-
-  // Feishu (Phase 2)
   feishuAppId?: string;
   feishuAppSecret?: string;
-
-  // DingTalk (Phase 2)
   dingtalkClientId?: string;
   dingtalkClientSecret?: string;
+  dingtalkUseAiCard?: boolean;
+  dingtalkCardTemplateId?: string;
 
   // User management
   allowedUsers?: string[];
   groupPermissions?: GroupPermission[];
-  groupActivation?: 'mention' | 'always';
+  groupActivation?: GroupActivation;
 
-  // Proxy (Telegram API blocked in China)
+  // Proxy
   proxyUrl?: string;
 
-  // Per-channel AI overrides
+  // Per-channel overrides
   overrides?: ChannelOverrides;
   setupCompleted?: boolean;
 }
 
-export interface ImAgentConfig {
+export interface AgentConfig {
+  // Identity
   id: string;
   name: string;
   icon?: string;
   enabled: boolean;
+
+  // Core: Workspace
   workspacePath: string;
 
-  // Default AI config (inherited by all channels)
+  // AI Configuration (defaults for all channels + desktop sessions)
   providerId?: string;
   model?: string;
   providerEnvJson?: string;
@@ -56,10 +66,19 @@ export interface ImAgentConfig {
   mcpEnabledServers?: string[];
   mcpServersJson?: string;
 
-  // Phase 3
+  // Heartbeat
   heartbeat?: HeartbeatConfig;
 
+  // Memory Auto-Update
+  memoryAutoUpdate?: MemoryAutoUpdateConfig;
+
+  // Channels
   channels: ChannelConfig[];
+
+  // Active message routing
+  lastActiveChannel?: LastActiveChannel;
+
+  // Runtime
   setupCompleted?: boolean;
 }
 
@@ -73,8 +92,8 @@ export interface EffectiveConfig {
 }
 
 export function resolveEffectiveConfig(
-  agent: ImAgentConfig,
-  channel: ChannelConfig
+  agent: AgentConfig,
+  channel: ChannelConfig,
 ): EffectiveConfig {
   return {
     providerId: channel.overrides?.providerId ?? agent.providerId,
@@ -86,7 +105,7 @@ export function resolveEffectiveConfig(
   };
 }
 
-export const DEFAULT_IM_AGENT_CONFIG: Partial<ImAgentConfig> = {
+export const DEFAULT_AGENT_CONFIG: Partial<AgentConfig> = {
   enabled: true,
   permissionMode: 'bypassPermissions',
   channels: [],

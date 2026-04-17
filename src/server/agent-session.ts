@@ -499,7 +499,6 @@ class SessionRunner {
 
   // ── 持久 Session 门控 ──
   private messageResolver: ((item: QueueItem | null) => void) | null = null;
-  private resolveTurnComplete: (() => void) | null = null;
   private shouldAbort = false;
   private stoppedByUser = false;
   private sessionTerminationPromise: Promise<void> | null = null;
@@ -525,6 +524,14 @@ class SessionRunner {
   private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
   private pendingPermissionData = new Map<string, { toolName: string; toolUseId: string; toolInput: Record<string, unknown> }>();
   private pendingQuestionData = new Map<string, { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }>();
+
+  // ── Mid-turn injection: messages yielded to SDK but not yet consumed by AI ──
+  // queue:started is deferred until a content block boundary (content_block_start)
+  // to avoid splitting old content mid-stream.
+  private pendingMidTurnQueue: Array<{
+    queueId: string;
+    userMessage: { id: string; role: 'user'; content: string; timestamp: string; attachments?: MessageAttachment[] };
+  }> = [];
 
   // ── IM stream callback ──
   private imStreamCallback: ((event: 'delta' | 'block-end' | 'complete' | 'error' | 'activity', data: string) => void) | null = null;
@@ -642,23 +649,32 @@ class SessionRunner {
     return new Promise(resolve => { this.messageResolver = resolve; });
   }
 
-  /** result 事件到达后解锁 generator 进入下一轮 */
-  private signalTurnComplete(): void {
-    if (this.resolveTurnComplete) {
-      const resolve = this.resolveTurnComplete;
-      this.resolveTurnComplete = null;
-      resolve();
+  /**
+   * Flush deferred mid-turn user messages: save to SessionStore and broadcast queue:started.
+   * Called at content block boundaries (content_block_start) and turn end (result event).
+   */
+  private flushPendingMidTurnQueue(): void {
+    if (this.pendingMidTurnQueue.length === 0) return;
+    for (const pending of this.pendingMidTurnQueue) {
+      SessionStore.saveMessage(this.sessionId, pending.userMessage);
+      broadcast('queue:started', {
+        sessionId: this.sessionId,
+        queueId: pending.queueId,
+        userMessage: pending.userMessage,
+        midTurnBreak: true,
+      });
     }
-  }
-
-  /** generator 阻塞等待 AI 回复完成 */
-  private waitForTurnComplete(): Promise<void> {
-    if (this.shouldAbort) return Promise.resolve();
-    return new Promise(resolve => { this.resolveTurnComplete = resolve; });
+    this.pendingMidTurnQueue.length = 0;
   }
 
   /** session 异常死亡时逐条广播 queue:cancelled */
   private drainMessageQueue(): void {
+    // Also drain pending mid-turn messages
+    for (const pending of this.pendingMidTurnQueue) {
+      broadcast('queue:cancelled', { sessionId: this.sessionId, queueId: pending.queueId });
+    }
+    this.pendingMidTurnQueue.length = 0;
+
     for (const item of this.messageQueue) {
       if (item.wasQueued) {
         broadcast('queue:cancelled', { sessionId: this.sessionId, queueId: item.queueId });
@@ -674,14 +690,14 @@ class SessionRunner {
       this.preWarmTimer = null;
     }
     this.shouldAbort = true;
+    // Discard pending mid-turn messages (session is being torn down)
+    this.pendingMidTurnQueue.length = 0;
     // 唤醒 generator 的 waitForMessage
     if (this.messageResolver) {
       const resolve = this.messageResolver;
       this.messageResolver = null;
       resolve(null);
     }
-    // 唤醒 generator 的 waitForTurnComplete
-    this.signalTurnComplete();
     // 中断 SDK subprocess
     if (this.querySession) {
       this.querySession.interrupt().catch(() => {});
@@ -691,7 +707,10 @@ class SessionRunner {
   // ── 持久 messageGenerator ──
 
   private async *messageGenerator(): AsyncGenerator<SDKUserMessage> {
-    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator started (persistent mode)`);
+    // Yield-and-ready 模式：generator yield 后立即回到 waitForMessage，有新消息即再次 yield。
+    // SDK 的 for-await 立即写入 stdin pipe，subprocess 在 tool call / thinking 间隙读取。
+    // 不再等待 turn 完成（waitForTurnComplete），实现 mid-turn 消息注入。
+    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator started (persistent mode, mid-turn injection enabled)`);
 
     while (true) {
       const item = await this.waitForMessage();
@@ -700,43 +719,52 @@ class SessionRunner {
         return;
       }
 
-      // 排队消息：在 yield 前保存用户消息到 SessionStore 并广播 queue:started
+      // 排队消息的延迟渲染
       if (item.wasQueued) {
-        SessionStore.saveMessage(this.sessionId, {
+        const userMessage = {
           id: crypto.randomUUID(),
-          role: 'user',
+          role: 'user' as const,
           content: item.text,
           timestamp: new Date().toISOString(),
           ...(item.attachments ? { attachments: item.attachments } : {}),
-        });
-        broadcast('queue:started', {
-          sessionId: this.sessionId,
-          queueId: item.queueId,
-          text: item.text,
-        });
+        };
+
+        const isMidTurn = this.isStreaming;
+        if (!isMidTurn) {
+          // Normal turn start: save and broadcast immediately
+          SessionStore.saveMessage(this.sessionId, userMessage);
+          broadcast('queue:started', {
+            sessionId: this.sessionId,
+            queueId: item.queueId,
+            userMessage,
+          });
+        } else {
+          // Mid-turn injection: defer to pendingMidTurnQueue.
+          // The message is flushed when the AI produces a content block boundary.
+          this.pendingMidTurnQueue.push({
+            queueId: item.queueId,
+            userMessage,
+          });
+        }
       }
 
-      // 重置每轮状态
-      this.turnAssistantContent = '';
-      this.turnHasStreamedContent = false;
-      this.currentToolId = '';
-      this.toolNameMap.clear();
-      this.turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined, modelUsage: undefined };
-      this.turnStartTime = Date.now();
-      this.turnToolCount = 0;
-      this.isStreaming = true;
-      this.imCallbackNulledDuringTurn = false;
+      // Only reset turn state for NEW turns (not mid-turn injections)
+      const isMidTurnInjection = this.isStreaming;
+      if (!isMidTurnInjection) {
+        this.turnAssistantContent = '';
+        this.turnHasStreamedContent = false;
+        this.currentToolId = '';
+        this.toolNameMap.clear();
+        this.turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined, modelUsage: undefined };
+        this.turnStartTime = Date.now();
+        this.turnToolCount = 0;
+        this.isStreaming = true;
+        this.imCallbackNulledDuringTurn = false;
+      }
 
-      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued})`);
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued}, midTurn=${isMidTurnInjection})`);
       yield item.sdkMessage;
-
-      // 等待本轮 AI 回复完成（result 消息到达后解锁）
-      await this.waitForTurnComplete();
-
-      if (this.shouldAbort) {
-        console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator abort flag set, exiting`);
-        return;
-      }
+      // Mid-turn injection: 不等 turn 完成，立即准备 yield 下一条。
     }
   }
 
@@ -1053,7 +1081,6 @@ class SessionRunner {
         this.messageResolver = null;
         resolve(null);
       }
-      this.signalTurnComplete();
 
       // Only drain queue on unexpected death (not intentional abort).
       // Intentional abort (shouldAbort=true) means the caller (sendMessage restart / stop)
@@ -1100,6 +1127,9 @@ class SessionRunner {
           broadcast('chat:tool-input-delta', { sessionId: activeSessionId, id: this.currentToolId, partial_json: delta.partial_json });
         }
       } else if (streamEvent.type === 'content_block_start') {
+        // Flush pending mid-turn messages at content block boundaries
+        this.flushPendingMidTurnQueue();
+
         const block = streamEvent.content_block;
         console.log(`${logTag} content_block_start: type=${block?.type}, name=${block?.name ?? '-'}, id=${block?.id ?? '-'}`);
         if (block?.type === 'tool_use') {
@@ -1221,6 +1251,9 @@ class SessionRunner {
         durationMs,
       });
 
+      // Flush pending mid-turn messages before marking done
+      this.flushPendingMidTurnQueue();
+
       // 标记流式结束
       this.isStreaming = false;
 
@@ -1230,9 +1263,6 @@ class SessionRunner {
         console.log(`${logTag} Executing deferred MCP restart`);
         this.abortSession();
       }
-
-      // 解锁 generator 进入下一轮
-      this.signalTurnComplete();
     } else {
       console.log(`${logTag} unhandled event type: ${msg.type}`);
     }
@@ -1312,9 +1342,10 @@ class SessionRunner {
     const activeSessionId = this.sessionId;
     const queueId = crypto.randomUUID();
 
-    // 如果正在 streaming，排队而不是拒绝
+    // 如果正在 streaming，排队而不是拒绝（mid-turn injection）
     if (this.isStreaming) {
-      if (this.messageQueue.length >= MAX_QUEUE_SIZE) {
+      // Count both messageQueue (waiting) and pendingMidTurnQueue (yielded but not yet flushed)
+      if (this.messageQueue.length + this.pendingMidTurnQueue.length >= MAX_QUEUE_SIZE) {
         return { ok: false, error: 'queue_full' };
       }
 
@@ -1337,9 +1368,11 @@ class SessionRunner {
         attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
       };
 
-      this.messageQueue.push(queueItem);
+      // wakeGenerator delivers directly if generator is at waitForMessage (messageResolver set),
+      // or buffers in messageQueue if generator is suspended at yield (SDK hasn't called next() yet).
+      this.wakeGenerator(queueItem);
       broadcast('queue:added', { sessionId: activeSessionId, queueId, text });
-      console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] Message queued (${this.messageQueue.length}/${MAX_QUEUE_SIZE}): "${text.slice(0, 50)}"`);
+      console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] Message queued (mid-turn injection): "${text.slice(0, 50)}"`);
       return { ok: true, queued: true, queueId };
     }
 
@@ -1450,9 +1483,116 @@ class SessionRunner {
     return { role: 'user' as const, content: text };
   }
 
+  /**
+   * Programmatically inject a user message into the session.
+   * Used by Memory Auto-Update and Heartbeat to inject prompts with overridden permissions.
+   * Unlike sendMessage(), this always starts a session if not active and doesn't handle images.
+   */
+  async enqueueUserMessage(
+    text: string,
+    agentDir: string,
+    permissionMode: PermissionMode,
+    providerEnv?: ProviderEnv,
+    model?: string,
+    mcpEnabledServerIds?: string[],
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (this.resetPromise) {
+      await this.resetPromise;
+    }
+
+    // Update config snapshot
+    if (providerEnv !== undefined) this.providerEnv = providerEnv;
+    if (model !== undefined) this.currentModel = model;
+    this.currentPermissionMode = permissionMode;
+
+    // Build SDK message
+    if (!this.sdkSessionId) {
+      this.sdkSessionId = SessionStore.getSdkSessionId(this.sessionId) ?? null;
+    }
+    const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
+
+    const queueItem: QueueItem = {
+      sdkMessage: {
+        type: 'user' as const,
+        message: { role: 'user' as const, content: text },
+        parent_tool_use_id: null,
+        session_id: sdkSid,
+      } as SDKUserMessage,
+      text,
+      queueId: crypto.randomUUID(),
+      wasQueued: false,
+    };
+
+    // Save to SessionStore
+    SessionStore.saveMessage(this.sessionId, {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: text,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (!this.sessionActive) {
+      const config: SessionConfig = {
+        agentDir,
+        providerEnv,
+        model,
+        permissionMode,
+        mcpEnabledServerIds,
+      };
+      this.wakeGenerator(queueItem);
+      this.startSession(config);
+    } else {
+      // Check if needs restart (permission/model changed)
+      const needsRestart = this.needsSessionRestart(providerEnv, model, permissionMode);
+      if (needsRestart) {
+        this.resetPromise = new Promise(r => { this.resolveReset = r; });
+        try {
+          this.abortSession();
+          if (this.sessionTerminationPromise) await this.sessionTerminationPromise;
+        } finally {
+          const resolve = this.resolveReset;
+          this.resetPromise = null;
+          this.resolveReset = null;
+          resolve?.();
+        }
+        const config: SessionConfig = { agentDir, providerEnv, model, permissionMode, mcpEnabledServerIds };
+        this.wakeGenerator(queueItem);
+        this.startSession(config);
+      } else {
+        this.wakeGenerator(queueItem);
+      }
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Wait for the session to become idle (not streaming).
+   * Used by Memory Auto-Update to wait for AI completion after injecting a prompt.
+   * @returns true if session became idle, false if timed out
+   */
+  async waitForIdle(timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!this.isStreaming) return true;
+      await new Promise(r => setTimeout(r, pollIntervalMs));
+    }
+    return false;
+  }
+
   cancelQueueItem(queueId: string): { ok: boolean; text?: string } {
     const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
-    if (idx === -1) return { ok: false };
+    if (idx === -1) {
+      // Check pendingMidTurnQueue (already yielded to SDK, but we can suppress queue:started)
+      const pmIdx = this.pendingMidTurnQueue.findIndex(p => p.queueId === queueId);
+      if (pmIdx !== -1) {
+        const [removed] = this.pendingMidTurnQueue.splice(pmIdx, 1);
+        broadcast('queue:cancelled', { sessionId: this.sessionId, queueId });
+        console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Queue item ${queueId} cancelled from pendingMidTurnQueue (already yielded to SDK)`);
+        return { ok: true, text: removed.userMessage.content };
+      }
+      return { ok: false };
+    }
     const [removed] = this.messageQueue.splice(idx, 1);
     broadcast('queue:cancelled', { sessionId: this.sessionId, queueId });
     console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Queue item cancelled: "${removed.text.slice(0, 50)}"`);
@@ -1461,7 +1601,19 @@ class SessionRunner {
 
   forceExecuteQueueItem(queueId: string): boolean {
     const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
-    if (idx === -1) return false;
+    // Message may already be in pendingMidTurnQueue (yielded to SDK, awaiting flush)
+    const inPendingMidTurn = idx === -1 && this.pendingMidTurnQueue.some(p => p.queueId === queueId);
+    if (idx === -1 && !inPendingMidTurn) return false;
+
+    // If in pendingMidTurnQueue, it's already yielded to SDK — interrupt to force AI to process it
+    if (inPendingMidTurn) {
+      if (this.sessionActive && this.querySession) {
+        this.querySession.interrupt().catch(() => {});
+      }
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Force executing queue item from pendingMidTurnQueue`);
+      return true;
+    }
+
     // 移到队首
     if (idx > 0) {
       const [item] = this.messageQueue.splice(idx, 1);
@@ -1679,4 +1831,45 @@ export function respondExitPlanMode(requestId: string, approved: boolean) {
 
 export function respondEnterPlanMode(requestId: string, approved: boolean) {
   return runner?.respondEnterPlanMode(requestId, approved) ?? false;
+}
+
+// ── Memory Auto-Update helpers ──
+
+/**
+ * Strip YAML frontmatter from a markdown string.
+ * Returns the body after the closing --- delimiter.
+ */
+export function stripYamlFrontmatter(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('---')) return trimmed;
+  const endIdx = trimmed.indexOf('---', 3);
+  if (endIdx === -1) return trimmed;
+  return trimmed.slice(endIdx + 3).trim();
+}
+
+/**
+ * Wait for the current session to become idle.
+ * Module-level wrapper for SessionRunner.waitForIdle().
+ */
+export async function waitForSessionIdle(timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<boolean> {
+  if (!runner) return true; // No runner = already idle
+  return runner.waitForIdle(timeoutMs, pollIntervalMs);
+}
+
+/**
+ * Inject a user message into the current session with specified permission mode.
+ * Module-level wrapper for SessionRunner.enqueueUserMessage().
+ */
+export async function enqueueUserMessage(
+  text: string,
+  agentDir: string,
+  permissionMode: PermissionMode,
+  providerEnv?: ProviderEnv,
+  model?: string,
+  mcpEnabledServerIds?: string[],
+): Promise<{ ok: boolean; error?: string }> {
+  if (!runner || !currentSessionId) {
+    return { ok: false, error: 'No active session' };
+  }
+  return runner.enqueueUserMessage(text, agentDir, permissionMode, providerEnv, model, mcpEnabledServerIds);
 }

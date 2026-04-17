@@ -1,12 +1,15 @@
+/**
+ * @deprecated Use WorkspaceGeneralTab Card 1 MCP section instead.
+ */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Wrench } from 'lucide-react';
-import type { ImAgentConfig } from '../../../../shared/types/imAgent';
+import type { AgentConfig } from '../../../../shared/types/agentConfig';
 import type { McpServerDefinition } from '../../../../shared/types/mcp';
 import { loadAppConfig } from '../../../config/configService';
 
 interface AgentToolsSectionProps {
-  agent: ImAgentConfig;
-  onChange: (updated: ImAgentConfig) => void;
+  agent: AgentConfig;
+  onChange: (updated: AgentConfig) => void;
 }
 
 export function AgentToolsSection({ agent, onChange }: AgentToolsSectionProps) {

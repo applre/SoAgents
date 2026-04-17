@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, LayoutList, Clock, FileText, X, Plus } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, LayoutList, Clock, Boxes, FileText, X, Plus } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -19,6 +19,8 @@ import { startWindowDrag, toggleMaximize } from './utils/env';
 import { initFrontendLogger } from './utils/frontendLogger';
 import type { Tab, OpenFile } from './types/tab';
 import LeftSidebar from './components/LeftSidebar';
+import { StatusDot } from './components/StatusDot';
+import { computeSessionStatus } from './utils/sessionStatus';
 import TaskCenterView from './pages/TaskCenterView';
 import { startGlobalSidecar, getDefaultWorkspace, stopSessionSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, updateGlobalServerUrl, startBackgroundCompletion } from './api/tauriClient';
 import { listen } from '@tauri-apps/api/event';
@@ -28,6 +30,7 @@ import { TabProvider } from './context/TabProvider';
 import Settings from './pages/Settings';
 import { ScheduledTasksView } from './components/scheduledTasks';
 import { ScheduledTaskProvider } from './context/ScheduledTaskContext';
+import WorkspacesView from './pages/WorkspacesView';
 import Editor from './pages/Editor';
 import WebViewPanel from './pages/WebViewPanel';
 import WorkspaceFilesPanel from './components/WorkspaceFilesPanel';
@@ -164,7 +167,7 @@ export default function App() {
   const { updateReady, updateVersion, checking, checkForUpdate, restartAndUpdate } = useUpdater();
 
   // Independent session fetch for sidebar (all workspaces)
-  const { sessions: allSessions, refresh: refreshSidebarSessions, removeSession, updateSessionTitle } = useSidebarSessions();
+  const { sessions: allSessions, refresh: refreshSidebarSessions, removeSession, updateSessionTitle, markSessionViewed } = useSidebarSessions();
 
   // Refs for retry lifecycle (stable across re-renders)
   const mountedRef = useRef(true);
@@ -240,12 +243,17 @@ export default function App() {
     };
   }, [refreshSidebarSessions]);
 
-  // 切换 tab 时清除未读标记
+  // 切换 tab 时清除未读标记（旧字段 + 持久化字段两者都清，保证三处视觉同步）
   useEffect(() => {
     setTabs((prev) => prev.map((t) =>
       t.id === activeTabId && t.hasUnread ? { ...t, hasUnread: false } : t
     ));
-  }, [activeTabId]);
+    const activeTab = tabs.find((t) => t.id === activeTabId);
+    if (activeTab?.sessionId) {
+      markSessionViewed(activeTab.sessionId);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId, markSessionViewed]);
 
   const handleArchiveSession = useCallback(async (sessionId: string) => {
     void stopSessionSidecar(sessionId).catch(() => {});
@@ -377,6 +385,8 @@ export default function App() {
     }
   }, []);
 
+  const [pendingAgentConfig, setPendingAgentConfig] = useState(false);
+
   const handleOpenSettings = useCallback(() => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.view === 'settings');
@@ -411,6 +421,19 @@ export default function App() {
         return prev;
       }
       const tab = createTab({ title: '任务中心', view: 'task-center' });
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+  }, []);
+
+  const handleOpenWorkspaces = useCallback(() => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.view === 'workspaces');
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const tab = createTab({ title: '工作区', view: 'workspaces' });
       setActiveTabId(tab.id);
       return [...prev, tab];
     });
@@ -627,10 +650,12 @@ export default function App() {
             onOpenSettings={handleOpenSettings}
             onOpenScheduledTasks={handleOpenScheduledTasks}
             onOpenTaskCenter={handleOpenTaskCenter}
+            onOpenWorkspaces={handleOpenWorkspaces}
             onCollapse={() => setShowSidebar(false)}
             isSettingsActive={activeTab?.view === 'settings'}
             isScheduledTasksActive={activeTab?.view === 'scheduled-tasks'}
             isTaskCenterActive={activeTab?.view === 'task-center'}
+            isWorkspacesActive={activeTab?.view === 'workspaces'}
             updateReady={updateReady}
             updateVersion={updateVersion}
             onRestartAndUpdate={restartAndUpdate}
@@ -685,6 +710,19 @@ export default function App() {
             >
               <Clock size={18} />
             </button>
+            {/* 工作区 */}
+            <button
+              onClick={handleOpenWorkspaces}
+              onMouseDown={(e) => e.stopPropagation()}
+              title="工作区"
+              className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                activeTab?.view === 'workspaces'
+                  ? 'bg-[var(--hover)] text-[var(--ink)]'
+                  : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+              }`}
+            >
+              <Boxes size={18} />
+            </button>
             {/* 弹性空间 */}
             <div className="flex-1" />
             {/* 设置 */}
@@ -709,6 +747,7 @@ export default function App() {
             tabs={workspaceTabs}
             activeTabId={activeTabId}
             allSessions={allSessions}
+            runningSessions={runningSessions}
             onSwitchTab={handleSwitchTab}
             onNewTab={handleAddWorkspace}
             onCloseTab={handleCloseTab}
@@ -898,15 +937,23 @@ export default function App() {
                 onUnarchiveSession={handleUnarchiveSession}
               />
             )}
+            {activeTab?.view === 'workspaces' && (
+              <WorkspacesView
+                onNewChatInDir={handleNewChatInDir}
+                onAddWorkspace={handleNewWorkspace}
+              />
+            )}
           </main>
         </div>
 
         {/* 文件面板：与 LeftSidebar 同级，全高列，内部自行管理对齐 */}
-        {showFilesPanel && activeTab?.view !== 'settings' && activeTab?.view !== 'scheduled-tasks' && activeTab?.view !== 'task-center' && (
+        {showFilesPanel && activeTab?.view !== 'settings' && activeTab?.view !== 'scheduled-tasks' && activeTab?.view !== 'task-center' && activeTab?.view !== 'workspaces' && (
           <WorkspaceFilesPanel
             agentDir={activeTab?.agentDir ?? null}
             onOpenFile={openEditorFile}
             onInsertReference={handleInsertReference}
+            autoOpenConfig={pendingAgentConfig}
+            onAutoOpenConfigConsumed={() => setPendingAgentConfig(false)}
           />
         )}
       </div>
@@ -932,6 +979,7 @@ interface SessionTabBarProps {
   tabs: Tab[];
   activeTabId: string;
   allSessions: SessionMetadata[];
+  runningSessions: Set<string>;
   onSwitchTab: (tabId: string) => void;
   onNewTab: () => void;
   onCloseTab: (tabId: string) => void;
@@ -939,7 +987,7 @@ interface SessionTabBarProps {
   onToggleFilesPanel: () => void;
 }
 
-function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, onCloseTab, showFilesPanel, onToggleFilesPanel }: SessionTabBarProps) {
+function SessionTabBar({ tabs, activeTabId, allSessions, runningSessions, onSwitchTab, onNewTab, onCloseTab, showFilesPanel, onToggleFilesPanel }: SessionTabBarProps) {
   return (
     <div
       className="relative flex items-end shrink-0 z-50"
@@ -954,8 +1002,9 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
           const isSettings = tab.view === 'settings';
           const isScheduledTasks = tab.view === 'scheduled-tasks';
           const isTaskCenter = tab.view === 'task-center';
+          const isWorkspaces = tab.view === 'workspaces';
           const sessionMeta = tab.sessionId ? allSessions.find((s) => s.id === tab.sessionId) : null;
-          const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : isTaskCenter ? '任务中心' : (sessionMeta?.title || '新对话');
+          const label = isSettings ? '设置' : isScheduledTasks ? '定时任务' : isTaskCenter ? '任务中心' : isWorkspaces ? '工作区' : (sessionMeta?.title || '新对话');
           // Chrome 风格分隔线：两侧都不是活跃 tab 时才显示
           const prevTab = tabs[index - 1];
           const showDivider = index > 0 && !isActive && prevTab?.id !== activeTabId;
@@ -982,16 +1031,13 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
                   zIndex: isActive ? 2 : 1,
                 }}
               >
-                {/* 状态圆点：放在标题前面 */}
-                {tab.isGenerating && (
-                  <span className="relative flex h-1.5 w-1.5 shrink-0">
-                    <span className="absolute inset-0 rounded-full bg-[var(--success)]" />
-                    <span className="absolute inset-0 rounded-full bg-[var(--success)] animate-ping" />
-                  </span>
-                )}
-                {!isActive && !tab.isGenerating && tab.hasUnread && (
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
-                )}
+                {/* 状态圆点：统一数据源（SessionMetadata + runningSessions） */}
+                {tab.sessionId && (() => {
+                  const session = allSessions.find(s => s.id === tab.sessionId);
+                  if (!session) return null;
+                  const status = computeSessionStatus(session, runningSessions);
+                  return <StatusDot status={status} suppressApproval={isActive} size={1.5} />;
+                })()}
                 {isSettings && <SettingsIcon size={13} className="shrink-0" />}
                 <span className={`text-[13px] truncate ${isActive ? 'font-medium' : ''}`}>
                   {label}
@@ -1024,7 +1070,7 @@ function SessionTabBar({ tabs, activeTabId, allSessions, onSwitchTab, onNewTab, 
       </div>
 
       {/* 右侧：展开工作区文件面板 */}
-      {tabs.find((t) => t.id === activeTabId)?.view !== 'settings' && tabs.find((t) => t.id === activeTabId)?.view !== 'scheduled-tasks' && tabs.find((t) => t.id === activeTabId)?.view !== 'task-center' && (
+      {(() => { const at = tabs.find((t) => t.id === activeTabId); return at?.view !== 'settings' && at?.view !== 'scheduled-tasks' && at?.view !== 'task-center' && at?.agentDir; })() && (
         <div className="flex items-center shrink-0 self-center ml-auto" onMouseDown={(e) => e.stopPropagation()}>
           <button
             onClick={onToggleFilesPanel}

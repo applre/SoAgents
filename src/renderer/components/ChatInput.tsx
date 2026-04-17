@@ -1,8 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, Square, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap, Search } from 'lucide-react';
-import type { QueuedMessageInfo } from '../../shared/types/queue';
-import QueuedMessagesPanel from './QueuedMessagesPanel';
 import type { LucideIcon } from 'lucide-react';
 import SlashCommandMenu, { filterSlashCommands, type CommandItem } from './SlashCommandMenu';
 import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
@@ -15,6 +13,7 @@ import type { PermissionMode } from '../../shared/types/permission';
 import type { ModelEntity, Provider, ProviderEnv } from '../../shared/types/config';
 import { getEffectiveModelAliases } from '../../shared/providers';
 import type { ChatImage } from '../types/chat';
+import type { SkillItem } from '../../shared/types/skill';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { formatSize } from '../utils/formatSize';
@@ -39,9 +38,6 @@ interface Props {
   onInjectConsumed?: () => void;
   injectRefText?: string | null;
   onRefTextConsumed?: () => void;
-  queuedMessages?: QueuedMessageInfo[];
-  onCancelQueued?: (queueId: string) => Promise<string | null>;
-  onForceExecuteQueued?: (queueId: string) => Promise<boolean>;
 }
 
 interface MCPServerItem {
@@ -60,9 +56,7 @@ interface AttachedFile {
   base64?: string; // 图片的 base64 数据
 }
 
-const MAX_FRONTEND_QUEUE = 5;
-
-export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, queuedMessages = [], onCancelQueued, onForceExecuteQueued }: Props) {
+export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed }: Props) {
   const { config, allProviders, currentProvider, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
   const { apiGet, hasMessages } = useTabApi();
   const isActive = useTabActive();
@@ -98,6 +92,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setPermissionMode(wsEntry?.permissionMode ?? 'acceptEdits');
   }
   const [skillCommands, setSkillCommands] = useState<CommandItem[]>([]);
+  const [allSkills, setAllSkills] = useState<SkillItem[]>([]);
   const [showSkillPopover, setShowSkillPopover] = useState(false);
   const [showMCPPopover, setShowMCPPopover] = useState(false);
   const [showModelPopover, setShowModelPopover] = useState(false);
@@ -183,6 +178,20 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       } catch { /* 静默失败 */ }
     };
     loadCommands();
+  }, [agentDir]);
+
+  // 加载所有 skills（全局 + 项目级）用于技能选择器
+  useEffect(() => {
+    const loadSkills = async () => {
+      try {
+        const path = agentDir
+          ? `/api/skills?agentDir=${encodeURIComponent(agentDir)}`
+          : '/api/skills';
+        const skills = await globalApiGetJson<SkillItem[]>(path);
+        setAllSkills(skills);
+      } catch { /* 静默失败 */ }
+    };
+    loadSkills();
   }, [agentDir]);
 
   // @ 文件搜索 API — 搜索逻辑已下沉到 FileSearchMenu 内部
@@ -345,8 +354,6 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     // skills 信息单独传递
     const skills = selectedSkills.length > 0 ? selectedSkills : undefined;
     if (!userText && !skills && imageFiles.length === 0) return;
-    // Allow sending while AI is responding (messages will be queued by backend)
-    if (isLoading && queuedMessages.length >= MAX_FRONTEND_QUEUE) return;
     // Prevent double-fire
     if (sendingRef.current) return;
     sendingRef.current = true;
@@ -394,7 +401,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     } finally {
       sendingRef.current = false;
     }
-  }, [text, attachedFiles, selectedSkills, isLoading, queuedMessages.length, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
+  }, [text, attachedFiles, selectedSkills, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
 
   const handleFileSelect = useCallback((file: FileSearchResult) => {
     if (atPosition === null) return;
@@ -407,19 +414,26 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     textareaRef.current?.focus();
   }, [atPosition, text]);
 
-  // 追加 skill 到 selectedSkills（不重复）
-  const addSkill = useCallback(async (name: string) => {
-    if (selectedSkills.some((s) => s.name === name)) return;
-    try {
-      const path = agentDir
-        ? `/api/skills/${name}?agentDir=${encodeURIComponent(agentDir)}`
-        : `/api/skills/${name}`;
-      const skill = await globalApiGetJson<{ content: string }>(path);
-      setSelectedSkills((prev) => prev.some((s) => s.name === name) ? prev : [...prev, { name, content: skill.content || `/${name}` }]);
-    } catch {
-      setSelectedSkills((prev) => prev.some((s) => s.name === name) ? prev : [...prev, { name, content: `/${name}` }]);
-    }
-  }, [agentDir, selectedSkills]);
+  // 追加 skill 到 selectedSkills（不重复）— 先乐观更新 UI，再异步拉内容
+  const addSkill = useCallback((name: string) => {
+    setSelectedSkills((prev) => {
+      if (prev.some((s) => s.name === name)) return prev;
+      return [...prev, { name, content: `/${name}` }];
+    });
+    // 异步拉取完整 content，不阻塞 UI
+    const path = agentDir
+      ? `/api/skills/${name}?agentDir=${encodeURIComponent(agentDir)}`
+      : `/api/skills/${name}`;
+    globalApiGetJson<{ content: string }>(path)
+      .then((skill) => {
+        if (skill.content) {
+          setSelectedSkills((prev) =>
+            prev.map((s) => s.name === name ? { ...s, content: skill.content } : s)
+          );
+        }
+      })
+      .catch(() => { /* 保留占位 content */ });
+  }, [agentDir]);
 
   const removeSkill = useCallback((name: string) => {
     setSelectedSkills((prev) => prev.filter((s) => s.name !== name));
@@ -436,22 +450,21 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       return '';
     };
 
-    if (cmd === 'clear' || cmd === 'reset') {
-      if (slashPosition !== null) {
-        const before = text.slice(0, slashPosition);
-        const cursorEnd = textareaRef.current?.selectionStart ?? (slashPosition + slashSearchQuery.length + 1);
-        const after = text.slice(cursorEnd);
-        setText(`${before}/${cmd} ${after}`.trim());
-      } else {
-        setText(`/${cmd}`);
-      }
+    // SDK 内置命令 — 填入输入框作为消息发送
+    const SDK_BUILTINS = ['compact', 'context', 'cost', 'init', 'pr-comments', 'release-notes', 'review', 'security-review'];
+    if (SDK_BUILTINS.includes(cmd)) {
+      const before = slashPosition !== null ? text.slice(0, slashPosition) : '';
+      const cursorEnd = textareaRef.current?.selectionStart ?? (slashPosition !== null ? slashPosition + slashSearchQuery.length + 1 : 0);
+      const after = text.slice(cursorEnd);
+      setText(`${before}/${cmd} ${after}`.trim());
       setShowSlash(false);
       setSlashPosition(null);
       textareaRef.current?.focus();
       return;
     }
 
-    await addSkill(cmd);
+    // Skill — 作为 skill 附加到对话
+    addSkill(cmd);
     setText(removeTriggerText());
     setShowSlash(false);
     setSlashPosition(null);
@@ -511,11 +524,11 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     [handleSend, handleSlashSelect, showSlash, showFileSearch, filteredSlashCommands, selectedSlashIndex]
   );
 
-  const handleSkillToggle = useCallback(async (name: string) => {
+  const handleSkillToggle = useCallback((name: string) => {
     if (selectedSkills.some((s) => s.name === name)) {
       removeSkill(name);
     } else {
-      await addSkill(name);
+      addSkill(name);
     }
   }, [selectedSkills, addSkill, removeSkill]);
 
@@ -708,27 +721,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   }, [agentDir, wsEntry?.mcpEnabledServers, updateWorkspaceConfig, mcpServers]);
   const workspaceMcpCount = mcpServers.filter((s) => workspaceMcpEnabled.has(s.id)).length;
 
-  // Cancel a queued message and restore its text to input
-  const handleCancelQueued = useCallback(async (queueId: string) => {
-    const cancelledText = await onCancelQueued?.(queueId);
-    if (cancelledText) {
-      setText(cancelledText);
-      textareaRef.current?.focus();
-    }
-  }, [onCancelQueued]);
-
-  const handleForceExecuteQueued = useCallback(async (queueId: string) => {
-    await onForceExecuteQueued?.(queueId);
-  }, [onForceExecuteQueued]);
-
   return (
     <div className="px-6 pb-4 pt-2 mx-auto w-full" style={{ maxWidth: 860 }}>
-      {/* Queued messages floating above the input */}
-      <QueuedMessagesPanel
-        queuedMessages={queuedMessages}
-        onCancel={handleCancelQueued}
-        onForceExecute={handleForceExecuteQueued}
-      />
       <div
         className="relative rounded-2xl border border-[var(--border)] bg-white"
         style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}
@@ -772,10 +766,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               <span className="text-xs font-medium text-[var(--ink-secondary)]">技能列表</span>
               <div className="flex items-center gap-2 text-xs">
                 <button
-                  onClick={async () => {
-                    const attachableSkills = skillCommands.filter((s) => s.source === 'skill' || s.source === 'custom');
-                    for (const s of attachableSkills) {
-                      if (!selectedSkills.some((ss) => ss.name === s.name)) await addSkill(s.name);
+                  onClick={() => {
+                    for (const s of allSkills) {
+                      addSkill(s.name);
                     }
                   }}
                   className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
@@ -826,10 +819,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             {/* 列表 */}
             <div className="flex-1 overflow-y-auto">
               {(() => {
-                const attachableSkills = skillCommands.filter((s) => s.source === 'skill' || s.source === 'custom');
                 const baseList = skillPanelTab === 'selected'
-                  ? attachableSkills.filter((s) => selectedSkills.some((ss) => ss.name === s.name))
-                  : attachableSkills;
+                  ? allSkills.filter((s) => selectedSkills.some((ss) => ss.name === s.name))
+                  : allSkills;
                 const filtered = skillSearchQuery
                   ? baseList.filter((s) =>
                       s.name.toLowerCase().includes(skillSearchQuery.toLowerCase()) ||
@@ -843,7 +835,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                   const isSelected = selectedSkills.some((ss) => ss.name === s.name);
                   return (
                     <button
-                      key={s.name}
+                      key={`${s.source}:${s.name}`}
                       onClick={() => handleSkillToggle(s.name)}
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
                         isSelected ? 'bg-[var(--accent)]/5' : 'hover:bg-[var(--hover)]'
@@ -858,13 +850,11 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                           <span className="text-xs text-[var(--ink-tertiary)] truncate block">{s.description}</span>
                         )}
                       </div>
-                      {s.scope && (
-                        <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
-                          s.scope === 'project' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--hover)] text-[var(--ink-tertiary)]'
+                      <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
+                        s.source === 'project' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--hover)] text-[var(--ink-tertiary)]'
                         }`}>
-                          {s.scope === 'project' ? '项目' : '全局'}
+                          {s.source === 'project' ? '项目' : '全局'}
                         </span>
-                      )}
                     </button>
                   );
                 });

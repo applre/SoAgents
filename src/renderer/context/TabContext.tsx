@@ -1,7 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { Message, ChatImage } from '../types/chat';
 import type { LogEntry } from '../../shared/types/log';
-import type { QueuedMessageInfo } from '../../shared/types/queue';
 import type { ProviderEnv } from '../../shared/types/config';
 
 // ── TabState: 完整状态（包含 messages 等频繁变化的字段）──
@@ -41,9 +40,6 @@ export interface TabState {
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   unifiedLogs: LogEntry[];
   clearUnifiedLogs: () => void;
-  queuedMessages: QueuedMessageInfo[];
-  cancelQueuedMessage: (queueId: string) => Promise<string | null>;
-  forceExecuteQueuedMessage: (queueId: string) => Promise<boolean>;
 }
 
 export const TabContext = createContext<TabState | null>(null);

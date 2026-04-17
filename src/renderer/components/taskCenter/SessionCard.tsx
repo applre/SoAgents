@@ -34,13 +34,21 @@ export const SessionCard = memo(function SessionCard({
       onClick={onClick}
     >
       <div className="flex items-center gap-2 mb-1.5">
-        <span
-          className="w-2 h-2 rounded-full flex-shrink-0"
-          style={{
-            background: isInactive ? 'transparent' : statusCfg.color,
-            border: isInactive ? '1.5px solid var(--ink-tertiary)' : 'none',
-          }}
-        />
+        {status === 'active' ? (
+          // Active: 绿色脉冲动画（与左侧栏/tab 栏一致）
+          <span className="relative flex h-2 w-2 flex-shrink-0">
+            <span className="absolute inset-0 rounded-full bg-[var(--running-light)] opacity-75 animate-ping" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--running)]" />
+          </span>
+        ) : (
+          <span
+            className="w-2 h-2 rounded-full flex-shrink-0"
+            style={{
+              background: isInactive ? 'transparent' : statusCfg.color,
+              border: isInactive ? '1.5px solid var(--ink-tertiary)' : 'none',
+            }}
+          />
+        )}
         <span className="text-[13px] font-medium truncate flex-1 text-[var(--ink)]">
           {session.title || '未命名对话'}
         </span>

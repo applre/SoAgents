@@ -17,10 +17,10 @@ SoAgents 目前支持 **macOS** 平台，包括 Apple Silicon (ARM64) 和 Intel 
 
 ### 存储位置
 
-所有发布文件存储在 **Cloudflare R2**，通过自定义域名 `download.myagents.io` 提供访问。
+所有发布文件存储在 **Cloudflare R2**，通过自定义域名 `download.soagents.io` 提供访问。
 
 ```
-myagents-releases/
+soagents-releases/
 ├── update/
 │   ├── darwin-aarch64.json    # ARM 自动更新清单
 │   ├── darwin-x86_64.json     # Intel 自动更新清单
@@ -182,11 +182,11 @@ myagents-releases/
   "downloads": {
     "mac_arm64": {
       "name": "Apple Silicon",
-      "url": "https://download.myagents.io/releases/v0.1.0/SoAgents_0.1.0_aarch64.dmg"
+      "url": "https://download.soagents.io/releases/v0.1.0/SoAgents_0.1.0_aarch64.dmg"
     },
     "mac_intel": {
       "name": "Intel Mac",
-      "url": "https://download.myagents.io/releases/v0.1.0/SoAgents_0.1.0_x64.dmg"
+      "url": "https://download.soagents.io/releases/v0.1.0/SoAgents_0.1.0_x64.dmg"
     }
   }
 }
@@ -194,7 +194,7 @@ myagents-releases/
 
 **官网使用示例**：
 ```typescript
-const res = await fetch('https://download.myagents.io/update/latest.json');
+const res = await fetch('https://download.soagents.io/update/latest.json');
 const data = await res.json();
 
 // 根据用户设备选择下载链接
@@ -214,7 +214,7 @@ const downloadUrl = isMacARM
   "platforms": {
     "darwin-aarch64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6...",
-      "url": "https://download.myagents.io/releases/v0.1.0/SoAgents.app.tar.gz"
+      "url": "https://download.soagents.io/releases/v0.1.0/SoAgents.app.tar.gz"
     }
   }
 }
@@ -227,7 +227,7 @@ const downloadUrl = isMacARM
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6...",
       "endpoints": [
-        "https://download.myagents.io/update/{{target}}.json"
+        "https://download.soagents.io/update/{{target}}.json"
       ]
     }
   }
@@ -272,10 +272,10 @@ const downloadUrl = isMacARM
 
 ```bash
 # 检查官网 API
-curl -s https://download.myagents.io/update/latest.json | jq .
+curl -s https://download.soagents.io/update/latest.json | jq .
 
 # 检查自动更新清单
-curl -s https://download.myagents.io/update/darwin-aarch64.json | jq .
+curl -s https://download.soagents.io/update/darwin-aarch64.json | jq .
 ```
 
 ### 6. 提交代码和打 Tag
@@ -320,7 +320,7 @@ R2_ACCOUNT_ID="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ### 生成 Tauri 签名密钥
 
 ```bash
-npx tauri signer generate -w ~/.tauri/myagents.key
+npx tauri signer generate -w ~/.tauri/soagents.key
 ```
 
 生成后：
@@ -354,7 +354,7 @@ npx tauri signer generate -w ~/.tauri/myagents.key
 ### 自动更新问题
 
 **更新检查失败**
-- 检查 CSP 配置是否允许 `download.myagents.io`
+- 检查 CSP 配置是否允许 `download.soagents.io`
 - 查看 Rust 日志 `[Updater]` 前缀
 
 **签名验证失败**

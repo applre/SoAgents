@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, ExternalLink } from 'lucide-react';
+import { Plus, ExternalLink, Puzzle, Terminal, Bot, type LucideIcon } from 'lucide-react';
 import { globalApiGetJson, globalApiPostJson, globalApiPutJson } from '../api/apiFetch';
 import { useToast } from './Toast';
 import type { SkillItem } from '../../shared/types/skill';
@@ -17,16 +17,9 @@ interface Props {
 }
 
 function ScopeBadge({ source }: { source: 'user' | 'project' }) {
-  if (source === 'project') {
-    return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--accent)] text-white">
-        项目
-      </span>
-    );
-  }
   return (
     <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--hover)] text-[var(--ink-secondary)]">
-      全局
+      {source === 'project' ? '项目' : '全局'}
     </span>
   );
 }
@@ -61,15 +54,20 @@ function ToggleSwitch({
 }
 
 function SectionHeader({
+  icon: Icon,
   title,
   onNew,
 }: {
+  icon: LucideIcon;
   title: string;
   onNew: () => void;
 }) {
   return (
     <div className="flex items-center justify-between mb-3">
-      <h3 className="text-[14px] font-semibold text-[var(--ink)]">{title}</h3>
+      <h3 className="flex items-center gap-2 text-[14px] font-semibold text-[var(--ink)]">
+        <Icon size={16} className="text-[var(--accent)]" />
+        {title}
+      </h3>
       <button
         type="button"
         onClick={onNew}
@@ -189,14 +187,14 @@ export default function SkillsCommandsTab({
     <div className="flex flex-col gap-8">
       {/* Section 1: Skills */}
       <section>
-        <SectionHeader title="Skills 技能" onNew={onNewSkill} />
+        <SectionHeader icon={Puzzle} title="Skills 技能" onNew={onNewSkill} />
         {skills.length === 0 ? (
           <p className="text-[13px] text-[var(--ink-tertiary)] py-4">暂无技能</p>
         ) : (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
             {skills.map((skill) => (
               <div
-                key={skill.name}
+                key={`${skill.source}:${skill.name}`}
                 onClick={() => onOpenSkill(skill.name, skill.source)}
                 className="flex flex-col gap-2 p-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--hover)] cursor-pointer transition-colors"
               >
@@ -220,11 +218,11 @@ export default function SkillsCommandsTab({
 
       {/* Section 2: Commands */}
       <section>
-        <SectionHeader title="Commands 命令" onNew={onNewCommand} />
+        <SectionHeader icon={Terminal} title="Commands 命令" onNew={onNewCommand} />
         {commands.length === 0 ? (
           <p className="text-[13px] text-[var(--ink-tertiary)] py-4">暂无命令</p>
         ) : (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
             {commands.map((cmd) => (
               <div
                 key={`${cmd.source}-${cmd.fileName}`}
@@ -248,7 +246,7 @@ export default function SkillsCommandsTab({
 
       {/* Section 3: Sub-Agents */}
       <section>
-        <SectionHeader title="Sub-Agents 子智能体" onNew={onNewAgent} />
+        <SectionHeader icon={Bot} title="Sub-Agents 子智能体" onNew={onNewAgent} />
         {agents.length === 0 ? (
           <p className="text-[13px] text-[var(--ink-tertiary)] py-4">暂无子智能体</p>
         ) : (

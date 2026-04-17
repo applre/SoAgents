@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG, PROVIDERS } from '../../shared/providers';
 import { globalApiGetJson, globalApiPutJson } from '../api/apiFetch';
 import { loadAppConfig, atomicModifyConfig } from '../config/configService';
 import { loadWorkspaces, atomicModifyWorkspaces } from '../config/workspaceService';
+import { ensureAllWorkspacesHaveAgent, persistAgents } from '../config/agentConfigService';
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig>({ ...DEFAULT_CONFIG });
@@ -39,16 +40,35 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
   // 启动时从 Tauri FS（或 localStorage）加载配置
   useEffect(() => {
-    loadAppConfig()
-      .then((loaded) => {
-        setConfig(loaded);
-        // providerVerifyStatus 存在 AppConfig 内，直接提取
-        setProviderVerifyStatus(loaded.providerVerifyStatus ?? {});
-      })
-      .catch((err) => console.error('[ConfigProvider] Failed to load config:', err));
-    loadWorkspaces()
-      .then((ws) => setWorkspaces(ws))
-      .catch((err) => console.error('[ConfigProvider] Failed to load workspaces:', err));
+    // Run config + workspaces load together so we can reconcile them into a
+    // single source of truth before any UI consumes `config.agents`. This is
+    // the MyAgents-style startup reconcile — ensures every workspace has a
+    // linked AgentConfig, repairs orphan agentId references, and creates
+    // basicAgents for workspaces missing one.
+    (async () => {
+      try {
+        const [loadedConfig, loadedWorkspaces] = await Promise.all([
+          loadAppConfig(),
+          loadWorkspaces(),
+        ]);
+
+        // Mutates loadedConfig.agents + loadedWorkspaces in place if any repair needed.
+        const { changed } = ensureAllWorkspacesHaveAgent(
+          loadedConfig,
+          loadedWorkspaces,
+        );
+        if (changed) {
+          await persistAgents(loadedConfig.agents ?? []);
+          await atomicModifyWorkspaces(() => loadedWorkspaces);
+        }
+
+        setConfig(loadedConfig);
+        setProviderVerifyStatus(loadedConfig.providerVerifyStatus ?? {});
+        setWorkspaces(loadedWorkspaces);
+      } catch (err) {
+        console.error('[ConfigProvider] Failed to load config/workspaces:', err);
+      }
+    })();
     void loadProviders(); // eslint-disable-line react-hooks/set-state-in-effect
   }, [loadProviders]);
 
