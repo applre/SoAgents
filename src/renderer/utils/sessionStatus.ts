@@ -16,8 +16,8 @@ export function computeSessionStatus(
 }
 
 export const STATUS_CONFIG: Record<SessionStatus, { label: string; color: string }> = {
-  active:   { label: 'Active',   color: 'var(--success)' },
-  approval: { label: 'Approval', color: 'var(--approval)' },
-  inactive: { label: 'Inactive', color: 'transparent' },
-  archived: { label: 'Archived', color: 'var(--ink-tertiary)' },
+  active:   { label: '运行中',  color: 'var(--success)' },
+  approval: { label: '待确认',  color: 'var(--approval)' },
+  inactive: { label: '未活跃',  color: 'transparent' },
+  archived: { label: '已归档',  color: 'var(--ink-tertiary)' },
 };
