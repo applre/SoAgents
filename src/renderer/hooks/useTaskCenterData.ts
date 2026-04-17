@@ -26,6 +26,7 @@ export interface TaskCenterData {
   isLoading: boolean;
   refresh: () => void;
   removeSession: (sessionId: string) => void;
+  markSessionViewed: (sessionId: string) => void;
 }
 
 export function useTaskCenterData(pollingEnabled = true): TaskCenterData {
@@ -161,6 +162,14 @@ export function useTaskCenterData(pollingEnabled = true): TaskCenterData {
     setSessions(prev => prev.filter(s => s.id !== sessionId));
   }, []);
 
+  // 乐观更新：立即将 session 的 lastViewedAt 设为当前时间，消除 Approval 蓝点
+  const markSessionViewed = useCallback((sessionId: string) => {
+    const now = new Date().toISOString();
+    setSessions(prev =>
+      prev.map(s => (s.id === sessionId ? { ...s, lastViewedAt: now } : s))
+    );
+  }, []);
+
   return {
     sessions,
     scheduledTasks,
@@ -170,5 +179,6 @@ export function useTaskCenterData(pollingEnabled = true): TaskCenterData {
     isLoading,
     refresh,
     removeSession,
+    markSessionViewed,
   };
 }

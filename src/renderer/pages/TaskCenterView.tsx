@@ -57,7 +57,7 @@ export default memo(function TaskCenterView({
   const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
   const [groupBy, setGroupBy] = useState<GroupBy>('workspace');
 
-  const { sessions, cronSessionIds, sessionTagsMap, isLoading, activeSidecarSessionIds } =
+  const { sessions, cronSessionIds, sessionTagsMap, isLoading, activeSidecarSessionIds, markSessionViewed } =
     useTaskCenterData(viewMode === 'board');
 
   // 搜索状态
@@ -168,11 +168,13 @@ export default memo(function TaskCenterView({
   // ── 事件处理 ──
 
   const handleSessionClick = useCallback((agentDir: string, sessionId: string) => {
-    // Mark as viewed (fire-and-forget)
+    // Optimistic update: immediately clear Approval status in UI
+    markSessionViewed(sessionId);
+    // Mark as viewed on server (fire-and-forget)
     globalApiPutJson(`/chat/sessions/${sessionId}/viewed`, {}).catch(() => {});
     // Navigate to session
     onNavigateToSession(agentDir, sessionId);
-  }, [onNavigateToSession]);
+  }, [onNavigateToSession, markSessionViewed]);
 
   const handleListSessionClick = useCallback((session: SessionMetadata) => {
     handleSessionClick(session.agentDir, session.id);
