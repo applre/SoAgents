@@ -931,6 +931,7 @@ export default function App() {
             )}
             {activeTab?.view === 'task-center' && (
               <TaskCenterView
+                runningSessions={runningSessions}
                 onNavigateToSession={handleNavigateToSession}
                 onOpenScheduledTasks={handleOpenScheduledTasks}
                 onArchiveSession={handleArchiveSession}

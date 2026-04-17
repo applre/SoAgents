@@ -33,6 +33,9 @@ interface SearchResult {
 // ── Props ──
 
 interface TaskCenterViewProps {
+  /** 当前正在生成回复的 session ID 集合（TabProvider 驱动，而非 sidecar 进程存活）。
+   *  和左侧栏/tab 栏共享同一数据源，保证三处 active 状态一致。 */
+  runningSessions: Set<string>;
   onNavigateToSession: (agentDir: string, sessionId: string) => void;
   onOpenScheduledTasks: () => void;
   onArchiveSession: (sessionId: string) => void;
@@ -48,6 +51,7 @@ const FILTER_OPTIONS: { key: StatusFilter; label: string }[] = [
 ];
 
 export default memo(function TaskCenterView({
+  runningSessions,
   onNavigateToSession,
   onOpenScheduledTasks: _onOpenScheduledTasks,
   onArchiveSession,
@@ -57,8 +61,11 @@ export default memo(function TaskCenterView({
   const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
   const [groupBy, setGroupBy] = useState<GroupBy>('workspace');
 
-  const { sessions, cronSessionIds, sessionTagsMap, isLoading, activeSidecarSessionIds, markSessionViewed } =
-    useTaskCenterData(viewMode === 'board');
+  // 注意：不再使用 useTaskCenterData 的 activeSidecarSessionIds（轮询 sidecar 进程，
+  // 语义是"sidecar 存活"不是"AI 正在回复"）。改用 App.tsx 传下来的 runningSessions，
+  // 和左侧栏/tab 栏保持一致。
+  const { sessions, cronSessionIds, sessionTagsMap, isLoading, markSessionViewed } =
+    useTaskCenterData(false); // 禁用 sidecar 轮询（由 App.tsx 的 runningSessions 替代）
 
   // 搜索状态
   const [query, setQuery] = useState('');
@@ -287,7 +294,7 @@ export default memo(function TaskCenterView({
         <BoardView
           sessions={boardSessions}
           groupBy={groupBy}
-          activeSidecarSessionIds={activeSidecarSessionIds}
+          activeSidecarSessionIds={runningSessions}
           sessionTagsMap={sessionTagsMap}
           onSessionClick={handleSessionClick}
         />
