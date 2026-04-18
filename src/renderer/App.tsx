@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, LayoutList, Clock, Boxes, FileText, X, Plus } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, PanelLeftOpen, Settings as SettingsIcon, MessageSquare, MessageSquarePlus, LayoutList, Clock, FolderOpen, FileText, X, Plus } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -721,7 +721,7 @@ export default function App() {
                   : 'text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
               }`}
             >
-              <Boxes size={18} />
+              <FolderOpen size={18} />
             </button>
             {/* 弹性空间 */}
             <div className="flex-1" />

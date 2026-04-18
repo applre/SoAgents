@@ -17,6 +17,7 @@ import type { SkillItem } from '../../shared/types/skill';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { formatSize } from '../utils/formatSize';
+import { Tag } from './Tag';
 
 const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string; Icon: LucideIcon; color: string; recommended?: boolean }[] = [
   { value: 'plan',              label: '规划模式', desc: 'Agent 仅研究信息并与你确认规划',       Icon: Shield,      color: '#3b82f6' },
@@ -850,11 +851,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                           <span className="text-xs text-[var(--ink-tertiary)] truncate block">{s.description}</span>
                         )}
                       </div>
-                      <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
-                        s.source === 'project' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--hover)] text-[var(--ink-tertiary)]'
-                        }`}>
-                          {s.source === 'project' ? '项目' : '全局'}
-                        </span>
+                      <Tag variant="scope" tone={s.source === 'project' ? 'accent' : 'neutral'}>
+                        {s.source === 'project' ? '项目' : '全局'}
+                      </Tag>
                     </button>
                   );
                 });

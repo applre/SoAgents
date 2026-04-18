@@ -43,6 +43,21 @@ export interface ChannelConfig {
   // Proxy
   proxyUrl?: string;
 
+  // OpenClaw plugin fields — only set when type starts with "openclaw:".
+  // Present for any channel backed by a Plugin Bridge (WeChat / WeCom / QQ / Feishu-enhanced etc).
+  /** Plugin ID (e.g. "qqbot", "openclaw-weixin"). Redundant with `type` but easier to consume. */
+  openclawPluginId?: string;
+  /** npm spec used to install (e.g. "@sliverp/qqbot"). Stored so UI can offer reinstall. */
+  openclawNpmSpec?: string;
+  /** Arbitrary config key/values forwarded to the plugin via BRIDGE_PLUGIN_CONFIG env.
+   *  Shape depends on plugin.manifest.configSchema (e.g. { botId, secret } for WeCom). */
+  openclawPluginConfig?: Record<string, string>;
+  /** Cached manifest snapshot at channel creation — avoids refetching on every load. */
+  openclawManifest?: Record<string, unknown>;
+  /** Tool groups (e.g. ["doc","chat","bitable"]) the user enabled for AI to access via MCP.
+   *  Empty = no plugin tools exposed to AI. */
+  openclawEnabledToolGroups?: string[];
+
   // Per-channel overrides
   overrides?: ChannelOverrides;
   setupCompleted?: boolean;

@@ -11,6 +11,9 @@ mod scheduled_task;
 mod local_http;
 mod tray;
 mod im;
+mod openclaw;
+mod process_cmd;
+mod system_binary;
 pub mod heartbeat;
 pub mod memory_update;
 pub mod logger;
@@ -108,6 +111,9 @@ pub fn run() {
             commands::cmd_heartbeat_resume,
             commands::cmd_heartbeat_status,
             commands::cmd_heartbeat_all_status,
+            commands::cmd_install_openclaw_plugin,
+            commands::cmd_uninstall_openclaw_plugin,
+            commands::cmd_list_openclaw_plugins,
         ])
         .setup(|app| {
             // Initialize logging

@@ -18,6 +18,7 @@ import {
 import * as mcpService from '../services/mcpService';
 import CustomSelect from '../components/CustomSelect';
 import { ExternalLink } from '../components/ExternalLink';
+import { Tag } from '../components/Tag';
 import { openExternal } from '../utils/openExternal';
 import { useAutostart } from '../hooks/useAutostart';
 import { atomicModifyWorkspaces } from '../config/workspaceService';
@@ -1928,41 +1929,21 @@ function MCPTab() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-sm text-[var(--ink)]">{srv.name}</span>
-                    {srv.isBuiltin && (
-                      <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
-                        预设
-                      </span>
-                    )}
-                    {srv.isFree && (
-                      <span className="text-[10px] rounded px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 font-semibold">
-                        免费
-                      </span>
-                    )}
-                    <span className={`inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-full ${
-                      srv.status === 'enabled'
-                        ? 'bg-[var(--success)]/10 text-[var(--success)]'
-                        : srv.status === 'error'
-                          ? 'bg-[var(--error)]/10 text-[var(--error)]'
-                          : srv.status === 'connecting' || srv.status === 'pending'
-                            ? 'bg-amber-500/10 text-amber-600'
-                            : srv.status === 'needs-auth'
-                              ? 'bg-blue-500/10 text-blue-600'
-                              : 'bg-[var(--surface)] text-[var(--ink-tertiary)]'
-                    }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        srv.status === 'enabled' ? 'bg-[var(--success)]'
-                          : srv.status === 'error' ? 'bg-[var(--error)]'
-                          : srv.status === 'connecting' || srv.status === 'pending' ? 'bg-amber-500'
-                          : srv.status === 'needs-auth' ? 'bg-blue-500'
-                          : 'bg-[var(--ink-tertiary)]'
-                      }`} />
-                      {srv.status === 'enabled' ? '已启用'
-                        : srv.status === 'error' ? '错误'
-                        : srv.status === 'connecting' ? '连接中'
-                        : srv.status === 'pending' ? '等待中'
-                        : srv.status === 'needs-auth' ? '需认证'
-                        : '未启用'}
-                    </span>
+                    {srv.isBuiltin && <Tag variant="attribute" tone="info">预设</Tag>}
+                    {srv.isFree && <Tag variant="attribute" tone="success">免费</Tag>}
+                    {(() => {
+                      const statusMap = {
+                        enabled:    { tone: 'success' as const, label: '已启用' },
+                        error:      { tone: 'error'   as const, label: '错误' },
+                        connecting: { tone: 'warning' as const, label: '连接中' },
+                        pending:    { tone: 'warning' as const, label: '等待中' },
+                        'needs-auth': { tone: 'info' as const, label: '需认证' },
+                        disabled:   { tone: 'neutral' as const, label: '未启用' },
+                      };
+                      const s = statusMap[srv.status as keyof typeof statusMap]
+                             ?? statusMap.disabled;
+                      return <Tag variant="state" tone={s.tone}>{s.label}</Tag>;
+                    })()}
                   </div>
                   <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">
                     {srv.description ?? ''}
@@ -2393,13 +2374,11 @@ function SkillsSection() {
               >
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-sm text-[var(--ink)]">{skill.name}</span>
-                  <span className={`text-xs rounded px-1.5 py-0.5 ${skill.source === 'user' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-500'}`}>
+                  <Tag variant="scope">
                     {skill.source === 'user' ? '全局' : '项目'}
-                  </span>
+                  </Tag>
                   {skill.isBuiltin && (
-                    <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
-                      内置
-                    </span>
+                    <Tag variant="attribute" tone="info">内置</Tag>
                   )}
                 </div>
                 {skill.description && <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">{skill.description}</p>}

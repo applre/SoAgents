@@ -237,3 +237,29 @@ pub async fn cmd_heartbeat_all_status(
 ) -> Result<Vec<crate::heartbeat::HeartbeatRunStatus>, String> {
     Ok(state.get_all_status().await)
 }
+
+// ── OpenClaw plugin management ─────────────────────────────────────────────
+
+/// Install an OpenClaw plugin from an npm spec.
+/// Returns an `InstalledPlugin`-shaped JSON object on success.
+#[tauri::command]
+pub async fn cmd_install_openclaw_plugin(
+    app_handle: tauri::AppHandle,
+    npm_spec: String,
+) -> Result<serde_json::Value, String> {
+    crate::openclaw::install_plugin(&app_handle, &npm_spec).await
+}
+
+/// Uninstall an OpenClaw plugin by plugin_id.
+/// Returns error if any running bot still references it.
+#[tauri::command]
+pub async fn cmd_uninstall_openclaw_plugin(plugin_id: String) -> Result<(), String> {
+    crate::openclaw::uninstall_plugin(&plugin_id).await
+}
+
+/// List every installed OpenClaw plugin.
+/// Returns an array of `InstalledPlugin`-shaped JSON objects.
+#[tauri::command]
+pub async fn cmd_list_openclaw_plugins() -> Result<Vec<serde_json::Value>, String> {
+    crate::openclaw::list_plugins().await
+}

@@ -7,6 +7,7 @@ import { useToast } from './Toast';
 import AgentDetailPanel from './AgentDetailPanel';
 import type { AgentDetailPanelRef } from './AgentDetailPanel';
 import type { AgentItem } from '../../shared/types/agent';
+import { Tag } from './Tag';
 type ViewState =
   | { type: 'list' }
   | { type: 'agent-detail'; folderName: string; isNew?: boolean };
@@ -160,13 +161,11 @@ export default function GlobalAgentsPanel({ onDetailChange }: { onDetailChange?:
                 {agent.description || '暂无描述'}
               </p>
               <div className="flex items-center gap-1.5 text-xs text-[var(--ink-tertiary)]">
-                <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[11px]">
+                <Tag variant="scope">
                   {agent.source === 'user' ? '全局' : '项目'}
-                </span>
+                </Tag>
                 {agent.model && (
-                  <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[11px]">
-                    {agent.model}
-                  </span>
+                  <Tag variant="scope">{agent.model}</Tag>
                 )}
               </div>
             </div>

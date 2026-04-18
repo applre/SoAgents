@@ -8,6 +8,8 @@
  */
 
 import { Send } from 'lucide-react';
+import { Tag } from '../Tag';
+import type { TagTone } from '../Tag';
 
 interface PlatformEntry {
   id: string;
@@ -15,6 +17,7 @@ interface PlatformEntry {
   description: string;
   icon: React.ReactNode;
   badge: string;
+  badgeTone: TagTone;
   enabled: boolean;
 }
 
@@ -29,6 +32,7 @@ const PLATFORMS: PlatformEntry[] = [
       </div>
     ),
     badge: '内置',
+    badgeTone: 'info',
     enabled: true,
   },
   {
@@ -43,6 +47,7 @@ const PLATFORMS: PlatformEntry[] = [
       </div>
     ),
     badge: '已支持',
+    badgeTone: 'success',
     enabled: true,
   },
   {
@@ -57,6 +62,7 @@ const PLATFORMS: PlatformEntry[] = [
       </div>
     ),
     badge: '已支持',
+    badgeTone: 'success',
     enabled: true,
   },
 ];
@@ -90,15 +96,9 @@ export default function BotPlatformRegistry() {
                 <p className="text-[14px] font-medium text-[var(--ink)]">{p.name}</p>
                 <p className="mt-0.5 text-[12px] text-[var(--ink-tertiary)]">{p.description}</p>
               </div>
-              <span
-                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                  p.enabled
-                    ? 'bg-[var(--surface)] text-[var(--ink-secondary)]'
-                    : 'bg-[var(--surface)] text-[var(--ink-tertiary)]'
-                }`}
-              >
+              <Tag variant="attribute" tone={p.enabled ? p.badgeTone : 'neutral'}>
                 {p.badge}
-              </span>
+              </Tag>
             </div>
           ))}
         </div>
