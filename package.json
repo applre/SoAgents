@@ -38,7 +38,7 @@
     "email:dev": "email dev"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.45",
+    "@anthropic-ai/claude-agent-sdk": "0.2.110",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.11",
     "@codemirror/lang-javascript": "^6.2.4",
@@ -90,7 +90,7 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-eslint-comments": "^3.2.0",
     "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-hooks": "7.0.1",
     "react-email": "5.2.8",
     "tailwindcss": "^4.1.16",
     "typescript": "^5.9.3",
