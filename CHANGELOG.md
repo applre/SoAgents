@@ -8,6 +8,85 @@
 
 ---
 
+## [0.1.10] - 2026-04-23
+
+### 新增
+
+#### 任务中心看板视图
+- **看板模式**：在原列表视图基础上新增看板视图，通过顶部工具栏切换
+- **三种分组**：按工作区（默认）/ 按状态 / 按时间（今天 · 昨天 · 本周 · 更早）
+- **卡片信息**：标题、状态圆点、相对时间、消息数、「定时」标签、工作区归属
+- **分段控件**：iOS 风格的分组切换，仅看板模式下显示
+- **乐观更新**：点击卡片即刻清除「待确认」状态，无需等待服务端
+
+#### Session 状态系统
+- 统一四态模型：**运行中** · **待确认** · **未活跃** · **已归档**
+- 三处位置（左侧边栏 / Tab 栏 / 任务中心）视觉统一，共享 `StatusDot` 组件
+- 运行中：绿色脉冲；待确认：暖棕实心（`--accent-warm`）
+- `lastMessageRole` / `lastViewedAt` 持久化到磁盘，刷新后保留
+
+#### 聊天机器人（IM）集成
+- 支持 Telegram Bot / 飞书 / 钉钉三平台
+- IM Agent 配置面板：基础设置 / 渠道 / 工具
+- SSE 事件流桥接 Desktop 与 IM 消息
+- 群组权限控制、运行时状态展示、消息缓冲回放
+- 回调 race condition 保护、IM session 复用
+
+#### 聊天内搜索（Cmd/Ctrl+F）
+- 基于 CSS Custom Highlight API，不污染 DOM
+- 兼容 Virtuoso 虚拟滚动下的全文搜索
+- QueryNavigator 支持上一条 / 下一条跳转
+
+#### 其他能力
+- **HTTP-to-SOCKS5 桥接**：选择 SOCKS5 协议时自动启动本地桥接，让 Bun / SDK 透明走 SOCKS5
+- **消息分支**（`forkFromAssistantMessage`）：从某条回复分叉到新 session
+- **消息回溯**（`rewindToUserMessage`）：回滚到指定用户消息
+- **技能目录扩展**：除 `~/.soagents/skills/` 外，同时扫描 `~/.claude/skills/`
+- **Plugin Bridge（OpenClaw）**：兼容第三方插件生态
+- **流式状态计时器**：随机中文「思考中」文案 + 已耗时展示
+- **OpenAI Bridge**：Loopback 代理让 SDK 透明接入 OpenAI 兼容 provider
+
+### 修复
+
+- **Sidecar 空闲回收误杀**：有 pending 权限请求 / 提问 / Plan 模式时保留 sidecar，避免 modal 按钮点了没反应
+- **侧边栏工作区图标不一致**：折叠态和展开态统一使用文件夹图标
+- **状态点数据源不一致**：任务中心原本用 sidecar 进程存活判断 active，改为用生成状态，与左侧栏 / Tab 栏对齐
+- **ChatInput 卡死**：输入 `/` 或 `@` 时可能触发的输入冻结
+- **Telegram 消息创建新 session**：改为复用已有 session
+- **`__dirname` 硬编码检测**：post-build 脚本失败时给出明确错误
+- **MessageList hooks 顺序错误**：`scrollControls` 可选 prop 相关的过渡态
+
+### 改进
+
+#### Claude Agent SDK 升级（0.2.45 → 0.2.111）
+- SDK 类型定义从 1972 行扩展到 4827 行，API surface 翻倍
+- 获得 Session 管理 API（forkSession / getSessionMessages 等）
+- 获得新 SDKMessage 类型（SDKAPIRetryMessage / SDKRateLimitEvent 等）
+- vendor 目录新增 `audio-capture` + `tree-sitter-bash`（macOS 自动签名）
+
+#### 架构统一
+- **单一数据源**：session 状态计算（`computeSessionStatus`）跨三处组件复用
+- **共享组件**：`StatusDot` 作为唯一视觉入口
+- **事件总线**：`soagents:session-activity` 自定义事件同步刷新，不等 10s 轮询
+
+#### UI/UX
+- 状态标签全面中文化（运行中 / 待确认 / 未活跃 / 已归档）
+- 任务中心定时任务以 tag 形式融入卡片，不再占用独立右侧面板
+- 侧边栏未读指示器与 Tab 栏视觉完全一致
+- Message 组件重构，提取 ProcessRow / ToolUseRenderer
+
+#### 性能
+- `lastMessageRole` 持久化到 `SessionMetadata` 索引，避免列表接口 N+1 读消息文件
+- 5 秒轮询仅在看板视图激活时启用
+- 切 tab 保留 sidecar，减少重复启动开销
+
+### 依赖
+
+- `@anthropic-ai/claude-agent-sdk`: `0.2.45` → `0.2.111`
+- 新增 `socks@^2.8.7`（HTTP-to-SOCKS5 桥接）
+
+---
+
 ## [0.1.8] - 2026-03-25
 
 ### 新增
