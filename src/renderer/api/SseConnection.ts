@@ -28,11 +28,15 @@ export class SseConnection {
         'chat:tool-result',
         'chat:system-init',
         'chat:status',
+        'chat:message-sdk-uuid',
+        'chat:messages-truncated',
         'permission:request',
         'question:request',
         'exit-plan-mode:request',
         'enter-plan-mode:request',
         'chat:log',
+        'im:message_received',
+        'im:response_sent',
       ];
 
       for (const eventName of knownEvents) {

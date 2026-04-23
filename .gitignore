@@ -37,6 +37,9 @@ BOOTSTRAP.md
 docs/
 specs/prd/
 specs/research/
+specs/tech_docs/
+specs/version.md
+specs/project_intro.md
 
 # Third-party skills
 .baoyu-skills/
@@ -60,6 +63,9 @@ tab-style-preview.html
 
 # Playwright MCP
 .playwright-mcp/
+
+# Superpowers
+.superpowers/
 
 # Impeccable config
 .impeccable.md

@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ChevronLeft } from 'lucide-react';
+import { X, ChevronLeft, SlidersHorizontal } from 'lucide-react';
 import WorkspaceGeneralTab from './WorkspaceGeneralTab';
 import SystemPromptsPanel from './SystemPromptsPanel';
+import IntroductionPanel from './IntroductionPanel';
 import SkillsCommandsTab from './SkillsCommandsTab';
 import SkillDetailPanel from './SkillDetailPanel';
 import CommandDetailPanel from './CommandDetailPanel';
 import AgentDetailPanel from './AgentDetailPanel';
 
-type Tab = 'general' | 'system-prompts' | 'skills';
+type Tab = 'general' | 'system-prompts' | 'introduction' | 'skills';
 type DetailView =
   | { type: 'none' }
   | { type: 'skill'; name: string; scope: 'user' | 'project'; isNew?: boolean }
@@ -18,6 +19,7 @@ type DetailView =
 const TAB_ITEMS: { key: Tab; label: string }[] = [
   { key: 'general', label: '通用' },
   { key: 'system-prompts', label: '系统提示词' },
+  { key: 'introduction', label: '使用指南' },
   { key: 'skills', label: '技能 Skills' },
 ];
 
@@ -61,6 +63,13 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, isDetail, handleBack, onClose]);
 
+  // Prevent background scroll
+  useEffect(() => {
+    if (!isOpen) return;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return createPortal(
@@ -74,71 +83,89 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
         className="flex flex-col bg-[var(--paper)] rounded-2xl shadow-2xl overflow-hidden"
         style={{ width: '90vw', height: '90vh', maxWidth: '64rem' }}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
-          {/* Left region */}
-          <div className="w-[120px] flex items-center">
+        {/* Header — left (icon+title), tabs, right (close) */}
+        <div
+          className="flex items-center shrink-0 border-b border-[var(--border)] px-6 py-3"
+          style={{ background: 'linear-gradient(to right, var(--surface), var(--paper))' }}
+        >
+          {/* Left zone: back button / icon + title */}
+          <div className="flex items-center gap-2.5 min-w-0">
             {isDetail && (
               <button
                 type="button"
                 onClick={handleBack}
-                className="flex items-center gap-1 text-[13px] text-[var(--ink-secondary)] hover:text-[var(--ink)] transition-colors rounded-lg px-2 py-1 hover:bg-[var(--hover)]"
+                className="mr-1 rounded-lg p-1.5 text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                title="返回列表"
               >
-                <ChevronLeft size={14} />
-                <span>返回</span>
+                <ChevronLeft size={20} />
               </button>
             )}
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--ink)] shadow">
+              <SlidersHorizontal size={16} className="text-white" />
+            </div>
+            <h2 className="text-[16px] font-semibold text-[var(--ink)]">Agent 设置</h2>
           </div>
 
-          {/* Center: Tab switcher (hidden in detail view) */}
-          <div className="flex items-center gap-1">
-            {!isDetail &&
-              TAB_ITEMS.map((item) => (
+          {/* Tab switcher (only in list view) */}
+          {!isDetail && (
+            <div className="ml-6 flex items-center gap-1">
+              {TAB_ITEMS.map((item) => (
                 <button
                   key={item.key}
                   type="button"
                   onClick={() => handleTabChange(item.key)}
-                  className={`px-3 py-1.5 text-[13px] font-medium rounded-md transition-colors ${
+                  className={`relative pb-0.5 text-[14px] font-medium transition-colors ${
                     activeTab === item.key
-                      ? 'bg-[var(--hover)] text-[var(--ink)]'
+                      ? 'text-[var(--accent)]'
                       : 'text-[var(--ink-secondary)] hover:text-[var(--ink)]'
-                  }`}
+                  } ${item.key !== TAB_ITEMS[0].key ? 'ml-4' : ''}`}
                 >
                   {item.label}
+                  {activeTab === item.key && (
+                    <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-[var(--accent)]" />
+                  )}
                 </button>
               ))}
-          </div>
+            </div>
+          )}
 
-          {/* Right region */}
-          <div className="w-[120px] flex items-center justify-end">
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 rounded-lg text-[var(--ink-tertiary)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
-            >
-              <X size={16} />
-            </button>
-          </div>
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Close button */}
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg p-2 text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            title="关闭 (Esc)"
+          >
+            <X size={20} />
+          </button>
         </div>
 
         {/* Content area */}
-        <div className="flex-1 overflow-y-auto p-6">
-          {activeTab === 'general' && (
+        <div className="flex-1 flex flex-col overflow-hidden bg-[var(--paper)]">
+          {activeTab === 'general' && !isDetail && (
             <WorkspaceGeneralTab agentDir={agentDir} />
           )}
-          {activeTab === 'system-prompts' && (
+          {activeTab === 'system-prompts' && !isDetail && (
             <SystemPromptsPanel agentDir={agentDir} />
           )}
+          {activeTab === 'introduction' && !isDetail && (
+            <IntroductionPanel agentDir={agentDir} />
+          )}
           {activeTab === 'skills' && detailView.type === 'none' && (
-            <SkillsCommandsTab
-              agentDir={agentDir}
-              onOpenSkill={(name, scope) => setDetailView({ type: 'skill', name, scope })}
-              onOpenCommand={(name, scope) => setDetailView({ type: 'command', name, scope })}
-              onOpenAgent={(name, scope) => setDetailView({ type: 'agent', name, scope })}
-              onNewSkill={() => setDetailView({ type: 'skill', name: '', scope: 'project', isNew: true })}
-              onNewCommand={() => setDetailView({ type: 'command', name: '', scope: 'project', isNew: true })}
-              onNewAgent={() => setDetailView({ type: 'agent', name: '', scope: 'project', isNew: true })}
-            />
+            <div className="h-full overflow-auto p-6">
+              <SkillsCommandsTab
+                agentDir={agentDir}
+                onOpenSkill={(name, scope) => setDetailView({ type: 'skill', name, scope })}
+                onOpenCommand={(name, scope) => setDetailView({ type: 'command', name, scope })}
+                onOpenAgent={(name, scope) => setDetailView({ type: 'agent', name, scope })}
+                onNewSkill={() => setDetailView({ type: 'skill', name: '', scope: 'project', isNew: true })}
+                onNewCommand={() => setDetailView({ type: 'command', name: '', scope: 'project', isNew: true })}
+                onNewAgent={() => setDetailView({ type: 'agent', name: '', scope: 'project', isNew: true })}
+              />
+            </div>
           )}
           {detailView.type === 'skill' && (
             <SkillDetailPanel
@@ -170,6 +197,13 @@ export default function WorkspaceConfigPanel({ agentDir, isOpen, onClose }: Prop
               onDeleted={() => setDetailView({ type: 'none' })}
             />
           )}
+        </div>
+
+        {/* Footer */}
+        <div className="shrink-0 border-t border-[var(--border)] bg-[var(--surface)] px-6 py-2">
+          <p className="text-center text-[12px] text-[var(--ink-tertiary)]">
+            按 Esc 关闭 · 配置修改会立即生效
+          </p>
         </div>
       </div>
     </div>,

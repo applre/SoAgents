@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SoAgents",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "identifier": "com.soagents.app",
   "build": {
     "frontendDist": "../dist",
@@ -68,7 +68,9 @@
     "resources": {
       "resources/server-dist.js": "server-dist.js",
       "resources/claude-agent-sdk": "claude-agent-sdk",
-      "resources/bundled-skills": "bundled-skills"
+      "resources/bundled-skills": "bundled-skills",
+      "resources/nodejs": "nodejs",
+      "../src/server/plugin-bridge/sdk-shim": "plugin-bridge-sdk-shim"
     },
     "externalBin": [
       "binaries/bun"

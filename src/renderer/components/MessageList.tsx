@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import type { Message } from '../types/chat';
 import MessageItem from './Message';
-import { useVirtuosoScroll } from '../hooks/useVirtuosoScroll';
+import { useVirtuosoScroll, type VirtuosoScrollControls } from '../hooks/useVirtuosoScroll';
 
 interface Props {
   messages: Message[];
@@ -11,6 +11,15 @@ interface Props {
   streamingMessage?: Message | null;
   sessionId?: string | null;
   isStreaming?: boolean;
+  /** Optional: parent-owned scroll controls. When absent, MessageList falls
+   *  back to its own internal useVirtuosoScroll() so legacy callers keep
+   *  working. Chat.tsx passes controls in so it can share the scrollerRef
+   *  with useChatSearch + QueryNavigator. */
+  scrollControls?: VirtuosoScrollControls;
+  /** Message actions forwarded to each MessageItem. */
+  onRewind?: (messageId: string) => void;
+  onRetry?: (assistantMessageId: string) => void;
+  onFork?: (assistantMessageId: string) => void;
 }
 
 const STREAMING_MESSAGES = [
@@ -44,13 +53,15 @@ const VirtuosoFooter = memo(function VirtuosoFooter({ showStatus, statusMessage 
   );
 });
 
-export default function MessageList({ messages, isLoading, streamingMessage, sessionId, isStreaming }: Props) {
+export default function MessageList({ messages, isLoading, streamingMessage, sessionId, isStreaming, scrollControls, onRewind, onRetry, onFork }: Props) {
+  const fallback = useVirtuosoScroll();
   const {
     virtuosoRef,
+    scrollerRef,
     followEnabledRef,
     handleAtBottomChange,
     handleFollowOutput,
-  } = useVirtuosoScroll();
+  } = scrollControls ?? fallback;
 
   // Scroll to bottom + fade-in after session switch
   const [fadeIn, setFadeIn] = useState(false);
@@ -90,20 +101,26 @@ export default function MessageList({ messages, isLoading, streamingMessage, ses
   // (Footer no longer uses these refs; it receives showStatus as a prop)
   const isLoadingRef = useRef(isLoading);
   const streamingMessageRef = useRef(streamingMessage);
+  const actionsRef = useRef({ onRewind, onRetry, onFork });
   useEffect(() => {
     isLoadingRef.current = isLoading;
     streamingMessageRef.current = streamingMessage;
+    actionsRef.current = { onRewind, onRetry, onFork };
   });
 
   const renderItem = useMemo(() => {
     function VirtuosoItemContent(_index: number, message: Message) {
       const sm = streamingMessageRef.current;
       const isStreamingMsg = !!sm && message === sm;
+      const { onRewind: r, onRetry: rt, onFork: f } = actionsRef.current;
       return (
         <div className="mx-auto max-w-3xl px-3 py-1 overflow-hidden">
           <MessageItem
             message={message}
             isStreaming={isStreamingMsg && isLoadingRef.current}
+            onRewind={r}
+            onRetry={rt}
+            onFork={f}
           />
         </div>
       );
@@ -150,6 +167,12 @@ export default function MessageList({ messages, isLoading, streamingMessage, ses
       <Virtuoso
         key={sessionId || 'pending'}
         ref={virtuosoRef}
+        scrollerRef={(el) => {
+          // Virtuoso hands us the real scrollable element. Store it on the
+          // shared ref so useChatSearch + QueryNavigator can reach the DOM
+          // scroller from Chat.tsx.
+          scrollerRef.current = el as HTMLElement | null;
+        }}
         data={messages}
         computeItemKey={computeItemKey}
         followOutput={handleFollowOutput}

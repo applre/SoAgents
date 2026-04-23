@@ -1,55 +1,92 @@
-import { useRef, useEffect, useCallback } from 'react';
+/**
+ * useVirtuosoScroll — thin wrapper around react-virtuoso's scroll API.
+ *
+ * Three-state follow model:
+ *  - `'force'`: always follow (after scrollToBottom, until confirmed at bottom)
+ *  - `true`:    follow when at bottom (normal streaming)
+ *  - `false`:   disabled (user scrolled up, or paused)
+ *
+ * Transitions:
+ *   scrollToBottom() → 'force'
+ *   atBottomStateChange(true)  + force → true  (confirmed at bottom)
+ *   atBottomStateChange(false) + true  → false (user scrolled up)
+ *   pauseAutoScroll() → false (temporary; restored to prior value after `duration`)
+ *
+ * Exports:
+ *   - `handleFollowOutput`: glue for Virtuoso's `followOutput` prop.
+ *   - `scrollerRef`: the real DOM scroller element (set via Virtuoso's
+ *     `scrollerRef` callback). Consumed by ChatSearch / QueryNavigator for
+ *     DOM-level scroll + range operations.
+ *   - `pauseAutoScroll(duration)`: momentarily disable auto-follow so
+ *     programmatic scrolls (e.g. QueryNavigator → scrollIntoView) aren't
+ *     undone by streaming chunks.
+ */
+
+import { useCallback, useEffect, useRef } from 'react';
 import type { VirtuosoHandle } from 'react-virtuoso';
 
-/**
- * Virtuoso 三态 follow 模型:
- *  - 'force': 始终跟随 (scrollToBottom 后，直到确认到底)
- *  - true:    在底部时跟随 (正常流式)
- *  - false:   禁用 (用户上滚)
- *
- * 状态转换:
- *  scrollToBottom() → 'force'
- *  atBottomStateChange(true) + force → true
- *  atBottomStateChange(false) + true → false
- */
-export function useVirtuosoScroll() {
+export interface VirtuosoScrollControls {
+  virtuosoRef: React.RefObject<VirtuosoHandle | null>;
+  scrollerRef: React.MutableRefObject<HTMLElement | null>;
+  followEnabledRef: React.MutableRefObject<boolean | 'force'>;
+  scrollToBottom: () => void;
+  pauseAutoScroll: (duration?: number) => void;
+  handleAtBottomChange: (atBottom: boolean) => void;
+  handleFollowOutput: (isAtBottom: boolean) => 'smooth' | false;
+}
+
+export function useVirtuosoScroll(): VirtuosoScrollControls {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const scrollerRef = useRef<HTMLElement | null>(null);
   const followEnabledRef = useRef<boolean | 'force'>(true);
+  const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track what followEnabled was before pause so we restore correctly.
+  const prePauseFollowRef = useRef<boolean | 'force'>(true);
 
   const scrollToBottom = useCallback(() => {
     followEnabledRef.current = 'force';
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' });
   }, []);
 
+  const pauseAutoScroll = useCallback((duration = 500) => {
+    prePauseFollowRef.current = followEnabledRef.current;
+    followEnabledRef.current = false;
+    if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
+    pauseTimerRef.current = setTimeout(() => {
+      followEnabledRef.current = prePauseFollowRef.current;
+      pauseTimerRef.current = null;
+    }, duration);
+  }, []);
+
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     if (atBottom && followEnabledRef.current === 'force') {
-      // force 模式到底后降级为普通跟随
       followEnabledRef.current = true;
     }
     if (!atBottom && followEnabledRef.current === true) {
-      // 用户滚离底部 → 停止跟随
       followEnabledRef.current = false;
     }
   }, []);
 
-  const handleFollowOutput = useCallback((isAtBottom: boolean) => {
+  const handleFollowOutput = useCallback((isAtBottom: boolean): 'smooth' | false => {
     const mode = followEnabledRef.current;
     if (!mode) return false;
-    if (mode === 'force') return 'smooth' as const;
-    return isAtBottom ? 'smooth' as const : false;
+    if (mode === 'force') return 'smooth';
+    return isAtBottom ? 'smooth' : false;
   }, []);
 
-  // cleanup
   useEffect(() => {
     return () => {
+      if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
       followEnabledRef.current = true;
     };
   }, []);
 
   return {
     virtuosoRef,
+    scrollerRef,
     followEnabledRef,
     scrollToBottom,
+    pauseAutoScroll,
     handleAtBottomChange,
     handleFollowOutput,
   };

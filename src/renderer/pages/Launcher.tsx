@@ -60,7 +60,7 @@ export default function Launcher({ tabId, onSelectWorkspace }: Props) {
               onClick={() => setShowSelector((v) => !v)}
               className="inline-flex items-baseline gap-1.5 cursor-pointer hover:opacity-70 transition-opacity"
             >
-              <span className="text-[22px] font-medium text-[var(--ink)]">
+              <span className="text-[20px] font-medium text-[var(--ink)]">
                 {selectedDir ? dirName(selectedDir) : '选择工作区'}
               </span>
               <span className="text-[12px] text-[var(--ink-tertiary)]">▾</span>

@@ -297,7 +297,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, Props>(
     ];
 
     return (
-      <div className="flex h-full -m-6" style={{ height: 'calc(100% + 48px)' }}>
+      <div className="flex h-full">
         {/* Left: File list */}
         <div
           className="flex flex-col border-r border-[var(--border)] bg-[var(--surface)]/50"

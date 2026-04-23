@@ -2,13 +2,21 @@ import type { PermissionMode } from './permission';
 
 export interface WorkspaceEntry {
   path: string;                     // agentDir（唯一键）
-  providerId?: string;              // per-workspace provider 覆盖
-  modelId?: string;                 // per-workspace model 覆盖
-  permissionMode?: PermissionMode;  // per-workspace 权限模式覆盖
-  mcpEnabledServers?: string[];     // 启用的 MCP 服务器 ID 列表（undefined = 全部启用）
+  /** @deprecated Use AgentConfig.providerId. Kept for migration period. */
+  providerId?: string;
+  /** @deprecated Use AgentConfig.model. Kept for migration period. */
+  modelId?: string;
+  /** @deprecated Use AgentConfig.permissionMode. Kept for migration period. */
+  permissionMode?: PermissionMode;
+  /** @deprecated Use AgentConfig.mcpEnabledServers. Kept for migration period. */
+  mcpEnabledServers?: string[];
   customPermissions?: {             // 自定义工具权限规则（预留，暂无 UI）
     allow: string[];
     deny: string[];
   };
+  agentId?: string;                 // 关联的 AgentConfig ID
   lastOpenedAt: number;             // 时间戳，用于排序"最近工作区"
+  displayName?: string;             // 自定义显示名称（默认用文件夹名）
+  icon?: string;                    // 自定义图标 ID 或 emoji
+  internal?: boolean;               // true = 隐藏（如诊断工作区）
 }

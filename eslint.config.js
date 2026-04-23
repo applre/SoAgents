@@ -13,7 +13,17 @@ const gitignorePath = fileURLToPath(new URL('./.gitignore', import.meta.url));
 export default defineConfig(
   includeIgnoreFile(gitignorePath),
   {
-    ignores: ['**/out/**', '**/dist/**', '**/.vite/**', '**/coverage/**', '**/.eslintcache', 'bundled-skills/**']
+    ignores: [
+      '**/out/**',
+      '**/dist/**',
+      '**/.vite/**',
+      '**/coverage/**',
+      '**/.eslintcache',
+      'bundled-skills/**',
+      // OpenClaw plugin-sdk shim — pre-generated JS vendored from MyAgents.
+      // See src/server/plugin-bridge/NOTICE for provenance.
+      'src/server/plugin-bridge/sdk-shim/**',
+    ]
   },
   js.configs.recommended,
   ...ts.configs.recommended,

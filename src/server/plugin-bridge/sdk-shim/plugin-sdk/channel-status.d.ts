@@ -1,0 +1,10 @@
+export declare const PAIRING_APPROVED_MESSAGE: string;
+export declare function projectCredentialSnapshotFields(snapshot: Record<string, unknown>, fields: string[]): Record<string, unknown>;
+export declare function resolveConfiguredFromCredentialStatuses(statuses: unknown[]): boolean;
+export declare function resolveConfiguredFromRequiredCredentialStatuses(statuses: unknown[]): boolean;
+export declare function createDefaultChannelRuntimeState<T extends Record<string, unknown>>(accountId: string, extra?: T): { accountId: string; running: false; lastStartAt: null; lastStopAt: null; lastError: null } & T;
+export declare function buildBaseChannelStatusSummary(snapshot: Record<string, unknown>, extra?: Record<string, unknown>): Record<string, unknown>;
+export declare function buildRuntimeAccountStatusSnapshot(params: { runtime?: Record<string, unknown> | null; probe?: unknown }, extra?: Record<string, unknown>): Record<string, unknown>;
+export declare function buildComputedAccountStatusSnapshot(params: Record<string, unknown>, extra?: Record<string, unknown>): Record<string, unknown>;
+export declare function buildTokenChannelStatusSummary(snapshot: Record<string, unknown>, opts?: { includeMode?: boolean }): Record<string, unknown>;
+export declare function collectStatusIssuesFromLastError(channel: string, accounts: Array<{ accountId: string; lastError?: unknown }>): Array<{ channel: string; accountId: string; kind: string; message: string }>;

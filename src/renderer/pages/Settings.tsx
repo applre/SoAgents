@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Brain, Settings2, BarChart2,
   KeyRound, CircleCheck, RefreshCw, Plus, Settings as SettingsIcon, Trash2, Puzzle, Wrench, X,
-  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle, ChevronDown, Download,
+  Info, FolderOpen, ExternalLink as ExternalLinkIcon, Eye, Loader2, AlertCircle, ChevronDown, Download, MessageSquare,
   type LucideProps,
 } from 'lucide-react';
 import { useConfig } from '../context/ConfigContext';
@@ -18,12 +18,15 @@ import {
 import * as mcpService from '../services/mcpService';
 import CustomSelect from '../components/CustomSelect';
 import { ExternalLink } from '../components/ExternalLink';
+import { Tag } from '../components/Tag';
 import { openExternal } from '../utils/openExternal';
 import { useAutostart } from '../hooks/useAutostart';
 import { atomicModifyWorkspaces } from '../config/workspaceService';
 import { isTauri } from '../utils/env';
 import { isDeveloperMode, recordDeveloperClick } from '../utils/developerMode';
 import UsageStatsPanel from '../components/UsageStatsPanel';
+import { ImBotSettingsTab } from '../components/ImAgentSettings';
+import GlobalAgentsPanel from '../components/GlobalAgentsPanel';
 
 // ── 类型定义 ──────────────────────────────────────────────────
 
@@ -61,7 +64,7 @@ interface SkillInfo {
   description: string;
   content: string;
   rawContent: string;
-  source: 'global' | 'project';
+  source: 'user' | 'project';
   path: string;
   isBuiltin: boolean;
   enabled: boolean;
@@ -84,12 +87,13 @@ interface SubscriptionStatusData {
   verifyError?: string;
 }
 
-type NavId = 'provider' | 'mcp' | 'skills' | 'usage' | 'general' | 'about';
+type NavId = 'provider' | 'mcp' | 'skills' | 'im-bot' | 'usage' | 'general' | 'about';
 
 const NAV_ITEMS: { id: NavId; label: string; Icon: React.ComponentType<LucideProps> }[] = [
   { id: 'provider',        label: '模型供应商',     Icon: Brain },
   { id: 'skills',          label: 'Skills',         Icon: Puzzle },
   { id: 'mcp',             label: 'MCP',            Icon: Wrench },
+  { id: 'im-bot',          label: '聊天机器人 Bot', Icon: MessageSquare },
   { id: 'usage',           label: '使用统计',       Icon: BarChart2 },
   { id: 'general',         label: '通用',           Icon: Settings2 },
   { id: 'about',           label: '关于',           Icon: Info },
@@ -144,7 +148,7 @@ function ProviderCard({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="text-[15px] font-semibold text-[var(--ink)] truncate">{provider.name}</span>
+          <span className="text-[16px] font-semibold text-[var(--ink)] truncate">{provider.name}</span>
           {isActive && (
             <span className="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--accent)] text-white">
               使用中
@@ -453,7 +457,7 @@ function ProviderEditModal({
         {/* 头部 */}
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+            <h3 className="text-[18px] font-bold text-[var(--ink)]">
               {isNew ? '添加自定义供应商' : isBuiltin ? '管理供应商' : '编辑供应商'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">
@@ -847,7 +851,7 @@ function ProviderEditModal({
               style={{ border: '1px solid var(--border)' }}
               onClick={(e) => e.stopPropagation()}
             >
-              <h4 className="text-[15px] font-bold text-[var(--ink)]">确认删除</h4>
+              <h4 className="text-[16px] font-bold text-[var(--ink)]">确认删除</h4>
               <p className="mt-2 text-[13px] text-[var(--ink-secondary)]">
                 确定要删除供应商 &quot;<span className="font-medium text-[var(--ink)]">{provider?.name}</span>&quot; 吗？
               </p>
@@ -1161,7 +1165,7 @@ function ProviderTab() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[22px] font-bold text-[var(--ink)]">模型供应商</h2>
+          <h2 className="text-[20px] font-bold text-[var(--ink)]">模型供应商</h2>
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">配置 API 密钥以使用不同的模型供应商</p>
         </div>
         <button
@@ -1533,7 +1537,7 @@ function MCPEditModal({
         {/* 头部 */}
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+            <h3 className="text-[18px] font-bold text-[var(--ink)]">
               {isReadonly ? '查看 MCP Server' : isNew ? '添加 MCP Server' : '编辑 MCP Server'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">
@@ -1883,7 +1887,7 @@ function MCPTab() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[22px] font-bold text-[var(--ink)]">MCP Servers</h2>
+          <h2 className="text-[20px] font-bold text-[var(--ink)]">MCP Servers</h2>
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理 MCP Server 配置，开关控制全局启用</p>
         </div>
         <div className="flex items-center gap-2">
@@ -1925,41 +1929,21 @@ function MCPTab() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-sm text-[var(--ink)]">{srv.name}</span>
-                    {srv.isBuiltin && (
-                      <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
-                        预设
-                      </span>
-                    )}
-                    {srv.isFree && (
-                      <span className="text-[10px] rounded px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 font-semibold">
-                        免费
-                      </span>
-                    )}
-                    <span className={`inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-full ${
-                      srv.status === 'enabled'
-                        ? 'bg-[var(--success)]/10 text-[var(--success)]'
-                        : srv.status === 'error'
-                          ? 'bg-[var(--error)]/10 text-[var(--error)]'
-                          : srv.status === 'connecting' || srv.status === 'pending'
-                            ? 'bg-amber-500/10 text-amber-600'
-                            : srv.status === 'needs-auth'
-                              ? 'bg-blue-500/10 text-blue-600'
-                              : 'bg-[var(--surface)] text-[var(--ink-tertiary)]'
-                    }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        srv.status === 'enabled' ? 'bg-[var(--success)]'
-                          : srv.status === 'error' ? 'bg-[var(--error)]'
-                          : srv.status === 'connecting' || srv.status === 'pending' ? 'bg-amber-500'
-                          : srv.status === 'needs-auth' ? 'bg-blue-500'
-                          : 'bg-[var(--ink-tertiary)]'
-                      }`} />
-                      {srv.status === 'enabled' ? '已启用'
-                        : srv.status === 'error' ? '错误'
-                        : srv.status === 'connecting' ? '连接中'
-                        : srv.status === 'pending' ? '等待中'
-                        : srv.status === 'needs-auth' ? '需认证'
-                        : '未启用'}
-                    </span>
+                    {srv.isBuiltin && <Tag variant="attribute" tone="info">预设</Tag>}
+                    {srv.isFree && <Tag variant="attribute" tone="success">免费</Tag>}
+                    {(() => {
+                      const statusMap = {
+                        enabled:    { tone: 'success' as const, label: '已启用' },
+                        error:      { tone: 'error'   as const, label: '错误' },
+                        connecting: { tone: 'warning' as const, label: '连接中' },
+                        pending:    { tone: 'warning' as const, label: '等待中' },
+                        'needs-auth': { tone: 'info' as const, label: '需认证' },
+                        disabled:   { tone: 'neutral' as const, label: '未启用' },
+                      };
+                      const s = statusMap[srv.status as keyof typeof statusMap]
+                             ?? statusMap.disabled;
+                      return <Tag variant="state" tone={s.tone}>{s.label}</Tag>;
+                    })()}
                   </div>
                   <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">
                     {srv.description ?? ''}
@@ -2177,7 +2161,7 @@ function SkillEditModal({
   onClose,
 }: {
   skill: SkillInfo | null; // null = new
-  onSave: (data: { name: string; description: string; content: string; scope: 'global' | 'project' }) => Promise<void>;
+  onSave: (data: { name: string; description: string; content: string; scope: 'user' | 'project' }) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -2187,7 +2171,7 @@ function SkillEditModal({
     name: skill?.name ?? '',
     description: skill?.description ?? '',
     content: skill?.rawContent ?? '',
-    scope: (skill?.source ?? 'global') as 'global' | 'project',
+    scope: (skill?.source ?? 'user') as 'user' | 'project',
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -2231,7 +2215,7 @@ function SkillEditModal({
         {/* 头部 */}
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+            <h3 className="text-[18px] font-bold text-[var(--ink)]">
               {isNew ? '新建 Skill' : '编辑 Skill'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">配置 Skill 基本信息</p>
@@ -2264,10 +2248,10 @@ function SkillEditModal({
             <CustomSelect
               value={form.scope}
               options={[
-                { value: 'global', label: '全局' },
+                { value: 'user', label: '全局' },
                 { value: 'project', label: '项目' },
               ]}
-              onChange={(v) => setForm((f) => ({ ...f, scope: v as 'global' | 'project' }))}
+              onChange={(v) => setForm((f) => ({ ...f, scope: v as 'user' | 'project' }))}
               className="w-full"
             />
           </div>
@@ -2313,6 +2297,17 @@ function SkillEditModal({
 // ── Skills Tab ────────────────────────────────────────────────
 
 function SkillsTab() {
+  const [agentsInDetail, setAgentsInDetail] = useState(false);
+
+  return (
+    <div className="space-y-10">
+      {!agentsInDetail && <SkillsSection />}
+      <GlobalAgentsPanel onDetailChange={setAgentsInDetail} />
+    </div>
+  );
+}
+
+function SkillsSection() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [editSkill, setEditSkill] = useState<SkillInfo | 'new' | null>(null);
@@ -2325,7 +2320,7 @@ function SkillsTab() {
 
   useEffect(() => { void loadSkills(); }, []);
 
-  const handleSave = async (data: { name: string; description: string; content: string; scope: 'global' | 'project' }) => {
+  const handleSave = async (data: { name: string; description: string; content: string; scope: 'user' | 'project' }) => {
     if (editSkill === 'new') {
       await globalApiPostJson('/api/skills', data);
     } else if (editSkill) {
@@ -2350,7 +2345,7 @@ function SkillsTab() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[22px] font-bold text-[var(--ink)]">Skills</h2>
+          <h2 className="text-[20px] font-bold text-[var(--ink)]">Skills</h2>
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理自定义 Skill，共 {skills.length} 个</p>
         </div>
         <button
@@ -2379,13 +2374,11 @@ function SkillsTab() {
               >
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-sm text-[var(--ink)]">{skill.name}</span>
-                  <span className={`text-xs rounded px-1.5 py-0.5 ${skill.source === 'global' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-500'}`}>
-                    {skill.source === 'global' ? '全局' : '项目'}
-                  </span>
+                  <Tag variant="scope">
+                    {skill.source === 'user' ? '全局' : '项目'}
+                  </Tag>
                   {skill.isBuiltin && (
-                    <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-500/10 text-amber-600 font-semibold">
-                      内置
-                    </span>
+                    <Tag variant="attribute" tone="info">内置</Tag>
                   )}
                 </div>
                 {skill.description && <p className="mt-0.5 text-xs text-[var(--ink-tertiary)] truncate">{skill.description}</p>}
@@ -2537,13 +2530,13 @@ function GeneralTab() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-[22px] font-bold text-[var(--ink)]">General</h2>
+        <h2 className="text-[20px] font-bold text-[var(--ink)]">General</h2>
         <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">应用基本设置</p>
       </div>
 
       {/* 启动设置 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">启动设置</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">启动设置</p>
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[13px] font-medium text-[var(--ink)]">开机自动启动</p>
@@ -2569,7 +2562,7 @@ function GeneralTab() {
 
       {/* 默认工作区 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">默认工作区</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">默认工作区</p>
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[13px] font-medium text-[var(--ink)]">默认工作区路径</p>
@@ -2603,7 +2596,7 @@ function GeneralTab() {
       {/* 网络代理 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <p className="text-[15px] font-semibold text-[var(--ink)]">网络代理</p>
+          <p className="text-[16px] font-semibold text-[var(--ink)]">网络代理</p>
           <ToggleSwitch checked={proxy.enabled} onChange={handleProxyToggle} />
         </div>
 
@@ -2684,7 +2677,7 @@ function LogExportSection() {
 
   return (
     <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
-      <p className="text-[15px] font-semibold text-[var(--ink)]">运行日志</p>
+      <p className="text-[16px] font-semibold text-[var(--ink)]">运行日志</p>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-[13px] font-medium text-[var(--ink)]">导出日志</p>
@@ -2817,7 +2810,7 @@ function AboutTab({
 
       {/* 产品描述 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">关于 SoAgents</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">关于 SoAgents</p>
         <p className="mt-2 text-[13px] text-[var(--ink-secondary)] leading-relaxed">
           SoAgents 是基于 Claude Agent SDK 的桌面端 Agent 客户端，通过 Tauri + React + Bun 全栈架构构建，
           提供多工作区隔离、MCP 服务器管理、自定义 Skills 等功能。
@@ -2826,7 +2819,7 @@ function AboutTab({
 
       {/* 联系/链接 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-3">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">链接</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">链接</p>
         <div className="space-y-2">
           <button
             onClick={() => handleOpenLink('https://github.com/applre/SoAgents')}
@@ -2855,7 +2848,7 @@ function AboutTab({
       {/* 开发者模式（隐藏，需 5 次点击 SoAgents 标题解锁） */}
       {devMode && (
         <div className="rounded-[14px] border border-dashed border-[var(--accent)]/40 bg-[var(--accent)]/5 p-5 space-y-4">
-          <p className="text-[15px] font-semibold text-[var(--accent)]">开发者选项</p>
+          <p className="text-[16px] font-semibold text-[var(--accent)]">开发者选项</p>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[13px] font-medium text-[var(--ink)]">显示 DevTools</p>
@@ -2921,6 +2914,7 @@ export default function Settings({ checkForUpdate, checking }: SettingsProps) {
         {activeNav === 'provider'        && <ProviderTab />}
         {activeNav === 'mcp'             && <MCPTab />}
         {activeNav === 'skills'          && <SkillsTab />}
+        {activeNav === 'im-bot'          && <ImBotSettingsTab />}
         {activeNav === 'usage'           && <UsageStatsPanel />}
         {activeNav === 'general'         && <GeneralTab />}
         {activeNav === 'about'           && <AboutTab checkForUpdate={checkForUpdate} checking={checking} />}

@@ -1,3 +1,5 @@
+import type { AgentConfig } from './agentConfig';
+
 /**
  * Authentication type for API providers
  * - 'auth_token': Only set ANTHROPIC_AUTH_TOKEN
@@ -141,6 +143,7 @@ export interface AppConfig {
   defaultWorkspacePath?: string;
   proxySettings?: ProxySettings;
   showDevTools?: boolean;
+  agents?: AgentConfig[];
 }
 
 export interface ProviderEnv {

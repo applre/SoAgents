@@ -11,14 +11,15 @@ import * as CommandStore from './CommandStore';
 import { resolveClaudeCodeCli } from './provider-verify';
 import type { ProviderEnv, ProviderAuthType } from '../shared/types/config';
 import type { PermissionMode } from '../shared/types/permission';
-import type { MessageAttachment } from '../shared/types/session';
+import type { MessageAttachment, SessionMessage } from '../shared/types/session';
 import { processImage } from './utils/imageResize';
+import { startSocksBridge } from './utils/socks-bridge';
 import { getBuiltinMcp } from './tools/builtin-mcp-registry';
 import { getOAuthToken } from './mcp-oauth';
 import './tools/gemini-image-tool';
 import './tools/edge-tts-tool';
-import './tools/cron-tools';
-import { getCronTaskContext, cronToolsServer, setCurrentSessionId } from './tools/cron-tools';
+import './tools/scheduled-task-tools';
+import { getScheduledTaskContext, scheduledTaskToolsServer, setCurrentSessionId } from './tools/scheduled-task-tools';
 
 interface ChatImage {
   name: string;
@@ -133,10 +134,10 @@ function buildSdkMcpServers(input: BuildMcpServersInput): Record<string, unknown
 
   // --- Pattern 1: Context-injected MCPs (auto-added based on session context) ---
   if (input.sessionId) {
-    const cronCtx = getCronTaskContext(input.sessionId);
-    if (cronCtx?.canExit) {
+    const scheduledCtx = getScheduledTaskContext(input.sessionId);
+    if (scheduledCtx?.canExit) {
       setCurrentSessionId(input.sessionId);
-      result['cron-tools'] = cronToolsServer;
+      result['scheduled-task-tools'] = scheduledTaskToolsServer;
     }
   }
 
@@ -494,12 +495,17 @@ class SessionRunner {
   private currentModel: string | undefined;
   private currentPermissionMode: PermissionMode = 'acceptEdits';
   private sessionConfig: SessionConfig | null = null;
+
+  // ── Rewind/Fork 所需的 SDK UUID 追踪 ──
+  /** 当前轮的 user message.id（saveMessage 时生成；SDK user 消息回来后用来匹配并写入 sdkUuid） */
+  private pendingUserMessageId: string | null = null;
+  /** 当前轮中 SDK 返回的最近一次 assistant uuid（turn 内可能多条消息 — thinking→text，保留最后一条用于 resumeSessionAt） */
+  private currentTurnAssistantSdkUuid: string | null = null;
   /** Last known config — preserved after session ends for recovery (forceExecute when session dead) */
   private lastSessionConfig: SessionConfig | null = null;
 
   // ── 持久 Session 门控 ──
   private messageResolver: ((item: QueueItem | null) => void) | null = null;
-  private resolveTurnComplete: (() => void) | null = null;
   private shouldAbort = false;
   private stoppedByUser = false;
   private sessionTerminationPromise: Promise<void> | null = null;
@@ -525,6 +531,33 @@ class SessionRunner {
   private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
   private pendingPermissionData = new Map<string, { toolName: string; toolUseId: string; toolInput: Record<string, unknown> }>();
   private pendingQuestionData = new Map<string, { toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }>();
+
+  // ── Mid-turn injection: messages yielded to SDK but not yet consumed by AI ──
+  // queue:started is deferred until a content block boundary (content_block_start)
+  // to avoid splitting old content mid-stream.
+  private pendingMidTurnQueue: Array<{
+    queueId: string;
+    userMessage: { id: string; role: 'user'; content: string; timestamp: string; attachments?: MessageAttachment[] };
+  }> = [];
+
+  // ── IM stream callback ──
+  private imStreamCallback: ((event: 'delta' | 'block-end' | 'complete' | 'error' | 'activity', data: string) => void) | null = null;
+  private imTextBlockIndices = new Set<number>();
+  // Cross-turn guard: set to true when imStreamCallback is nulled or replaced during a turn.
+  // Reset before each new yield. Prevents stale turn's events from consuming a new SSE stream.
+  private imCallbackNulledDuringTurn = false;
+
+  setImStreamCallback(cb: typeof this.imStreamCallback): void {
+    if (cb !== null && this.imStreamCallback !== null) {
+      console.warn('[agent] setImStreamCallback: replacing active callback');
+      this.imCallbackNulledDuringTurn = true;
+      try { this.imStreamCallback('error', '消息处理被新请求取代'); } catch { /* closed */ }
+    }
+    if (cb === null && this.imStreamCallback !== null) {
+      this.imCallbackNulledDuringTurn = true;
+    }
+    this.imStreamCallback = cb;
+  }
 
   // ── MCP 动态重启 ──
   private mcpRestartPending = false;
@@ -623,23 +656,32 @@ class SessionRunner {
     return new Promise(resolve => { this.messageResolver = resolve; });
   }
 
-  /** result 事件到达后解锁 generator 进入下一轮 */
-  private signalTurnComplete(): void {
-    if (this.resolveTurnComplete) {
-      const resolve = this.resolveTurnComplete;
-      this.resolveTurnComplete = null;
-      resolve();
+  /**
+   * Flush deferred mid-turn user messages: save to SessionStore and broadcast queue:started.
+   * Called at content block boundaries (content_block_start) and turn end (result event).
+   */
+  private flushPendingMidTurnQueue(): void {
+    if (this.pendingMidTurnQueue.length === 0) return;
+    for (const pending of this.pendingMidTurnQueue) {
+      SessionStore.saveMessage(this.sessionId, pending.userMessage);
+      broadcast('queue:started', {
+        sessionId: this.sessionId,
+        queueId: pending.queueId,
+        userMessage: pending.userMessage,
+        midTurnBreak: true,
+      });
     }
-  }
-
-  /** generator 阻塞等待 AI 回复完成 */
-  private waitForTurnComplete(): Promise<void> {
-    if (this.shouldAbort) return Promise.resolve();
-    return new Promise(resolve => { this.resolveTurnComplete = resolve; });
+    this.pendingMidTurnQueue.length = 0;
   }
 
   /** session 异常死亡时逐条广播 queue:cancelled */
   private drainMessageQueue(): void {
+    // Also drain pending mid-turn messages
+    for (const pending of this.pendingMidTurnQueue) {
+      broadcast('queue:cancelled', { sessionId: this.sessionId, queueId: pending.queueId });
+    }
+    this.pendingMidTurnQueue.length = 0;
+
     for (const item of this.messageQueue) {
       if (item.wasQueued) {
         broadcast('queue:cancelled', { sessionId: this.sessionId, queueId: item.queueId });
@@ -655,14 +697,14 @@ class SessionRunner {
       this.preWarmTimer = null;
     }
     this.shouldAbort = true;
+    // Discard pending mid-turn messages (session is being torn down)
+    this.pendingMidTurnQueue.length = 0;
     // 唤醒 generator 的 waitForMessage
     if (this.messageResolver) {
       const resolve = this.messageResolver;
       this.messageResolver = null;
       resolve(null);
     }
-    // 唤醒 generator 的 waitForTurnComplete
-    this.signalTurnComplete();
     // 中断 SDK subprocess
     if (this.querySession) {
       this.querySession.interrupt().catch(() => {});
@@ -672,7 +714,10 @@ class SessionRunner {
   // ── 持久 messageGenerator ──
 
   private async *messageGenerator(): AsyncGenerator<SDKUserMessage> {
-    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator started (persistent mode)`);
+    // Yield-and-ready 模式：generator yield 后立即回到 waitForMessage，有新消息即再次 yield。
+    // SDK 的 for-await 立即写入 stdin pipe，subprocess 在 tool call / thinking 间隙读取。
+    // 不再等待 turn 完成（waitForTurnComplete），实现 mid-turn 消息注入。
+    console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator started (persistent mode, mid-turn injection enabled)`);
 
     while (true) {
       const item = await this.waitForMessage();
@@ -681,42 +726,52 @@ class SessionRunner {
         return;
       }
 
-      // 排队消息：在 yield 前保存用户消息到 SessionStore 并广播 queue:started
+      // 排队消息的延迟渲染
       if (item.wasQueued) {
-        SessionStore.saveMessage(this.sessionId, {
+        const userMessage = {
           id: crypto.randomUUID(),
-          role: 'user',
+          role: 'user' as const,
           content: item.text,
           timestamp: new Date().toISOString(),
           ...(item.attachments ? { attachments: item.attachments } : {}),
-        });
-        broadcast('queue:started', {
-          sessionId: this.sessionId,
-          queueId: item.queueId,
-          text: item.text,
-        });
+        };
+
+        const isMidTurn = this.isStreaming;
+        if (!isMidTurn) {
+          // Normal turn start: save and broadcast immediately
+          SessionStore.saveMessage(this.sessionId, userMessage);
+          broadcast('queue:started', {
+            sessionId: this.sessionId,
+            queueId: item.queueId,
+            userMessage,
+          });
+        } else {
+          // Mid-turn injection: defer to pendingMidTurnQueue.
+          // The message is flushed when the AI produces a content block boundary.
+          this.pendingMidTurnQueue.push({
+            queueId: item.queueId,
+            userMessage,
+          });
+        }
       }
 
-      // 重置每轮状态
-      this.turnAssistantContent = '';
-      this.turnHasStreamedContent = false;
-      this.currentToolId = '';
-      this.toolNameMap.clear();
-      this.turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined, modelUsage: undefined };
-      this.turnStartTime = Date.now();
-      this.turnToolCount = 0;
-      this.isStreaming = true;
+      // Only reset turn state for NEW turns (not mid-turn injections)
+      const isMidTurnInjection = this.isStreaming;
+      if (!isMidTurnInjection) {
+        this.turnAssistantContent = '';
+        this.turnHasStreamedContent = false;
+        this.currentToolId = '';
+        this.toolNameMap.clear();
+        this.turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model: undefined, modelUsage: undefined };
+        this.turnStartTime = Date.now();
+        this.turnToolCount = 0;
+        this.isStreaming = true;
+        this.imCallbackNulledDuringTurn = false;
+      }
 
-      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued})`);
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator yielding message: "${item.text.slice(0, 50)}" (wasQueued=${item.wasQueued}, midTurn=${isMidTurnInjection})`);
       yield item.sdkMessage;
-
-      // 等待本轮 AI 回复完成（result 消息到达后解锁）
-      await this.waitForTurnComplete();
-
-      if (this.shouldAbort) {
-        console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] messageGenerator abort flag set, exiting`);
-        return;
-      }
+      // Mid-turn injection: 不等 turn 完成，立即准备 yield 下一条。
     }
   }
 
@@ -792,8 +847,8 @@ class SessionRunner {
         if (parts.length < 3) return { allowed: false, reason: '无效的 MCP 工具名称' };
         const serverId = parts[1];
 
-        // Trusted built-in MCPs: always allow (e.g., future cron-tools)
-        const TRUSTED_MCP_IDS = new Set<string>(['cron-tools']);
+        // Trusted built-in MCPs: always allow (e.g., scheduled-task-tools)
+        const TRUSTED_MCP_IDS = new Set<string>(['scheduled-task-tools']);
         if (TRUSTED_MCP_IDS.has(serverId)) return { allowed: true };
 
         if (enabledMcpServerIds.size === 0) return { allowed: false, reason: 'MCP 工具已被禁用' };
@@ -844,7 +899,7 @@ class SessionRunner {
         }
 
         // 0.1 Built-in trusted MCPs: skip user confirmation
-        if (toolName.startsWith('mcp__cron-tools__')) {
+        if (toolName.startsWith('mcp__scheduled-task-tools__')) {
           return { behavior: 'allow' as const, updatedInput: toolInput };
         }
 
@@ -991,6 +1046,16 @@ class SessionRunner {
     } catch (err: unknown) {
       const e = err as Error;
       console.error(`${logPrefix} Error:`, err);
+      // IM stream: notify error/complete (skip if callback was replaced during turn)
+      if (this.imStreamCallback && !this.imCallbackNulledDuringTurn) {
+        if (this.stoppedByUser) {
+          this.imStreamCallback('complete', '');
+        } else {
+          this.imStreamCallback('error', String(err));
+        }
+        this.imStreamCallback = null;
+      }
+      this.imTextBlockIndices.clear();
       if (this.stoppedByUser) {
         // User-initiated stop — broadcast stopped (not complete/error)
         if (this.isStreaming) {
@@ -1023,7 +1088,6 @@ class SessionRunner {
         this.messageResolver = null;
         resolve(null);
       }
-      this.signalTurnComplete();
 
       // Only drain queue on unexpected death (not intentional abort).
       // Intentional abort (shouldAbort=true) means the caller (sendMessage restart / stop)
@@ -1063,12 +1127,16 @@ class SessionRunner {
           this.turnHasStreamedContent = true;
           this.turnAssistantContent += delta.text;
           broadcast('chat:message-chunk', { sessionId: activeSessionId, text: delta.text });
+          if (!this.imCallbackNulledDuringTurn) this.imStreamCallback?.('delta', delta.text);
         } else if (delta?.type === 'thinking_delta' && delta.thinking) {
           broadcast('chat:thinking-chunk', { sessionId: activeSessionId, thinking: delta.thinking });
         } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
           broadcast('chat:tool-input-delta', { sessionId: activeSessionId, id: this.currentToolId, partial_json: delta.partial_json });
         }
       } else if (streamEvent.type === 'content_block_start') {
+        // Flush pending mid-turn messages at content block boundaries
+        this.flushPendingMidTurnQueue();
+
         const block = streamEvent.content_block;
         console.log(`${logTag} content_block_start: type=${block?.type}, name=${block?.name ?? '-'}, id=${block?.id ?? '-'}`);
         if (block?.type === 'tool_use') {
@@ -1077,28 +1145,61 @@ class SessionRunner {
           this.turnToolCount++;
           broadcast('chat:tool-use-start', { sessionId: activeSessionId, name: block.name, id: block.id });
         }
+        // IM stream: track text blocks, notify non-text activity
+        if (this.imStreamCallback && !this.imCallbackNulledDuringTurn) {
+          const blockIndex = (streamEvent as Record<string, unknown>).index as number | undefined;
+          if (block?.type === 'text' && blockIndex !== undefined) {
+            this.imTextBlockIndices.add(blockIndex);
+          } else {
+            this.imStreamCallback('activity', block?.type ?? '');
+          }
+        }
       } else if (streamEvent.type === 'content_block_stop') {
         console.log(`${logTag} content_block_stop`);
+        // IM stream: signal text block end
+        const stopIndex = (streamEvent as Record<string, unknown>).index as number | undefined;
+        if (this.imStreamCallback && !this.imCallbackNulledDuringTurn && stopIndex !== undefined && this.imTextBlockIndices.has(stopIndex)) {
+          this.imStreamCallback('block-end', '');
+          this.imTextBlockIndices.delete(stopIndex);
+        }
       } else if (streamEvent.type === 'message_stop') {
         console.log(`${logTag} message_stop`);
       }
     } else if (msg.type === 'assistant') {
       const betaMsg = msg.message as { content: Array<{ type: string; text?: string }> };
+      // SDK 为每条 assistant 消息分配一个 UUID — Rewind 的 resumeSessionAt 需要它。
+      // 一个回合可能产生多条（thinking → text），总是记录最新的（SoAgents 合并为
+      // 一条持久化的 assistant message，turn 结束时写入 sdkUuid）。
+      const sdkUuid = (msg as { uuid?: string }).uuid;
+      if (sdkUuid) this.currentTurnAssistantSdkUuid = sdkUuid;
       const blockTypes = betaMsg.content.map(b => b.type).join(',');
-      console.log(`${logTag} assistant message: blocks=[${blockTypes}], streamed=${this.turnHasStreamedContent}`);
+      console.log(`${logTag} assistant message: blocks=[${blockTypes}], streamed=${this.turnHasStreamedContent}, sdkUuid=${sdkUuid ?? 'none'}`);
       for (const block of betaMsg.content) {
         if (block.type === 'text' && block.text) {
           if (!this.turnHasStreamedContent) {
             this.turnAssistantContent += block.text;
             broadcast('chat:message-chunk', { sessionId: activeSessionId, text: block.text });
+            if (!this.imCallbackNulledDuringTurn) this.imStreamCallback?.('delta', block.text);
             console.log(`${logTag} assistant fallback broadcast: ${block.text.length} chars`);
           }
         }
       }
     } else if (msg.type === 'user') {
       const userMsg = msg.message as { content: Array<{ type: string; tool_use_id?: string; content?: string; is_error?: boolean }> };
+      // 非 synthetic 的 user 消息 → 把 SDK UUID 回填到刚保存的 user message。
+      // Rewind 的 Query.rewindFiles(userMessageUuid) 必须拿到这个 UUID 才能
+      // 回滚文件检查点。synthetic 消息（SDK 内部注入的 tool_result）不保存
+      // 到 SessionStore，也没有对应的前端 message，故跳过。
+      const sdkUuid = (msg as { uuid?: string }).uuid;
+      const isSynthetic = (msg as { isSynthetic?: boolean }).isSynthetic === true;
+      if (!isSynthetic && sdkUuid && this.pendingUserMessageId) {
+        const targetId = this.pendingUserMessageId;
+        this.pendingUserMessageId = null; // 只匹配一次
+        SessionStore.updateMessageSdkUuid(activeSessionId, targetId, sdkUuid);
+        broadcast('chat:message-sdk-uuid', { sessionId: activeSessionId, messageId: targetId, sdkUuid });
+      }
       const blockTypes = (userMsg.content ?? []).map(b => b.type).join(',');
-      console.log(`${logTag} user message (tool results): blocks=[${blockTypes}]`);
+      console.log(`${logTag} user message (tool results): blocks=[${blockTypes}], sdkUuid=${sdkUuid ?? 'none'}, synthetic=${isSynthetic}`);
       for (const block of userMsg.content ?? []) {
         if (block.type === 'tool_result') {
           const rawContent = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
@@ -1157,6 +1258,12 @@ class SessionRunner {
 
       // 保存助手消息（含 usage）并通知前端
       this.saveTurnAssistantContent(activeSessionId, durationMs);
+      // IM stream: notify complete (skip if callback was replaced/nulled during this turn)
+      if (this.imStreamCallback && !this.imCallbackNulledDuringTurn) {
+        this.imStreamCallback('complete', '');
+        this.imStreamCallback = null;
+      }
+      this.imTextBlockIndices.clear();
       broadcast('chat:message-complete', {
         sessionId: activeSessionId,
         model: this.turnUsage.model,
@@ -1168,6 +1275,9 @@ class SessionRunner {
         durationMs,
       });
 
+      // Flush pending mid-turn messages before marking done
+      this.flushPendingMidTurnQueue();
+
       // 标记流式结束
       this.isStreaming = false;
 
@@ -1177,9 +1287,6 @@ class SessionRunner {
         console.log(`${logTag} Executing deferred MCP restart`);
         this.abortSession();
       }
-
-      // 解锁 generator 进入下一轮
-      this.signalTurnComplete();
     } else {
       console.log(`${logTag} unhandled event type: ${msg.type}`);
     }
@@ -1189,11 +1296,20 @@ class SessionRunner {
   private saveTurnAssistantContent(sessionId: string, durationMs?: number): void {
     if (this.turnAssistantContent) {
       const hasUsage = this.turnUsage.inputTokens > 0 || this.turnUsage.outputTokens > 0;
+      const assistantMessageId = crypto.randomUUID();
+      const sdkUuid = this.currentTurnAssistantSdkUuid ?? undefined;
+      // 清空回合级 uuid 追踪（下一回合会重新记）
+      this.currentTurnAssistantSdkUuid = null;
+      // 前端拿到这个事件后把 assistant 气泡的 sdkUuid 补上 → Fork 按钮启用。
+      if (sdkUuid) {
+        broadcast('chat:message-sdk-uuid', { sessionId, messageId: assistantMessageId, sdkUuid });
+      }
       SessionStore.saveMessage(sessionId, {
-        id: crypto.randomUUID(),
+        id: assistantMessageId,
         role: 'assistant',
         content: this.turnAssistantContent,
         timestamp: new Date().toISOString(),
+        ...(sdkUuid ? { sdkUuid } : {}),
         ...(hasUsage ? {
           usage: {
             inputTokens: this.turnUsage.inputTokens,
@@ -1259,9 +1375,10 @@ class SessionRunner {
     const activeSessionId = this.sessionId;
     const queueId = crypto.randomUUID();
 
-    // 如果正在 streaming，排队而不是拒绝
+    // 如果正在 streaming，排队而不是拒绝（mid-turn injection）
     if (this.isStreaming) {
-      if (this.messageQueue.length >= MAX_QUEUE_SIZE) {
+      // Count both messageQueue (waiting) and pendingMidTurnQueue (yielded but not yet flushed)
+      if (this.messageQueue.length + this.pendingMidTurnQueue.length >= MAX_QUEUE_SIZE) {
         return { ok: false, error: 'queue_full' };
       }
 
@@ -1284,16 +1401,23 @@ class SessionRunner {
         attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
       };
 
-      this.messageQueue.push(queueItem);
+      // wakeGenerator delivers directly if generator is at waitForMessage (messageResolver set),
+      // or buffers in messageQueue if generator is suspended at yield (SDK hasn't called next() yet).
+      this.wakeGenerator(queueItem);
       broadcast('queue:added', { sessionId: activeSessionId, queueId, text });
-      console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] Message queued (${this.messageQueue.length}/${MAX_QUEUE_SIZE}): "${text.slice(0, 50)}"`);
+      console.log(`[SessionRunner:${activeSessionId.slice(0, 8)}] Message queued (mid-turn injection): "${text.slice(0, 50)}"`);
       return { ok: true, queued: true, queueId };
     }
 
-    // 保存用户消息到 SessionStore（含图片附件）
+    // 保存用户消息到 SessionStore（含图片附件）。
+    // 记下 id 到 pendingUserMessageId — SDK 回传 `msg.type === 'user'` 时，
+    // 用这个 id 找到已保存的 user message 并补写 sdkUuid（Rewind 依赖）。
     const savedAttachments = saveImageAttachments(activeSessionId, images);
+    const userMessageId = crypto.randomUUID();
+    this.pendingUserMessageId = userMessageId;
+    this.currentTurnAssistantSdkUuid = null; // 新回合重置
     SessionStore.saveMessage(activeSessionId, {
-      id: crypto.randomUUID(),
+      id: userMessageId,
       role: 'user',
       content: text,
       timestamp: new Date().toISOString(),
@@ -1397,9 +1521,116 @@ class SessionRunner {
     return { role: 'user' as const, content: text };
   }
 
+  /**
+   * Programmatically inject a user message into the session.
+   * Used by Memory Auto-Update and Heartbeat to inject prompts with overridden permissions.
+   * Unlike sendMessage(), this always starts a session if not active and doesn't handle images.
+   */
+  async enqueueUserMessage(
+    text: string,
+    agentDir: string,
+    permissionMode: PermissionMode,
+    providerEnv?: ProviderEnv,
+    model?: string,
+    mcpEnabledServerIds?: string[],
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (this.resetPromise) {
+      await this.resetPromise;
+    }
+
+    // Update config snapshot
+    if (providerEnv !== undefined) this.providerEnv = providerEnv;
+    if (model !== undefined) this.currentModel = model;
+    this.currentPermissionMode = permissionMode;
+
+    // Build SDK message
+    if (!this.sdkSessionId) {
+      this.sdkSessionId = SessionStore.getSdkSessionId(this.sessionId) ?? null;
+    }
+    const sdkSid = this.sdkSessionId ?? crypto.randomUUID();
+
+    const queueItem: QueueItem = {
+      sdkMessage: {
+        type: 'user' as const,
+        message: { role: 'user' as const, content: text },
+        parent_tool_use_id: null,
+        session_id: sdkSid,
+      } as SDKUserMessage,
+      text,
+      queueId: crypto.randomUUID(),
+      wasQueued: false,
+    };
+
+    // Save to SessionStore
+    SessionStore.saveMessage(this.sessionId, {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: text,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (!this.sessionActive) {
+      const config: SessionConfig = {
+        agentDir,
+        providerEnv,
+        model,
+        permissionMode,
+        mcpEnabledServerIds,
+      };
+      this.wakeGenerator(queueItem);
+      this.startSession(config);
+    } else {
+      // Check if needs restart (permission/model changed)
+      const needsRestart = this.needsSessionRestart(providerEnv, model, permissionMode);
+      if (needsRestart) {
+        this.resetPromise = new Promise(r => { this.resolveReset = r; });
+        try {
+          this.abortSession();
+          if (this.sessionTerminationPromise) await this.sessionTerminationPromise;
+        } finally {
+          const resolve = this.resolveReset;
+          this.resetPromise = null;
+          this.resolveReset = null;
+          resolve?.();
+        }
+        const config: SessionConfig = { agentDir, providerEnv, model, permissionMode, mcpEnabledServerIds };
+        this.wakeGenerator(queueItem);
+        this.startSession(config);
+      } else {
+        this.wakeGenerator(queueItem);
+      }
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Wait for the session to become idle (not streaming).
+   * Used by Memory Auto-Update to wait for AI completion after injecting a prompt.
+   * @returns true if session became idle, false if timed out
+   */
+  async waitForIdle(timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!this.isStreaming) return true;
+      await new Promise(r => setTimeout(r, pollIntervalMs));
+    }
+    return false;
+  }
+
   cancelQueueItem(queueId: string): { ok: boolean; text?: string } {
     const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
-    if (idx === -1) return { ok: false };
+    if (idx === -1) {
+      // Check pendingMidTurnQueue (already yielded to SDK, but we can suppress queue:started)
+      const pmIdx = this.pendingMidTurnQueue.findIndex(p => p.queueId === queueId);
+      if (pmIdx !== -1) {
+        const [removed] = this.pendingMidTurnQueue.splice(pmIdx, 1);
+        broadcast('queue:cancelled', { sessionId: this.sessionId, queueId });
+        console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Queue item ${queueId} cancelled from pendingMidTurnQueue (already yielded to SDK)`);
+        return { ok: true, text: removed.userMessage.content };
+      }
+      return { ok: false };
+    }
     const [removed] = this.messageQueue.splice(idx, 1);
     broadcast('queue:cancelled', { sessionId: this.sessionId, queueId });
     console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Queue item cancelled: "${removed.text.slice(0, 50)}"`);
@@ -1408,7 +1639,19 @@ class SessionRunner {
 
   forceExecuteQueueItem(queueId: string): boolean {
     const idx = this.messageQueue.findIndex((item) => item.queueId === queueId);
-    if (idx === -1) return false;
+    // Message may already be in pendingMidTurnQueue (yielded to SDK, awaiting flush)
+    const inPendingMidTurn = idx === -1 && this.pendingMidTurnQueue.some(p => p.queueId === queueId);
+    if (idx === -1 && !inPendingMidTurn) return false;
+
+    // If in pendingMidTurnQueue, it's already yielded to SDK — interrupt to force AI to process it
+    if (inPendingMidTurn) {
+      if (this.sessionActive && this.querySession) {
+        this.querySession.interrupt().catch(() => {});
+      }
+      console.log(`[SessionRunner:${this.sessionId.slice(0, 8)}] Force executing queue item from pendingMidTurnQueue`);
+      return true;
+    }
+
     // 移到队首
     if (idx > 0) {
       const [item] = this.messageQueue.splice(idx, 1);
@@ -1518,6 +1761,120 @@ class SessionRunner {
     }
     return { permission, question, exitPlanMode, enterPlanMode };
   }
+
+  // ── Rewind / Fork ─────────────────────────────────────────────────
+  //
+  // Rewind 截断对话到指定 user message 之前，并尝试通过 SDK 的
+  // `Query.rewindFiles(userMessageUuid)` 回滚工作区文件检查点。
+  //
+  // 注意：SDK 要求的是 **user message** 的 UUID（不是 assistant），因为
+  // 检查点是按用户轮次打点的。旧消息（无 sdkUuid）仍可截断文本，但文件
+  // 不会回滚 — 前端 UI 会在按钮 disabled tooltip 里提示这一点。
+
+  /**
+   * 回溯到指定 user message 之前，并尝试回滚文件系统。
+   * 返回被截断消息的内容 + 附件，前端用来恢复输入框。
+   */
+  async rewindSession(userMessageId: string): Promise<{
+    success: boolean;
+    error?: string;
+    content?: string;
+    attachments?: SessionMessage['attachments'];
+  }> {
+    const sessionId = this.sessionId;
+    // 1. 从磁盘读消息，找目标 + 拿 sdkUuid
+    const messages = SessionStore.getSessionMessages(sessionId);
+    const targetIndex = messages.findIndex(
+      (m) => m.id === userMessageId && m.role === 'user',
+    );
+    if (targetIndex < 0) return { success: false, error: '消息未找到或不是用户消息' };
+    const target = messages[targetIndex];
+    const targetUserUuid = target.sdkUuid;
+
+    // 2. 尝试文件检查点回滚（5s 超时，失败不阻塞截断）
+    if (this.querySession && targetUserUuid && !this.shouldAbort) {
+      try {
+        const REWIND_FILES_TIMEOUT_MS = 5_000;
+        const result = await Promise.race([
+          this.querySession.rewindFiles(targetUserUuid),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('rewindFiles timeout')), REWIND_FILES_TIMEOUT_MS),
+          ),
+        ]);
+        console.log(`[SessionRunner:${sessionId.slice(0, 8)}] rewindFiles result:`, JSON.stringify(result));
+        if (!result.canRewind) {
+          console.warn(
+            `[SessionRunner:${sessionId.slice(0, 8)}] rewindFiles cannot rewind: ${result.error}`,
+          );
+        }
+      } catch (err) {
+        console.error(`[SessionRunner:${sessionId.slice(0, 8)}] rewindFiles error:`, err);
+        // 文件回溯失败不阻断消息截断
+      }
+    } else if (!targetUserUuid) {
+      console.log(
+        `[SessionRunner:${sessionId.slice(0, 8)}] rewind: target user message has no sdkUuid, skipping rewindFiles`,
+      );
+    }
+
+    // 3. 中止当前 SDK session — 下次 sendMessage 会重建
+    this.abortSession();
+    if (this.sessionTerminationPromise) {
+      await this.sessionTerminationPromise;
+    }
+    this.shouldAbort = false;
+
+    // 4. 截断磁盘消息到目标之前
+    const truncated = SessionStore.truncateMessagesAfter(sessionId, userMessageId);
+    if (!truncated) return { success: false, error: '截断 JSONL 失败' };
+
+    // 5. 通知前端消息列表已变化（前端会重新加载 history）
+    broadcast('chat:messages-truncated', {
+      sessionId,
+      truncatedAtMessageId: userMessageId,
+    });
+
+    return {
+      success: true,
+      content: truncated.truncatedUserContent,
+      attachments: truncated.truncatedAttachments,
+    };
+  }
+
+  /**
+   * 从指定 assistant message 分叉出一条新 session。
+   * 源 session 不变；新 session 复制该点之前全部消息。
+   */
+  forkSession(assistantMessageId: string): {
+    success: boolean;
+    newSessionId?: string;
+    agentDir?: string;
+    title?: string;
+    error?: string;
+  } {
+    const sessionId = this.sessionId;
+    const messages = SessionStore.getSessionMessages(sessionId);
+    const target = messages.find(
+      (m) => m.id === assistantMessageId && m.role === 'assistant',
+    );
+    if (!target) return { success: false, error: 'Assistant 消息未找到' };
+    // sdkUuid 当前版本仅用于校验 — 真正的 SDK forkSession 调用留给下次对话
+    // 时 SessionRunner 自己拉起。这里仅做磁盘级消息复制 + 元数据克隆。
+    if (!target.sdkUuid) {
+      return { success: false, error: '该消息无 SDK UUID（旧数据不支持 Fork）' };
+    }
+    const cloned = SessionStore.cloneSession(sessionId, assistantMessageId);
+    if (!cloned) return { success: false, error: '克隆 session 失败' };
+    console.log(
+      `[SessionRunner:${sessionId.slice(0, 8)}] forked → ${cloned.newSessionId} at ${assistantMessageId} (sdkUuid=${target.sdkUuid})`,
+    );
+    return {
+      success: true,
+      newSessionId: cloned.newSessionId,
+      agentDir: cloned.agentDir,
+      title: cloned.title,
+    };
+  }
 }
 
 // ── 模块级单 Runner 管理（每个 Sidecar 只服务一个 Session）──
@@ -1626,4 +1983,92 @@ export function respondExitPlanMode(requestId: string, approved: boolean) {
 
 export function respondEnterPlanMode(requestId: string, approved: boolean) {
   return runner?.respondEnterPlanMode(requestId, approved) ?? false;
+}
+
+// ── Memory Auto-Update helpers ──
+
+/**
+ * Strip YAML frontmatter from a markdown string.
+ * Returns the body after the closing --- delimiter.
+ */
+export function stripYamlFrontmatter(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('---')) return trimmed;
+  const endIdx = trimmed.indexOf('---', 3);
+  if (endIdx === -1) return trimmed;
+  return trimmed.slice(endIdx + 3).trim();
+}
+
+/**
+ * Wait for the current session to become idle.
+ * Module-level wrapper for SessionRunner.waitForIdle().
+ */
+export async function waitForSessionIdle(timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<boolean> {
+  if (!runner) return true; // No runner = already idle
+  return runner.waitForIdle(timeoutMs, pollIntervalMs);
+}
+
+/**
+ * Inject a user message into the current session with specified permission mode.
+ * Module-level wrapper for SessionRunner.enqueueUserMessage().
+ */
+export async function enqueueUserMessage(
+  text: string,
+  agentDir: string,
+  permissionMode: PermissionMode,
+  providerEnv?: ProviderEnv,
+  model?: string,
+  mcpEnabledServerIds?: string[],
+): Promise<{ ok: boolean; error?: string }> {
+  if (!runner || !currentSessionId) {
+    return { ok: false, error: 'No active session' };
+  }
+  return runner.enqueueUserMessage(text, agentDir, permissionMode, providerEnv, model, mcpEnabledServerIds);
+}
+
+// ── SOCKS5 → HTTP bridge ──────────────────────────────────────────────
+// Bun's fetch() only honors HTTP_PROXY (HTTP proxy protocol), not
+// socks5://. When Rust injects socks5:// (user chose SOCKS5 in Settings),
+// we start a local HTTP→SOCKS5 bridge and rewrite HTTP_PROXY to point at
+// the bridge. This lets the SDK subprocess and Bun's fetch transparently
+// route through the SOCKS5 proxy.
+
+const PROXY_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
+
+function applyProxyEnvVars(proxyUrl: string, noProxyVal: string): void {
+  process.env.HTTP_PROXY = proxyUrl;
+  process.env.HTTPS_PROXY = proxyUrl;
+  process.env.http_proxy = proxyUrl;
+  process.env.https_proxy = proxyUrl;
+  process.env.NO_PROXY = noProxyVal;
+  process.env.no_proxy = noProxyVal;
+  delete process.env.ALL_PROXY;
+  delete process.env.all_proxy;
+}
+
+/**
+ * Detect SOCKS5 env injected by Rust (`HTTP_PROXY=socks5://...`) and start
+ * a local HTTP-to-SOCKS5 bridge. The bridge rewrites HTTP_PROXY to
+ * http://127.0.0.1:<bridge-port> so Bun/Node's fetch() works.
+ *
+ * No-op if HTTP_PROXY isn't socks5://.
+ */
+export async function initSocksBridgeFromEnv(): Promise<void> {
+  const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY || '';
+  if (!proxyUrl.startsWith('socks5://')) return;
+
+  try {
+    const url = new URL(proxyUrl);
+    const host = url.hostname || '127.0.0.1';
+    const port = parseInt(url.port) || 1080;
+
+    const bridgePort = await startSocksBridge(host, port);
+    const bridgeUrl = `http://127.0.0.1:${bridgePort}`;
+    applyProxyEnvVars(bridgeUrl, PROXY_NO_PROXY_VAL);
+    console.log(`[agent] SOCKS5 bridge initialized at startup: ${proxyUrl} → ${bridgeUrl}`);
+  } catch (err) {
+    console.error(`[agent] Failed to initialize SOCKS5 bridge from env: ${err instanceof Error ? err.message : err}`);
+    // Leave the original socks5:// URL in place — it will fail but at least
+    // error messages will surface the real cause.
+  }
 }

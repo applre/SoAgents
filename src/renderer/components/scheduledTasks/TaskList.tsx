@@ -51,6 +51,18 @@ export default function TaskList() {
     setDeletingTask(null);
   }, [deletingTask, deleteTask, loadTasks]);
 
+  const formatNextRun = useCallback((ms: number): string => {
+    const dt = new Date(ms);
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const timeStr = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    if (dt.toDateString() === now.toDateString()) return timeStr;
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (dt.toDateString() === tomorrow.toDateString()) return `明天 ${timeStr}`;
+    return `${pad(dt.getMonth() + 1)}/${pad(dt.getDate())} ${timeStr}`;
+  }, []);
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -62,7 +74,7 @@ export default function TaskList() {
   if (tasks.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4">
-        <p className="text-[15px]" style={{ color: 'var(--ink-tertiary)' }}>暂无定时任务</p>
+        <p className="text-[14px]" style={{ color: 'var(--ink-tertiary)' }}>暂无定时任务</p>
         <button
           onClick={() => setViewMode('create')}
           className="flex items-center gap-2 px-4 py-2 rounded-lg text-[14px] font-medium text-white transition-colors hover:opacity-90"
@@ -123,9 +135,17 @@ export default function TaskList() {
                     </span>
                   )}
                 </div>
-                <p className="text-[12px] mt-0.5" style={{ color: 'var(--ink-tertiary)' }}>
-                  {formatScheduleLabel(task.schedule)}
-                </p>
+                <div className="flex items-center gap-2 text-[12px] mt-0.5" style={{ color: 'var(--ink-tertiary)' }}>
+                  <span>{task.workingDirectory.split('/').filter(Boolean).pop() ?? task.workingDirectory}</span>
+                  <span>·</span>
+                  <span>{formatScheduleLabel(task.schedule)}</span>
+                  {task.enabled && task.state.nextRunAtMs && (
+                    <>
+                      <span>·</span>
+                      <span>下次: {formatNextRun(task.state.nextRunAtMs)}</span>
+                    </>
+                  )}
+                </div>
               </div>
 
               {/* Toggle 开关 */}
@@ -135,8 +155,8 @@ export default function TaskList() {
                 style={{ background: task.enabled ? 'var(--accent)' : 'var(--border)' }}
               >
                 <span
-                  className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform shadow-sm"
-                  style={{ left: task.enabled ? 18 : 2 }}
+                  className="absolute top-0.5 w-4 h-4 rounded-full transition-transform shadow-sm"
+                  style={{ left: task.enabled ? 18 : 2, background: 'var(--paper)' }}
                 />
               </button>
 
@@ -157,7 +177,7 @@ export default function TaskList() {
                 {isMenuOpen && (
                   <div
                     className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-xl border py-1"
-                    style={{ background: 'white', borderColor: 'var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
+                    style={{ background: 'var(--paper)', borderColor: 'var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
                   >
                     <button
                       onClick={(e) => { e.stopPropagation(); handleEdit(task); }}
@@ -177,7 +197,7 @@ export default function TaskList() {
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); setMenuOpenId(null); setDeletingTask(task); }}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-red-50 transition-colors"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-[var(--hover)] transition-colors"
                       style={{ color: 'var(--error)' }}
                     >
                       <Trash2 size={14} />

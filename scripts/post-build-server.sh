@@ -36,6 +36,8 @@ fi
 echo -e "${GREEN}  ✓ BUN_EXECUTABLE 引用存在${NC}"
 
 # ── 2. 复制 SDK 依赖 ─────────────────────────────────────────────
+# 注意：SDK 0.2.110+ 不再在顶层提供 *.wasm 文件（tree-sitter 等被 inline 到 sdk.mjs
+# 或移入 vendor/ 子目录）。vendor/ 仍包含平台二进制（ripgrep、audio-capture）。
 echo -e "  ${CYAN}复制 SDK 依赖...${NC}"
 SDK_SRC="node_modules/@anthropic-ai/claude-agent-sdk"
 SDK_DEST="src-tauri/resources/claude-agent-sdk"
@@ -43,7 +45,13 @@ rm -rf "${SDK_DEST}"
 mkdir -p "${SDK_DEST}"
 cp "${SDK_SRC}/cli.js" "${SDK_DEST}/"
 cp "${SDK_SRC}/sdk.mjs" "${SDK_DEST}/"
-cp "${SDK_SRC}"/*.wasm "${SDK_DEST}/"
+# 顶层 wasm（若存在，兼容旧 SDK）
+shopt -s nullglob
+wasm_files=("${SDK_SRC}"/*.wasm)
+if (( ${#wasm_files[@]} > 0 )); then
+    cp "${wasm_files[@]}" "${SDK_DEST}/"
+fi
+shopt -u nullglob
 cp -R "${SDK_SRC}/vendor" "${SDK_DEST}/"
 echo -e "${GREEN}  ✓ SDK 依赖已复制${NC}"
 

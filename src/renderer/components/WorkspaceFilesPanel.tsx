@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, AtSign, ExternalLink, Pencil, Trash2, Settings } from 'lucide-react';
+import { RefreshCw, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Eye, EyeOff, AtSign, ExternalLink, Pencil, Trash2, SlidersHorizontal, Puzzle, Terminal, Bot } from 'lucide-react';
 import { globalApiGetJson, globalApiPostJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import DiffViewer from './DiffViewer';
@@ -7,6 +7,9 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu';
 import RenameDialog from './RenameDialog';
 import ConfirmDialog from './ConfirmDialog';
 import WorkspaceConfigPanel from './WorkspaceConfigPanel';
+import type { SkillItem } from '../../shared/types/skill';
+import type { CommandItem } from '../../shared/types/command';
+import type { AgentItem } from '../../shared/types/agent';
 
 interface FileEntry {
   name: string;
@@ -28,6 +31,8 @@ interface Props {
   agentDir: string | null;
   onOpenFile?: (path: string) => void;
   onInsertReference?: (paths: string[]) => void;
+  autoOpenConfig?: boolean;
+  onAutoOpenConfigConsumed?: () => void;
 }
 
 // ── 变动文件辅助组件 ─────────────────────────────────────────────
@@ -269,7 +274,7 @@ function TreeNode({ entry, depth, expanded, childEntries, onToggleDir, onOpenFil
 }
 
 // ── 主组件 ─────────────────────────────────────────────────────
-export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertReference }: Props) {
+export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertReference, autoOpenConfig, onAutoOpenConfigConsumed }: Props) {
   const [rootFiles, setRootFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -280,6 +285,14 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
 
   const [activeTab, setActiveTab] = useState<'files' | 'changed'>('files');
   const [showAgentConfig, setShowAgentConfig] = useState(false);
+
+  // Auto-open config panel when triggered from sidebar
+  useEffect(() => {
+    if (autoOpenConfig) {
+      setShowAgentConfig(true);
+      onAutoOpenConfigConsumed?.();
+    }
+  }, [autoOpenConfig, onAutoOpenConfigConsumed]);
 
   // ── 变动文件 tab 状态 ──
   const [changedFiles, setChangedFiles] = useState<ChangedFileEntry[]>([]);
@@ -587,7 +600,39 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
     }
   }, [agentDir, refresh]);
 
+  // ── Agent 能力（Skills & Commands & Sub-Agents）──
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [commands, setCommands] = useState<CommandItem[]>([]);
+  const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [capExpanded, setCapExpanded] = useState(true);
+
+  useEffect(() => {
+    if (!agentDir) { setSkills([]); setCommands([]); setAgents([]); return; }
+    const controller = new AbortController();
+    const encoded = encodeURIComponent(agentDir);
+    Promise.all([
+      globalApiGetJson<SkillItem[]>(`/api/skills?agentDir=${encoded}`),
+      globalApiGetJson<CommandItem[]>(`/api/command-items?scope=all&agentDir=${encoded}`),
+      globalApiGetJson<AgentItem[]>(`/api/agents?scope=all&agentDir=${encoded}`),
+    ]).then(([s, c, a]) => {
+      if (controller.signal.aborted) return;
+      setSkills(s);
+      setCommands(c);
+      setAgents(a);
+    }).catch(() => {
+      if (!controller.signal.aborted) { setSkills([]); setCommands([]); setAgents([]); }
+    });
+    return () => controller.abort();
+  }, [agentDir]);
+
+  const enabledSkills = useMemo(() => skills.filter((s) => s.enabled), [skills]);
+  const enabledAgents = useMemo(() => agents.filter((a) => a.enabled), [agents]);
+  const capTotal = commands.length + enabledSkills.length + enabledAgents.length;
+
   const dirName = agentDir?.split('/').filter(Boolean).pop() ?? '工作区';
+  const shortPath = agentDir ? agentDir.replace(/^\/Users\/[^/]+/, '~') : '';
+  const fileCount = rootFiles.filter((f) => f.type === 'file').length;
+  const dirCount = rootFiles.filter((f) => f.type === 'dir').length;
 
   return (
     <div
@@ -598,144 +643,230 @@ export default function WorkspaceFilesPanel({ agentDir, onOpenFile, onInsertRefe
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      {/* 顶部标题：高度 48px，与 TopTabBar 对齐 */}
+      {/* ── Section 1: 标题区 ── */}
       <div
         className="flex items-center justify-between shrink-0 border-b border-[var(--border)] px-4"
         style={{ height: 48 }}
       >
-        <div className="min-w-0">
-          <p className="text-[14px] font-semibold text-[var(--ink)]">工作区文件</p>
-          <p className="text-[12px] text-[var(--ink-tertiary)] truncate">{dirName}</p>
+        <span className="text-[14px] font-semibold text-[var(--ink)]">工作区</span>
+        <button
+          onClick={() => setShowAgentConfig(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] text-[var(--ink-secondary)] hover:bg-[var(--hover)] transition-colors"
+        >
+          <SlidersHorizontal size={14} />
+          <span className="text-[13px] font-medium">Agent 设置</span>
+        </button>
+      </div>
+
+      {/* ── Section 2: 文件区 ── */}
+      <div className="flex-1 flex flex-col min-h-0">
+        {/* 工作区信息 */}
+        <div className="shrink-0 px-4 py-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[14px] font-semibold text-[var(--ink)] truncate">{dirName}</span>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => refresh()}
+                title="刷新"
+                className="p-1 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
+              >
+                <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+              </button>
+              <button
+                onClick={() => { setShowHidden((v) => !v); }}
+                title={showHidden ? '隐藏隐藏文件' : '显示隐藏文件'}
+                className={`p-1 rounded hover:bg-[var(--hover)] transition-colors ${
+                  showHidden ? 'text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+                }`}
+              >
+                {showHidden ? <Eye size={15} /> : <EyeOff size={15} />}
+              </button>
+              <button
+                onClick={handleOpenExternal}
+                title="在 Finder 中打开"
+                className="p-1 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
+              >
+                <FolderOpen size={15} />
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center justify-between mt-1">
+            <span className="text-[12px] text-[var(--ink-tertiary)] truncate">{shortPath}</span>
+            {rootFiles.length > 0 && (
+              <span className="text-[11px] text-[var(--ink-tertiary)] shrink-0 ml-2">
+                {fileCount} 文件 · {dirCount} 文件夹
+              </span>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-0.5 shrink-0">
+
+        {/* Tab 切换 */}
+        <div
+          className="flex items-center shrink-0 border-b border-[var(--border)] px-4"
+          style={{ height: 36 }}
+        >
           <button
-            onClick={() => { setShowHidden((v) => !v); }}
-            title={showHidden ? '隐藏隐藏文件' : '显示隐藏文件'}
-            className={`p-1.5 rounded hover:bg-[var(--hover)] transition-colors ${
-              showHidden ? 'text-[var(--accent)]' : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)]'
+            onClick={() => setActiveTab('files')}
+            className={`px-3 text-[13px] font-medium transition-colors ${
+              activeTab === 'files'
+                ? 'text-[var(--ink)] border-b-2 border-[var(--accent)]'
+                : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)] border-b-2 border-transparent'
             }`}
+            style={{ height: 36 }}
           >
-            {showHidden ? <Eye size={16} /> : <EyeOff size={16} />}
+            所有文件
           </button>
           <button
-            onClick={() => refresh()}
-            title="刷新"
-            className="p-1.5 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
+            onClick={() => setActiveTab('changed')}
+            className={`px-3 text-[13px] font-medium transition-colors flex items-center gap-1.5 ${
+              activeTab === 'changed'
+                ? 'text-[var(--ink)] border-b-2 border-[var(--accent)]'
+                : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)] border-b-2 border-transparent'
+            }`}
+            style={{ height: 36 }}
           >
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            变动文件
+            {changedFiles.length > 0 && (
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[var(--accent-light)] text-[var(--accent)] leading-none">
+                {changedFiles.length}
+              </span>
+            )}
           </button>
-          <button
-            onClick={handleOpenExternal}
-            title="在 Finder 中打开"
-            className="p-1.5 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
-          >
-            <FolderOpen size={16} />
-          </button>
-          <button
-            onClick={() => setShowAgentConfig(true)}
-            title="Agent 配置"
-            className="p-1.5 rounded hover:bg-[var(--hover)] transition-colors text-[var(--ink-tertiary)] hover:text-[var(--ink)]"
-          >
-            <Settings size={16} />
-          </button>
+        </div>
+
+        {/* 文件树内容 */}
+        <div className="flex-1 overflow-y-auto py-1">
+          {activeTab === 'changed' ? (
+            !agentDir ? (
+              <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">未选择工作区</p>
+            ) : isGitRepo === false ? (
+              <div className="px-4 py-6 text-center">
+                <p className="text-[13px] text-[var(--ink-tertiary)]">非 Git 仓库，无法追踪变更</p>
+                <p className="text-[11px] text-[var(--ink-tertiary)] mt-1">请在工作区中初始化 Git 仓库</p>
+              </div>
+            ) : changedLoading && changedFiles.length === 0 ? (
+              <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">检测变动中…</p>
+            ) : changedFiles.length === 0 ? (
+              <div className="px-4 py-6 text-center">
+                <p className="text-[13px] text-[var(--ink-tertiary)]">没有变动文件</p>
+                <p className="text-[11px] text-[var(--ink-tertiary)] mt-1">工作区内容与最近提交一致</p>
+              </div>
+            ) : (
+              changedTree.map((node) => (
+                <ChangedFileTreeNode
+                  key={node.fullPath}
+                  node={node}
+                  depth={0}
+                  expandedDirs={expandedChangedDirs}
+                  onToggleDir={handleToggleChangedDir}
+                  expandedDiffPath={expandedDiffPath}
+                  onToggleDiff={handleToggleFileDiff}
+                  diffLoading={diffLoading}
+                  diffCache={diffCache}
+                  agentDir={agentDir}
+                  onOpenFile={onOpenFile}
+                />
+              ))
+            )
+          ) : (
+            !agentDir ? (
+              <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">未选择工作区</p>
+            ) : loading && rootFiles.length === 0 ? (
+              <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">加载中…</p>
+            ) : rootFiles.length === 0 ? (
+              <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">空目录</p>
+            ) : (
+              rootFiles.map((f) => (
+                <TreeNode
+                  key={f.path}
+                  entry={f}
+                  depth={0}
+                  expanded={expandedDirs.has(f.path)}
+                  childEntries={dirChildren[f.path]}
+                  onToggleDir={handleToggleDir}
+                  onOpenFile={onOpenFile}
+                  expandedDirs={expandedDirs}
+                  dirChildren={dirChildren}
+                  onContextMenu={handleContextMenu}
+                />
+              ))
+            )
+          )}
         </div>
       </div>
 
-      {/* Tab 切换：高度 44px，与 SecondTabBar 对齐 */}
-      <div
-        className="flex items-center shrink-0 border-b border-[var(--border)] px-3"
-        style={{ height: 44 }}
-      >
-        <button
-          onClick={() => setActiveTab('files')}
-          className={`px-2 text-[13px] font-medium transition-colors ${
-            activeTab === 'files'
-              ? 'text-[var(--accent)] border-b-2 border-[var(--accent)]'
-              : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)] border-b-2 border-transparent'
-          }`}
-          style={{ height: 34 }}
-        >
-          所有文件
-        </button>
-        <button
-          onClick={() => setActiveTab('changed')}
-          className={`px-2 text-[13px] font-medium transition-colors ${
-            activeTab === 'changed'
-              ? 'text-[var(--accent)] border-b-2 border-[var(--accent)]'
-              : 'text-[var(--ink-tertiary)] hover:text-[var(--ink)] border-b-2 border-transparent'
-          }`}
-          style={{ height: 34 }}
-        >
-          变动文件
-          {changedFiles.length > 0 && (
-            <span className="ml-1 text-[11px] px-1 rounded-full bg-[var(--accent)] text-white leading-[16px]">
-              {changedFiles.length}
+      {/* ── Section 3: Agent 能力区 ── */}
+      {agentDir && (
+        <div className="shrink-0 border-t border-[var(--border)]">
+          <button
+            onClick={() => setCapExpanded((v) => !v)}
+            className="flex items-center gap-2 w-full px-4 h-10 hover:bg-[var(--hover)] transition-colors"
+          >
+            <span className="text-[var(--ink-tertiary)]">
+              {capExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </span>
+            <Bot size={14} className="text-[var(--accent)]" />
+            <span className="text-[13px] font-semibold text-[var(--ink)]">Agent 能力</span>
+            {capTotal > 0 && (
+              <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-[var(--accent-light)] text-[var(--accent)] leading-none">
+                {capTotal}
+              </span>
+            )}
+          </button>
+          {capExpanded && (
+            <div className="px-4 pb-3 flex flex-col gap-3 max-h-[280px] overflow-y-auto">
+              {/* Commands */}
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px] font-semibold text-[var(--ink-tertiary)] tracking-wide">
+                  COMMANDS ({commands.length})
+                </span>
+                {commands.length === 0 ? (
+                  <span className="text-[12px] text-[var(--ink-tertiary)] pl-2">暂无</span>
+                ) : (
+                  commands.map((cmd) => (
+                    <div key={cmd.fileName} className="flex items-center gap-1.5 py-1 pl-2 rounded hover:bg-[var(--hover)] transition-colors cursor-default">
+                      <Terminal size={14} className="shrink-0 text-[var(--ink-tertiary)]" />
+                      <span className="text-[13px] text-[var(--ink)] truncate">/{cmd.name}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+              {/* Skills */}
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px] font-semibold text-[var(--ink-tertiary)] tracking-wide">
+                  SKILLS ({enabledSkills.length})
+                </span>
+                {enabledSkills.length === 0 ? (
+                  <span className="text-[12px] text-[var(--ink-tertiary)] pl-2">暂无</span>
+                ) : (
+                  enabledSkills.map((skill) => (
+                    <div key={skill.name} className="flex items-center gap-1.5 py-1 pl-2 rounded hover:bg-[var(--hover)] transition-colors cursor-default">
+                      <Puzzle size={14} className="shrink-0 text-[var(--accent)]" />
+                      <span className="text-[13px] text-[var(--ink)] truncate">{skill.name}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+              {/* Agents */}
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px] font-semibold text-[var(--ink-tertiary)] tracking-wide">
+                  SUB-AGENTS ({enabledAgents.length})
+                </span>
+                {enabledAgents.length === 0 ? (
+                  <span className="text-[12px] text-[var(--ink-tertiary)] pl-2">暂无</span>
+                ) : (
+                  enabledAgents.map((agent) => (
+                    <div key={agent.folderName} className="flex items-center gap-1.5 py-1 pl-2 rounded hover:bg-[var(--hover)] transition-colors cursor-default">
+                      <Bot size={14} className="shrink-0 text-[var(--accent)]" />
+                      <span className="text-[13px] text-[var(--ink)] truncate">{agent.name}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           )}
-        </button>
-      </div>
-
-      {/* 内容区 */}
-      <div className="flex-1 overflow-y-auto py-1">
-        {activeTab === 'changed' ? (
-          /* ── 变动文件 tab ── */
-          !agentDir ? (
-            <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">未选择工作区</p>
-          ) : isGitRepo === false ? (
-            <div className="px-4 py-6 text-center">
-              <p className="text-[13px] text-[var(--ink-tertiary)]">非 Git 仓库，无法追踪变更</p>
-              <p className="text-[11px] text-[var(--ink-tertiary)] mt-1">请在工作区中初始化 Git 仓库</p>
-            </div>
-          ) : changedLoading && changedFiles.length === 0 ? (
-            <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">检测变动中…</p>
-          ) : changedFiles.length === 0 ? (
-            <div className="px-4 py-6 text-center">
-              <p className="text-[13px] text-[var(--ink-tertiary)]">没有变动文件</p>
-              <p className="text-[11px] text-[var(--ink-tertiary)] mt-1">工作区内容与最近提交一致</p>
-            </div>
-          ) : (
-            changedTree.map((node) => (
-              <ChangedFileTreeNode
-                key={node.fullPath}
-                node={node}
-                depth={0}
-                expandedDirs={expandedChangedDirs}
-                onToggleDir={handleToggleChangedDir}
-                expandedDiffPath={expandedDiffPath}
-                onToggleDiff={handleToggleFileDiff}
-                diffLoading={diffLoading}
-                diffCache={diffCache}
-                agentDir={agentDir}
-                onOpenFile={onOpenFile}
-              />
-            ))
-          )
-        ) : (
-          /* ── 所有文件 tab ── */
-          !agentDir ? (
-            <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">未选择工作区</p>
-          ) : loading && rootFiles.length === 0 ? (
-            <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">加载中…</p>
-          ) : rootFiles.length === 0 ? (
-            <p className="px-4 py-3 text-[13px] text-[var(--ink-tertiary)]">空目录</p>
-          ) : (
-            rootFiles.map((f) => (
-              <TreeNode
-                key={f.path}
-                entry={f}
-                depth={0}
-                expanded={expandedDirs.has(f.path)}
-                childEntries={dirChildren[f.path]}
-                onToggleDir={handleToggleDir}
-                onOpenFile={onOpenFile}
-                expandedDirs={expandedDirs}
-                dirChildren={dirChildren}
-                onContextMenu={handleContextMenu}
-              />
-            ))
-          )
-        )}
-      </div>
+        </div>
+      )}
 
       {/* 右键菜单 */}
       {contextMenu && (

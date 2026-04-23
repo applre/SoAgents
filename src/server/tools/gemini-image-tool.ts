@@ -1,6 +1,6 @@
 // Gemini Image Generation MCP Tool — AI image generation & multi-turn editing
 // Uses Shadow Session to maintain Gemini multi-turn context (contents[] + thought_signature)
-// In-process MCP server (same pattern as cron-tools / im-media)
+// In-process MCP server (same pattern as scheduled-task-tools / im-media)
 
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod/v4';

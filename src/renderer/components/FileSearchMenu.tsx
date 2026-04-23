@@ -35,6 +35,8 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const expandedDirRef = useRef<string | null>(null);
   const pendingExpandRef = useRef<string | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   // Build flat visible list (browse: root items + inline expanded children; search: flat results)
   const flatItems: FlatItem[] = useMemo(() => {
@@ -90,16 +92,16 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
     selectedRef.current?.scrollIntoView({ block: 'nearest' });
   }, [selectedIndex]);
 
-  // Click outside to close
+  // Click outside to close (use ref to avoid re-registering on every parent render)
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [onClose]);
+  }, []);
 
   const expandDir = useCallback(async (dirPath: string) => {
     if (expandedDirRef.current === dirPath) return;
@@ -284,9 +286,9 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
 
       {/* Bottom hint bar */}
       <div className="flex items-center gap-3 border-t border-[var(--border)] px-3 py-1.5 text-[10px] text-[var(--ink-tertiary)]">
-        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[9px]">↑↓</kbd> 导航</span>
-        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[9px]">Enter</kbd> 选中</span>
-        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[9px]">Esc</kbd> 关闭</span>
+        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[10px]">↑↓</kbd> 导航</span>
+        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[10px]">Enter</kbd> 选中</span>
+        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[10px]">Esc</kbd> 关闭</span>
       </div>
     </div>
   );

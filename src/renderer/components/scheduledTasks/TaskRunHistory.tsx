@@ -21,7 +21,7 @@ export default function TaskRunHistory() {
 
   return (
     <div className="flex-1 overflow-y-auto p-4">
-      <h3 className="text-[15px] font-semibold mb-3" style={{ color: 'var(--ink)' }}>
+      <h3 className="text-[16px] font-semibold mb-3" style={{ color: 'var(--ink)' }}>
         {selectedTask.name} - 运行历史
       </h3>
 

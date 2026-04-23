@@ -1,6 +1,6 @@
 [package]
 name = "soagents"
-version = "0.1.8"
+version = "0.1.10"
 description = "SoAgents - Desktop Claude Agent Client"
 edition = "2021"
 rust-version = "1.77.2"
@@ -34,3 +34,7 @@ cron = "0.13"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+prost = "0.13"
+futures = "0.3"

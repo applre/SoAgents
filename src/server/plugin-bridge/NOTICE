@@ -1,0 +1,35 @@
+SoAgents — plugin-bridge
+========================
+
+This directory contains code ported from the MyAgents project
+(https://github.com/applre/MyAgents) under the Apache License 2.0.
+
+The sdk-shim/ subdirectory is the OpenClaw plugin-sdk shim — a set of
+function stubs and hand-written runtime helpers that SoAgents installs
+into each OpenClaw plugin's `node_modules/openclaw/` in place of the
+full upstream package. This avoids pulling in ~400 transitive
+dependencies (larksuite-sdk, playwright-core, aws-sdk, etc.) while
+preserving the API surface that plugins `import` from.
+
+The shim was originally generated + maintained by MyAgents using
+`scripts/generate-sdk-shims.ts` against the OpenClaw source tree.
+
+Upstream: https://github.com/applre/MyAgents/tree/main/src/server/plugin-bridge
+
+----------------------------------------------------------------------
+
+   Copyright (c) 2026 MyAgents contributors
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+----------------------------------------------------------------------
+
+SoAgents modifications:
+  - Path adjustments (no MyAgents source modifications required; the
+    shim is data, not code).
+  - Future: SoAgents may diverge on specific handwritten shims if/when
+    upstream OpenClaw evolves and the two projects need different
+    behaviour.

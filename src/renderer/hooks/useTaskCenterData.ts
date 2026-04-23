@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { globalApiGetJson } from '../api/apiFetch';
 import { listScheduledTasks, listAllScheduledTaskRuns, onTaskUpdated, onTaskDeleted, onRunUpdated } from '../api/scheduledTaskApi';
 import type { SessionMetadata } from '../../shared/types/session';
@@ -21,16 +22,19 @@ export interface TaskCenterData {
   scheduledTasks: ScheduledTask[];
   cronSessionIds: Set<string>;
   sessionTagsMap: Map<string, SessionTag[]>;
+  activeSidecarSessionIds: Set<string>;
   isLoading: boolean;
   refresh: () => void;
   removeSession: (sessionId: string) => void;
+  markSessionViewed: (sessionId: string) => void;
 }
 
-export function useTaskCenterData(): TaskCenterData {
+export function useTaskCenterData(pollingEnabled = true): TaskCenterData {
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const [taskRuns, setTaskRuns] = useState<ScheduledTaskRun[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [activeSidecarSessionIds, setActiveSidecarSessionIds] = useState<Set<string>>(new Set());
   const isMountedRef = useRef(true);
 
   const fetchData = useCallback(async () => {
@@ -107,6 +111,33 @@ export function useTaskCenterData(): TaskCenterData {
     return () => { unlisteners.forEach(fn => fn()); };
   }, []);
 
+  // Poll active sidecars every 5 seconds (only when pollingEnabled)
+  // cmd_list_running_sidecars returns [sidecar_id, agent_dir, port].
+  // sidecar_id IS the session_id because cmd_start_session_sidecar passes
+  // session_id as the instance key to start_sidecar().
+  useEffect(() => {
+    if (!pollingEnabled) return;
+
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const fetchActiveSidecars = async () => {
+      try {
+        const running: [string, string | null, number][] = await invoke('cmd_list_running_sidecars');
+        const ids = new Set(running.map(([sidecarId]) => sidecarId));
+        setActiveSidecarSessionIds(ids);
+      } catch {
+        // Ignore errors — sidecars might not be available
+      }
+    };
+
+    void fetchActiveSidecars();
+    interval = setInterval(() => { void fetchActiveSidecars(); }, 5000);
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [pollingEnabled]);
+
   // 从运行记录中收集定时任务关联的 sessionId
   const cronSessionIds = useMemo(() => {
     const ids = new Set<string>();
@@ -131,13 +162,23 @@ export function useTaskCenterData(): TaskCenterData {
     setSessions(prev => prev.filter(s => s.id !== sessionId));
   }, []);
 
+  // 乐观更新：立即将 session 的 lastViewedAt 设为当前时间，消除 Approval 蓝点
+  const markSessionViewed = useCallback((sessionId: string) => {
+    const now = new Date().toISOString();
+    setSessions(prev =>
+      prev.map(s => (s.id === sessionId ? { ...s, lastViewedAt: now } : s))
+    );
+  }, []);
+
   return {
     sessions,
     scheduledTasks,
     cronSessionIds,
     sessionTagsMap,
+    activeSidecarSessionIds,
     isLoading,
     refresh,
     removeSession,
+    markSessionViewed,
   };
 }

@@ -1,0 +1,1370 @@
+// IM Bot integration module
+// Manages IM channel lifecycle, routing messages to AI Sidecars.
+
+pub mod adapter;
+pub mod buffer;
+pub mod feishu;
+pub mod dingtalk;
+pub mod health;
+pub mod router;
+pub mod telegram;
+pub mod types;
+mod util;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use futures_util::StreamExt;
+use serde_json::json;
+use tauri::AppHandle;
+use tokio::sync::{mpsc, watch, Mutex, RwLock, Semaphore};
+use tokio::task::JoinHandle;
+
+use crate::sidecar::ManagedSidecarState;
+use crate::{ulog_error, ulog_info, ulog_warn};
+
+use adapter::{ImAdapter, ImStreamAdapter};
+use buffer::MessageBuffer;
+use health::HealthManager;
+use router::{create_sidecar_stream_client, SessionRouter, GLOBAL_CONCURRENCY};
+use telegram::TelegramAdapter;
+use feishu::FeishuAdapter;
+use dingtalk::DingtalkAdapter;
+use types::{
+    GroupPermission, GroupPermissionStatus, ImBotStatusResponse, ImConfig, ImMessage,
+    ImPlatform, ImStatus, RouteError,
+};
+
+// ===== Channel Instance =====
+
+/// A running IM channel instance (one per Agent+Channel pair)
+pub struct ChannelInstance {
+    pub agent_id: String,
+    pub channel_id: String,
+    pub shutdown_tx: watch::Sender<bool>,
+    pub health: Arc<HealthManager>,
+    pub router: Arc<Mutex<SessionRouter>>,
+    pub buffer: Arc<Mutex<MessageBuffer>>,
+    pub started_at: Instant,
+    pub listen_handle: JoinHandle<()>,
+    pub processing_handle: JoinHandle<()>,
+    pub idle_handle: JoinHandle<()>,
+    pub health_handle: JoinHandle<()>,
+    pub config: ImConfig,
+    /// Shared mutable whitelist
+    pub allowed_users: Arc<RwLock<Vec<String>>>,
+    /// Runtime group permissions (shared with adapter for live updates)
+    pub group_permissions: Arc<RwLock<Vec<GroupPermission>>>,
+}
+
+// ===== IM Manager =====
+
+pub struct ImManager {
+    channels: HashMap<String, ChannelInstance>,
+    concurrency_semaphore: Arc<Semaphore>,
+}
+
+fn channel_key(agent_id: &str, channel_id: &str) -> String {
+    format!("{}:{}", agent_id, channel_id)
+}
+
+pub type ImManagerState = Arc<Mutex<ImManager>>;
+
+impl ImManager {
+    pub fn new() -> Self {
+        Self {
+            channels: HashMap::new(),
+            concurrency_semaphore: Arc::new(Semaphore::new(GLOBAL_CONCURRENCY)),
+        }
+    }
+
+    pub async fn start_channel(
+        &mut self,
+        app: AppHandle,
+        sidecar_manager: ManagedSidecarState,
+        config: ImConfig,
+    ) -> Result<(), String> {
+        let key = channel_key(&config.agent_id, &config.channel_id);
+
+        if self.channels.contains_key(&key) {
+            ulog_info!("[im] Channel {} already running, restarting...", key);
+            self.stop_channel(&config.agent_id, &config.channel_id)
+                .await?;
+        }
+
+        ulog_info!(
+            "[im] Starting channel {} (platform={}, workspace={})",
+            key,
+            config.platform,
+            config.workspace_path
+        );
+
+        let health_path =
+            health::agent_channel_health_path(&config.agent_id, &config.channel_id);
+        let health = Arc::new(HealthManager::new(health_path));
+        health.set_status(ImStatus::Connecting).await;
+
+        let buffer_path =
+            health::agent_channel_buffer_path(&config.agent_id, &config.channel_id);
+        let buffer = Arc::new(Mutex::new(MessageBuffer::load_from_disk(&buffer_path)));
+
+        let default_workspace = std::path::PathBuf::from(&config.workspace_path);
+        let mut router_inner =
+            SessionRouter::new(default_workspace, config.agent_id.clone());
+
+        let prev_sessions = health.get_state().await.active_sessions;
+        router_inner.restore_sessions(&prev_sessions);
+        let router = Arc::new(Mutex::new(router_inner));
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let allowed_users = Arc::new(RwLock::new(config.allowed_users.clone()));
+
+        // Group permissions: start from persisted config, live-updated by adapter
+        let group_permissions: Arc<RwLock<Vec<GroupPermission>>> =
+            Arc::new(RwLock::new(config.group_permissions.clone()));
+
+        let (msg_tx, msg_rx) = mpsc::channel::<ImMessage>(256);
+
+        // Dedup path for Feishu/DingTalk
+        let dedup_path = dirs::home_dir().map(|h| {
+            h.join(".soagents")
+                .join("im")
+                .join(&config.agent_id)
+                .join(format!("{}.dedup.json", config.channel_id))
+        });
+
+        // Create platform adapter
+        let adapter: Arc<dyn ImStreamAdapter> = match config.platform {
+            ImPlatform::Telegram => Arc::new(TelegramAdapter::new(
+                &config,
+                msg_tx.clone(),
+                Arc::clone(&allowed_users),
+            )),
+            ImPlatform::Feishu => Arc::new(FeishuAdapter::new(
+                &config,
+                msg_tx.clone(),
+                Arc::clone(&allowed_users),
+                Arc::clone(&group_permissions),
+                dedup_path,
+            )),
+            ImPlatform::Dingtalk => Arc::new(DingtalkAdapter::new(
+                &config,
+                msg_tx.clone(),
+                Arc::clone(&allowed_users),
+                Arc::clone(&group_permissions),
+                dedup_path,
+            )),
+        };
+
+        // Verify bot connection
+        match adapter.verify_connection().await {
+            Ok(display_name) => {
+                ulog_info!("[im] Bot verified: {}", display_name);
+                let username = display_name
+                    .strip_prefix('@')
+                    .unwrap_or(&display_name)
+                    .to_string();
+                health.set_bot_username(username).await;
+                health.set_status(ImStatus::Online).await;
+            }
+            Err(e) => {
+                let err_msg = format!("Bot connection verification failed: {}", e);
+                ulog_error!("[im] {}", err_msg);
+                health.set_status(ImStatus::Error).await;
+                health.set_error(err_msg.clone()).await;
+                let _ = health.persist().await;
+                return Err(err_msg);
+            }
+        }
+
+        if let Err(e) = adapter.register_commands().await {
+            ulog_warn!("[im] Failed to register bot commands: {}", e);
+        }
+
+        let health_handle = Arc::clone(&health).start_persist_loop(shutdown_rx.clone());
+
+        let adapter_for_listen = Arc::clone(&adapter);
+        let listen_shutdown_rx = shutdown_rx.clone();
+        let listen_handle = tokio::spawn(async move {
+            let _ = adapter_for_listen.listen_loop(listen_shutdown_rx).await;
+        });
+
+        let processing_handle = spawn_message_processing_loop(
+            msg_rx,
+            shutdown_rx.clone(),
+            Arc::clone(&router),
+            Arc::clone(&buffer),
+            Arc::clone(&health),
+            adapter.clone(),
+            app.clone(),
+            sidecar_manager.clone(),
+            Arc::clone(&self.concurrency_semaphore),
+            config.clone(),
+        );
+
+        let idle_handle = spawn_idle_collection_loop(
+            shutdown_rx.clone(),
+            Arc::clone(&router),
+            sidecar_manager.clone(),
+        );
+
+        self.channels.insert(
+            key.clone(),
+            ChannelInstance {
+                agent_id: config.agent_id.clone(),
+                channel_id: config.channel_id.clone(),
+                shutdown_tx,
+                health,
+                router,
+                buffer,
+                started_at: Instant::now(),
+                listen_handle,
+                processing_handle,
+                idle_handle,
+                health_handle,
+                config,
+                allowed_users,
+                group_permissions,
+            },
+        );
+
+        ulog_info!("[im] Channel {} started successfully", key);
+        Ok(())
+    }
+
+    pub async fn stop_channel(
+        &mut self,
+        agent_id: &str,
+        channel_id: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = match self.channels.remove(&key) {
+            Some(inst) => inst,
+            None => return Err(format!("Channel {} not found", key)),
+        };
+
+        ulog_info!("[im] Stopping channel {}...", key);
+
+        let _ = instance.shutdown_tx.send(true);
+        instance.listen_handle.abort();
+
+        match tokio::time::timeout(Duration::from_secs(10), instance.processing_handle)
+            .await
+        {
+            Ok(_) => ulog_info!("[im] Processing loop for {} exited", key),
+            Err(_) => ulog_warn!("[im] Processing loop for {} timed out", key),
+        }
+
+        instance.idle_handle.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(2), instance.idle_handle).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), instance.health_handle).await;
+
+        if let Err(e) = instance.buffer.lock().await.save_to_disk() {
+            ulog_warn!("[im] Failed to persist buffer on shutdown: {}", e);
+        }
+
+        instance
+            .health
+            .set_active_sessions(instance.router.lock().await.get_active_sessions())
+            .await;
+        instance.health.set_status(ImStatus::Stopped).await;
+        let _ = instance.health.persist().await;
+
+        ulog_info!("[im] Channel {} stopped", key);
+        Ok(())
+    }
+
+    pub async fn stop_all(&mut self) {
+        let keys: Vec<String> = self.channels.keys().cloned().collect();
+        for key in keys {
+            if let Some(instance) = self.channels.remove(&key) {
+                ulog_info!("[im] Shutting down channel {}", key);
+                let _ = instance.shutdown_tx.send(true);
+                instance.listen_handle.abort();
+                instance.processing_handle.abort();
+                instance.idle_handle.abort();
+                instance.health_handle.abort();
+            }
+        }
+    }
+
+    pub async fn channel_status(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+    ) -> Result<ImBotStatusResponse, String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let health_state = instance.health.get_state().await;
+        let active_sessions = instance.router.lock().await.get_active_sessions();
+        let buffered = instance.buffer.lock().await.len();
+        let uptime = instance.started_at.elapsed().as_secs();
+        let group_perms = instance.group_permissions.read().await.clone();
+
+        Ok(ImBotStatusResponse {
+            bot_username: health_state.bot_username,
+            status: health_state.status,
+            uptime_seconds: uptime,
+            active_sessions,
+            error_message: health_state.error_message,
+            restart_count: health_state.restart_count,
+            buffered_messages: buffered,
+            group_permissions: group_perms,
+        })
+    }
+
+    pub async fn all_channels_status(&self) -> HashMap<String, ImBotStatusResponse> {
+        let mut result = HashMap::new();
+        for (key, instance) in &self.channels {
+            let health_state = instance.health.get_state().await;
+            let active_sessions = instance.router.lock().await.get_active_sessions();
+            let buffered = instance.buffer.lock().await.len();
+            let uptime = instance.started_at.elapsed().as_secs();
+            let group_perms = instance.group_permissions.read().await.clone();
+
+            result.insert(
+                key.clone(),
+                ImBotStatusResponse {
+                    bot_username: health_state.bot_username,
+                    status: health_state.status,
+                    uptime_seconds: uptime,
+                    active_sessions,
+                    error_message: health_state.error_message,
+                    restart_count: health_state.restart_count,
+                    buffered_messages: buffered,
+                    group_permissions: group_perms,
+                },
+            );
+        }
+        result
+    }
+
+    pub async fn update_channel_config(
+        &mut self,
+        agent_id: &str,
+        channel_id: &str,
+        config_json: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get_mut(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let patch: serde_json::Value = serde_json::from_str(config_json)
+            .map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+        if let Some(users) = patch.get("allowedUsers") {
+            if let Some(arr) = users.as_array() {
+                let new_users: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+                *instance.allowed_users.write().await = new_users;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn reset_session(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+        session_key: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let mut router = instance.router.lock().await;
+        router.reset_session(session_key).await;
+        Ok(())
+    }
+
+    // ── Group permission management ──────────────────────────────────────────
+
+    pub async fn approve_group(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+        group_id: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let mut perms = instance.group_permissions.write().await;
+        if let Some(p) = perms.iter_mut().find(|p| p.group_id == group_id) {
+            p.status = GroupPermissionStatus::Approved;
+            ulog_info!("[im] Approved group {} in channel {}", group_id, key);
+            Ok(())
+        } else {
+            Err(format!("Group {} not found in channel {}", group_id, key))
+        }
+    }
+
+    pub async fn reject_group(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+        group_id: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let mut perms = instance.group_permissions.write().await;
+        let before = perms.len();
+        perms.retain(|p| p.group_id != group_id);
+        if perms.len() < before {
+            ulog_info!("[im] Rejected group {} in channel {}", group_id, key);
+            Ok(())
+        } else {
+            Err(format!("Group {} not found in channel {}", group_id, key))
+        }
+    }
+
+    pub async fn remove_group(
+        &self,
+        agent_id: &str,
+        channel_id: &str,
+        group_id: &str,
+    ) -> Result<(), String> {
+        let key = channel_key(agent_id, channel_id);
+        let instance = self
+            .channels
+            .get(&key)
+            .ok_or_else(|| format!("Channel {} not found", key))?;
+
+        let mut perms = instance.group_permissions.write().await;
+        perms.retain(|p| p.group_id != group_id);
+        ulog_info!("[im] Removed group {} from channel {}", group_id, key);
+        Ok(())
+    }
+}
+
+pub fn signal_all_shutdown(im_state: &ImManagerState) {
+    if let Ok(manager) = im_state.try_lock() {
+        for (key, instance) in manager.channels.iter() {
+            log::info!("[im] Signaling shutdown for channel {}", key);
+            let _ = instance.shutdown_tx.send(true);
+            instance.listen_handle.abort();
+            instance.processing_handle.abort();
+            instance.idle_handle.abort();
+            instance.health_handle.abort();
+        }
+    }
+}
+
+// ===== Message Processing Loop =====
+
+fn spawn_message_processing_loop(
+    mut msg_rx: mpsc::Receiver<ImMessage>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    router: Arc<Mutex<SessionRouter>>,
+    buffer: Arc<Mutex<MessageBuffer>>,
+    health: Arc<HealthManager>,
+    adapter: Arc<dyn ImStreamAdapter>,
+    app: AppHandle,
+    sidecar_manager: ManagedSidecarState,
+    semaphore: Arc<Semaphore>,
+    config: ImConfig,
+) -> JoinHandle<()> {
+    let stream_client = create_sidecar_stream_client();
+    let provider_env: Option<serde_json::Value> = config
+        .provider_env_json
+        .as_ref()
+        .and_then(|json_str| serde_json::from_str(json_str).ok());
+
+    tokio::spawn(async move {
+        ulog_info!("[im] Message processing loop started");
+
+        loop {
+            let msg = tokio::select! {
+                Some(msg) = msg_rx.recv() => msg,
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        ulog_info!("[im] Processing loop shutdown signal received");
+                        break;
+                    }
+                    continue;
+                }
+            };
+
+            let session_key = {
+                let r = router.lock().await;
+                r.session_key(&msg)
+            };
+
+            let chat_id = msg.chat_id.clone();
+            let message_id = msg.message_id.clone();
+            let text = msg.text.trim().to_string();
+
+            // Bot command dispatch
+            if text == "/new" {
+                let _ = adapter.ack_processing(&chat_id, &message_id).await;
+                let result = router.lock().await.reset_session(&session_key).await;
+                let _ = adapter.ack_clear(&chat_id, &message_id).await;
+                match result {
+                    Some(new_id) => {
+                        let reply = format!(
+                            "New conversation started ({})",
+                            &new_id[..8.min(new_id.len())]
+                        );
+                        let _ = adapter.send_message(&chat_id, &reply).await;
+                    }
+                    None => {
+                        let _ = adapter
+                            .send_message(&chat_id, "Failed to reset session")
+                            .await;
+                    }
+                }
+                continue;
+            }
+
+            if text == "/start" {
+                let _ = adapter
+                    .send_message(
+                        &chat_id,
+                        "Hello! I'm a SoAgents Bot.\n\n\
+                         Commands:\n\
+                         /new - Start a new conversation\n\
+                         /start - Show this message\n\n\
+                         Send a message to start chatting.",
+                    )
+                    .await;
+                continue;
+            }
+
+            ulog_info!(
+                "[im] Routing message from {} to Sidecar (session_key={}, {} chars)",
+                msg.sender_name.as_deref().unwrap_or("?"),
+                session_key,
+                text.len(),
+            );
+
+            let task_router = Arc::clone(&router);
+            let task_adapter = Arc::clone(&adapter);
+            let task_app = app.clone();
+            let task_manager = Arc::clone(&sidecar_manager);
+            let task_buffer = Arc::clone(&buffer);
+            let task_health = Arc::clone(&health);
+            let task_sem = Arc::clone(&semaphore);
+            let task_stream_client = stream_client.clone();
+            let task_config = config.clone();
+            let task_provider_env = provider_env.clone();
+
+            tokio::spawn(async move {
+                let _permit = match task_sem.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+
+                let _ = task_adapter.ack_processing(&chat_id, &message_id).await;
+                let _ = task_adapter.send_typing(&chat_id).await;
+
+                let (port, is_new_sidecar) = match task_router
+                    .lock()
+                    .await
+                    .ensure_sidecar(
+                        &session_key,
+                        &task_app,
+                        &task_manager,
+                        &task_config,
+                    )
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(e) => {
+                        let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
+                        let err_msg = format!("Failed to start Sidecar: {}", e);
+                        ulog_error!("[im] {}", err_msg);
+                        if matches!(e, RouteError::Unavailable(_)) {
+                            task_buffer.lock().await.push(&msg);
+                        }
+                        let _ = task_adapter
+                            .send_message(&chat_id, &format!("Error: {}", err_msg))
+                            .await;
+                        return;
+                    }
+                };
+
+                if is_new_sidecar {
+                    let router_guard = task_router.lock().await;
+                    router_guard
+                        .sync_ai_config(
+                            port,
+                            task_config.model.as_deref(),
+                            task_config.mcp_servers_json.as_deref(),
+                            task_provider_env.as_ref(),
+                        )
+                        .await;
+                    router_guard
+                        .sync_permission_mode(port, &task_config.permission_mode)
+                        .await;
+                }
+
+                let source = format!(
+                    "{}_{}",
+                    msg.platform,
+                    match msg.source_type {
+                        types::ImSourceType::Private => "private",
+                        types::ImSourceType::Group => "group",
+                    }
+                );
+
+                // Replay buffered messages for this session
+                if is_new_sidecar {
+                    let mut replay_count = 0u32;
+                    loop {
+                        let buffered =
+                            task_buffer.lock().await.pop_for_session(&session_key);
+                        let bm = match buffered {
+                            Some(bm) => bm,
+                            None => break,
+                        };
+                        replay_count += 1;
+                        let replay_body = json!({
+                            "message": bm.text,
+                            "agentDir": task_config.workspace_path,
+                            "permissionMode": task_config.permission_mode,
+                            "sessionId": task_router.lock().await.get_session_id(&session_key),
+                            "metadata": {
+                                "source": source,
+                                "sourceId": bm.sender_id,
+                                "senderName": bm.sender_name,
+                            },
+                        });
+                        let replay_url =
+                            format!("http://127.0.0.1:{}/api/im/chat", port);
+                        match task_stream_client
+                            .post(&replay_url)
+                            .json(&replay_body)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) if resp.status().is_success() => {
+                                if let Err(e) = consume_sse_stream(
+                                    resp,
+                                    task_adapter.as_ref(),
+                                    &bm.chat_id,
+                                )
+                                .await
+                                {
+                                    ulog_warn!(
+                                        "[im] Buffer replay stream error: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            Ok(resp) => {
+                                ulog_warn!(
+                                    "[im] Buffer replay HTTP {}",
+                                    resp.status()
+                                );
+                            }
+                            Err(e) => {
+                                ulog_warn!(
+                                    "[im] Buffer replay request failed: {}",
+                                    e
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    if replay_count > 0 {
+                        ulog_info!(
+                            "[im] Replayed {} buffered message(s) for {}",
+                            replay_count,
+                            session_key
+                        );
+                        if let Err(e) = task_buffer.lock().await.save_to_disk() {
+                            ulog_warn!(
+                                "[im] Failed to persist buffer after replay: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                let peer_session_id =
+                    task_router.lock().await.get_session_id(&session_key);
+
+                let mut body = json!({
+                    "message": text,
+                    "agentDir": task_config.workspace_path,
+                    "permissionMode": task_config.permission_mode,
+                    "sessionId": peer_session_id,
+                    "metadata": {
+                        "source": source,
+                        "sourceId": msg.sender_id,
+                        "senderName": msg.sender_name,
+                    },
+                });
+                if let Some(ref model) = task_config.model {
+                    body["model"] = json!(model);
+                }
+                if let Some(ref penv) = task_provider_env {
+                    body["providerEnv"] = penv.clone();
+                }
+
+                let url = format!("http://127.0.0.1:{}/api/im/chat", port);
+                ulog_info!("[im-stream] POST {} (SSE)", url);
+
+                let response = match task_stream_client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        ulog_error!("[im] SSE request failed: {}", e);
+                        let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
+                        task_buffer.lock().await.push(&msg);
+                        let _ = task_adapter
+                            .send_message(&chat_id, &format!("Connection error: {}", e))
+                            .await;
+                        return;
+                    }
+                };
+
+                if !response.status().is_success() {
+                    let status = response.status().as_u16();
+                    let error_text = response.text().await.unwrap_or_default();
+                    ulog_error!("[im] Sidecar returned {}: {}", status, error_text);
+                    let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
+                    let _ = task_adapter
+                        .send_message(
+                            &chat_id,
+                            &format!("Sidecar error ({}): {}", status, error_text),
+                        )
+                        .await;
+                    return;
+                }
+
+                let stream_result =
+                    consume_sse_stream(response, task_adapter.as_ref(), &chat_id)
+                        .await;
+
+                match stream_result {
+                    Ok(_) => {
+                        ulog_info!("[im] Stream complete for {}", session_key);
+                    }
+                    Err(e) => {
+                        ulog_error!("[im] Stream error for {}: {}", session_key, e);
+                        let _ = task_adapter
+                            .send_message(&chat_id, &format!("Error: {}", e))
+                            .await;
+                    }
+                }
+
+                let _ = task_adapter.ack_clear(&chat_id, &message_id).await;
+
+                task_router.lock().await.record_response(&session_key);
+                task_health
+                    .set_last_message_at(chrono::Utc::now().to_rfc3339())
+                    .await;
+                task_health
+                    .set_active_sessions(
+                        task_router.lock().await.get_active_sessions(),
+                    )
+                    .await;
+                task_health
+                    .set_buffered_messages(task_buffer.lock().await.len())
+                    .await;
+            });
+        }
+
+        ulog_info!("[im] Message processing loop exited");
+    })
+}
+
+// ===== SSE Stream Consumption =====
+
+async fn consume_sse_stream(
+    response: reqwest::Response,
+    adapter: &dyn ImStreamAdapter,
+    chat_id: &str,
+) -> Result<(), String> {
+    let mut byte_stream = response.bytes_stream();
+    let mut sse_buffer = String::new();
+
+    let mut block_text = String::new();
+    let mut draft_id: Option<String> = None;
+    let mut last_edit = Instant::now();
+    let mut any_text_sent = false;
+    let mut placeholder_id: Option<String> = None;
+    let mut first_content_sent = false;
+
+    while let Some(chunk_result) = byte_stream.next().await {
+        let chunk = chunk_result.map_err(|e| format!("SSE stream error: {}", e))?;
+        sse_buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(pos) = sse_buffer.find("\n\n") {
+            let event_str: String = sse_buffer.drain(..pos).collect();
+            sse_buffer.drain(..2);
+
+            if event_str.starts_with(':') {
+                continue;
+            }
+
+            let data = extract_sse_data(&event_str);
+            if data.is_empty() {
+                continue;
+            }
+
+            let json_val: serde_json::Value = match serde_json::from_str(&data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            match json_val["type"].as_str().unwrap_or("") {
+                "partial" => {
+                    if let Some(text) = json_val["text"].as_str() {
+                        block_text = text.to_string();
+
+                        if draft_id.is_none()
+                            && !block_text.trim().is_empty()
+                            && has_sentence_boundary(&block_text)
+                        {
+                            if let Some(pid) = placeholder_id.take() {
+                                draft_id = Some(pid);
+                                let display = format_draft_text(
+                                    &block_text,
+                                    adapter.max_message_length(),
+                                );
+                                let _ = adapter
+                                    .edit_message(
+                                        chat_id,
+                                        draft_id.as_ref().unwrap(),
+                                        &display,
+                                    )
+                                    .await;
+                                last_edit = Instant::now();
+                            } else {
+                                let display = format_draft_text(
+                                    &block_text,
+                                    adapter.max_message_length(),
+                                );
+                                match adapter
+                                    .send_message_returning_id(chat_id, &display)
+                                    .await
+                                {
+                                    Ok(Some(id)) => {
+                                        draft_id = Some(id);
+                                        last_edit = Instant::now();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            first_content_sent = true;
+                        }
+
+                        if let Some(ref did) = draft_id {
+                            let throttle = Duration::from_millis(
+                                adapter.preferred_throttle_ms(),
+                            );
+                            if last_edit.elapsed() >= throttle {
+                                last_edit = Instant::now();
+                                let display = format_draft_text(
+                                    &block_text,
+                                    adapter.max_message_length(),
+                                );
+                                let _ =
+                                    adapter.edit_message(chat_id, did, &display).await;
+                            }
+                        }
+                    }
+                }
+                "activity" => {
+                    if !first_content_sent {
+                        match adapter
+                            .send_message_returning_id(chat_id, "Generating...")
+                            .await
+                        {
+                            Ok(Some(id)) => {
+                                placeholder_id = Some(id);
+                            }
+                            _ => {}
+                        }
+                        first_content_sent = true;
+                    }
+                }
+                "block-end" => {
+                    let final_text = json_val["text"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| block_text.clone());
+
+                    if final_text.trim().is_empty() {
+                        if let Some(ref did) = draft_id {
+                            let _ = adapter.delete_message(chat_id, did).await;
+                        }
+                    } else {
+                        finalize_block(adapter, chat_id, draft_id.clone(), &final_text)
+                            .await;
+                        any_text_sent = true;
+                    }
+                    block_text.clear();
+                    draft_id = None;
+                }
+                "complete" => {
+                    if !block_text.trim().is_empty() {
+                        finalize_block(
+                            adapter,
+                            chat_id,
+                            draft_id.clone(),
+                            &block_text,
+                        )
+                        .await;
+                        any_text_sent = true;
+                    } else if let Some(ref did) = draft_id {
+                        let _ = adapter.delete_message(chat_id, did).await;
+                    }
+
+                    if !any_text_sent {
+                        if let Some(ref pid) = placeholder_id {
+                            if adapter
+                                .edit_message(chat_id, pid, "(No response)")
+                                .await
+                                .is_err()
+                            {
+                                let _ = adapter.delete_message(chat_id, pid).await;
+                                let _ =
+                                    adapter.send_message(chat_id, "(No response)").await;
+                            }
+                        } else {
+                            let _ = adapter.send_message(chat_id, "(No response)").await;
+                        }
+                    }
+                    return Ok(());
+                }
+                "error" => {
+                    let error =
+                        json_val["error"].as_str().unwrap_or("Unknown error");
+                    if let Some(ref did) = draft_id {
+                        let _ = adapter.delete_message(chat_id, did).await;
+                    }
+                    if let Some(ref pid) = placeholder_id {
+                        let _ = adapter.delete_message(chat_id, pid).await;
+                    }
+                    return Err(error.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !block_text.trim().is_empty() {
+        finalize_block(adapter, chat_id, draft_id.clone(), &block_text).await;
+        any_text_sent = true;
+    } else if let Some(ref did) = draft_id {
+        let _ = adapter.delete_message(chat_id, did).await;
+    }
+
+    if !any_text_sent {
+        if let Some(ref pid) = placeholder_id {
+            if adapter
+                .edit_message(chat_id, pid, "(No response)")
+                .await
+                .is_err()
+            {
+                let _ = adapter.delete_message(chat_id, pid).await;
+                let _ = adapter.send_message(chat_id, "(No response)").await;
+            }
+        } else {
+            let _ = adapter.send_message(chat_id, "(No response)").await;
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_sse_data(event_str: &str) -> String {
+    event_str
+        .lines()
+        .filter(|line| line.starts_with("data:"))
+        .map(|line| {
+            line.strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+                .unwrap_or("")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn finalize_block(
+    adapter: &dyn ImStreamAdapter,
+    chat_id: &str,
+    draft_id: Option<String>,
+    text: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    let is_draft = draft_id
+        .as_ref()
+        .map_or(false, |id| id.starts_with("draft:"));
+    if is_draft {
+        if let Some(ref did) = draft_id {
+            let _ = adapter.delete_message(chat_id, did).await;
+        }
+        let _ = adapter.send_message(chat_id, text).await;
+    } else if let Some(ref mid) = draft_id {
+        if let Err(e) = adapter.edit_message(chat_id, mid, text).await {
+            ulog_warn!("[im-stream] finalize edit failed: {}, sending new", e);
+            let _ = adapter.send_message(chat_id, text).await;
+        }
+    } else {
+        let _ = adapter.send_message(chat_id, text).await;
+    }
+}
+
+fn format_draft_text(text: &str, max_len: usize) -> String {
+    let limit = max_len.saturating_sub(10);
+    if text.len() > limit {
+        let mut truncate_at = limit.min(text.len());
+        while !text.is_char_boundary(truncate_at) && truncate_at > 0 {
+            truncate_at -= 1;
+        }
+        format!("{}...", &text[..truncate_at])
+    } else {
+        text.to_string()
+    }
+}
+
+fn has_sentence_boundary(text: &str) -> bool {
+    const MIN_FIRST_SEND_LEN: usize = 20;
+    if text.chars().count() >= MIN_FIRST_SEND_LEN {
+        return true;
+    }
+    let trimmed = text.trim_end();
+    trimmed.ends_with('\n')
+        || trimmed.ends_with('.')
+        || trimmed.ends_with('!')
+        || trimmed.ends_with('?')
+        || trimmed.ends_with(',')
+        || trimmed.ends_with(';')
+        || trimmed.ends_with(':')
+}
+
+// ===== Idle Session Collection Loop =====
+
+fn spawn_idle_collection_loop(
+    mut shutdown_rx: watch::Receiver<bool>,
+    router: Arc<Mutex<SessionRouter>>,
+    sidecar_manager: ManagedSidecarState,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            let collected = router.lock().await.collect_idle_sessions(&sidecar_manager);
+            if !collected.is_empty() {
+                ulog_info!(
+                    "[im] Collected {} idle session(s): {:?}",
+                    collected.len(),
+                    collected
+                );
+            }
+        }
+    })
+}
+
+// ===== Tauri Commands =====
+
+#[tauri::command]
+pub async fn cmd_start_agent_channel(
+    app: AppHandle,
+    im_state: tauri::State<'_, ImManagerState>,
+    sidecar_state: tauri::State<'_, crate::commands::SidecarState>,
+    agent_id: String,
+    channel_id: String,
+    agent_config: types::AgentConfigRust,
+    channel_config: types::ChannelConfigRust,
+) -> Result<(), String> {
+    let config = channel_config.to_im_config(&agent_config);
+    let _ = (agent_id, channel_id); // embedded in config
+    let sidecar_manager = (*sidecar_state).clone();
+    let mut manager = im_state.lock().await;
+    manager.start_channel(app, sidecar_manager, config).await
+}
+
+#[tauri::command]
+pub async fn cmd_stop_agent_channel(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+) -> Result<(), String> {
+    let mut manager = im_state.lock().await;
+    manager.stop_channel(&agent_id, &channel_id).await
+}
+
+#[tauri::command]
+pub async fn cmd_agent_channel_status(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+) -> Result<types::ImBotStatusResponse, String> {
+    let manager = im_state.lock().await;
+    manager.channel_status(&agent_id, &channel_id).await
+}
+
+#[tauri::command]
+pub async fn cmd_all_agent_channels_status(
+    im_state: tauri::State<'_, ImManagerState>,
+) -> Result<HashMap<String, types::ImBotStatusResponse>, String> {
+    let manager = im_state.lock().await;
+    Ok(manager.all_channels_status().await)
+}
+
+#[tauri::command]
+pub async fn cmd_update_agent_channel_config(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    config_json: String,
+) -> Result<(), String> {
+    let mut manager = im_state.lock().await;
+    manager
+        .update_channel_config(&agent_id, &channel_id, &config_json)
+        .await
+}
+
+#[tauri::command]
+pub async fn cmd_im_reset_session(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    session_key: String,
+) -> Result<(), String> {
+    let manager = im_state.lock().await;
+    manager
+        .reset_session(&agent_id, &channel_id, &session_key)
+        .await
+}
+
+#[tauri::command]
+pub async fn cmd_im_verify_token(
+    platform: String,
+    token: String,
+    proxy_url: Option<String>,
+) -> Result<String, String> {
+    match platform.as_str() {
+        "telegram" => {
+            let mut builder = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(5));
+
+            if let Some(ref url) = proxy_url {
+                let proxy = reqwest::Proxy::all(url)
+                    .map_err(|e| format!("Invalid proxy URL: {}", e))?;
+                builder = builder.proxy(proxy);
+            }
+
+            let client = builder
+                .build()
+                .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+            let url = format!("https://api.telegram.org/bot{}/getMe", token);
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("Connection failed: {}", e))?;
+
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Invalid response: {}", e))?;
+
+            if body["ok"].as_bool() == Some(true) {
+                let username = body["result"]["username"].as_str().unwrap_or("unknown");
+                Ok(format!("@{}", username))
+            } else {
+                let desc = body["description"].as_str().unwrap_or("Unknown error");
+                Err(format!("Token verification failed: {}", desc))
+            }
+        }
+        _ => Err(format!("Unsupported platform: {}", platform)),
+    }
+}
+
+#[tauri::command]
+pub async fn cmd_im_verify_feishu_credentials(
+    app_id: String,
+    app_secret: String,
+) -> Result<String, String> {
+    feishu::verify_feishu_credentials(&app_id, &app_secret).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_verify_dingtalk_credentials(
+    client_id: String,
+    client_secret: String,
+) -> Result<String, String> {
+    dingtalk::verify_dingtalk_credentials(&client_id, &client_secret).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_approve_group(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    let manager = im_state.lock().await;
+    manager.approve_group(&agent_id, &channel_id, &group_id).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_reject_group(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    let manager = im_state.lock().await;
+    manager.reject_group(&agent_id, &channel_id, &group_id).await
+}
+
+#[tauri::command]
+pub async fn cmd_im_remove_group(
+    im_state: tauri::State<'_, ImManagerState>,
+    agent_id: String,
+    channel_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    let manager = im_state.lock().await;
+    manager.remove_group(&agent_id, &channel_id, &group_id).await
+}
+
+// ===== Auto-Start on App Boot =====
+
+fn read_agent_configs_from_disk() -> Vec<types::AgentConfigRust> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let config_path = home.join(".soagents").join("config.json");
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    match serde_json::from_value::<Vec<types::AgentConfigRust>>(json["agents"].clone()) {
+        Ok(agents) => agents,
+        Err(e) => {
+            log::warn!("[im] Failed to parse agents from config: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+pub fn schedule_agent_auto_start(app_handle: tauri::AppHandle) {
+    use tauri::Manager;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+
+        let agents = read_agent_configs_from_disk();
+        if agents.is_empty() {
+            return;
+        }
+
+        let im_state: ImManagerState = (*app_handle.state::<ImManagerState>()).clone();
+        let sidecar_state: ManagedSidecarState =
+            (*app_handle.state::<crate::commands::SidecarState>()).clone();
+
+        for agent in &agents {
+            if !agent.enabled {
+                continue;
+            }
+            for channel in &agent.channels {
+                if !channel.enabled {
+                    continue;
+                }
+
+                // Check platform credentials
+                let has_credentials = match channel.channel_type {
+                    ImPlatform::Telegram => {
+                        channel.bot_token.as_ref().map_or(false, |t| !t.is_empty())
+                    }
+                    ImPlatform::Feishu => {
+                        channel
+                            .feishu_app_id
+                            .as_ref()
+                            .map_or(false, |t| !t.is_empty())
+                            && channel
+                                .feishu_app_secret
+                                .as_ref()
+                                .map_or(false, |t| !t.is_empty())
+                    }
+                    ImPlatform::Dingtalk => {
+                        channel
+                            .dingtalk_client_id
+                            .as_ref()
+                            .map_or(false, |t| !t.is_empty())
+                            && channel
+                                .dingtalk_client_secret
+                                .as_ref()
+                                .map_or(false, |t| !t.is_empty())
+                    }
+                };
+                if !has_credentials {
+                    continue;
+                }
+
+                let key = channel_key(&agent.id, &channel.id);
+
+                {
+                    let manager = im_state.lock().await;
+                    if manager.channels.contains_key(&key) {
+                        continue;
+                    }
+                }
+
+                let config = channel.to_im_config(agent);
+                ulog_info!(
+                    "[im] Auto-starting channel {} (agent={}, platform={})",
+                    key,
+                    agent.name,
+                    channel.channel_type
+                );
+
+                let sidecar_manager = sidecar_state.clone();
+                let mut manager = im_state.lock().await;
+                if let Err(e) = manager
+                    .start_channel(app_handle.clone(), sidecar_manager, config)
+                    .await
+                {
+                    ulog_error!("[im] Auto-start failed for channel {}: {}", key, e);
+                }
+            }
+        }
+    });
+}

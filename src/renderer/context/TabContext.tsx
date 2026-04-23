@@ -1,7 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { Message, ChatImage } from '../types/chat';
 import type { LogEntry } from '../../shared/types/log';
-import type { QueuedMessageInfo } from '../../shared/types/queue';
 import type { ProviderEnv } from '../../shared/types/config';
 
 // ── TabState: 完整状态（包含 messages 等频繁变化的字段）──
@@ -39,11 +38,23 @@ export interface TabState {
   respondEnterPlanMode: (requestId: string, approved: boolean) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
+  /** Rewind to a user message — truncate chat + try to roll back workspace files. */
+  rewindToUserMessage: (userMessageId: string) => Promise<{
+    success: boolean;
+    content?: string;
+    error?: string;
+  }>;
+  /** Fork a new session from an assistant message. Returns the new session info
+   *  for the caller to open in a new tab. */
+  forkFromAssistantMessage: (assistantMessageId: string) => Promise<{
+    success: boolean;
+    newSessionId?: string;
+    agentDir?: string;
+    title?: string;
+    error?: string;
+  }>;
   unifiedLogs: LogEntry[];
   clearUnifiedLogs: () => void;
-  queuedMessages: QueuedMessageInfo[];
-  cancelQueuedMessage: (queueId: string) => Promise<string | null>;
-  forceExecuteQueuedMessage: (queueId: string) => Promise<boolean>;
 }
 
 export const TabContext = createContext<TabState | null>(null);

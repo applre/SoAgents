@@ -232,7 +232,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, Props>(
     // ── Render: Edit mode ──
     if (isEditMode) {
       return (
-        <div className="flex flex-col h-full -m-6" style={{ height: 'calc(100% + 48px)' }}>
+        <div className="flex flex-col h-full">
           {/* Form fields */}
           <div className="flex flex-col gap-4 px-6 pt-6 pb-4 border-b border-[var(--border)]">
             {/* Name */}
@@ -325,7 +325,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, Props>(
     const info = skillInfo;
 
     return (
-      <div className="flex flex-col h-full -m-6" style={{ height: 'calc(100% + 48px)' }}>
+      <div className="flex flex-col h-full">
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-5 border-b border-[var(--border)]">
           <div className="flex flex-col gap-2 flex-1 min-w-0 mr-4">

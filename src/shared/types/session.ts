@@ -26,6 +26,8 @@ export interface SessionStats {
   totalCacheCreationTokens?: number;
 }
 
+export type SessionStatus = 'active' | 'approval' | 'inactive' | 'archived';
+
 export interface SessionMetadata {
   id: string;
   agentDir: string;
@@ -35,6 +37,11 @@ export interface SessionMetadata {
   sdkSessionId?: string;
   stats?: SessionStats;
   archived?: boolean;
+  manuallyRenamed?: boolean;
+  /** Message source: 'desktop' (default), 'telegram_private', 'telegram_group', etc. */
+  source?: string;
+  lastMessageRole?: 'user' | 'assistant';
+  lastViewedAt?: string;
 }
 
 export interface MessageAttachment {
@@ -53,6 +60,13 @@ export interface SessionMessage {
   usage?: MessageUsage;
   toolCount?: number;
   durationMs?: number;
+  /**
+   * SDK-assigned UUID for this message (from Claude Agent SDK).
+   * Required for Rewind (Query.rewindFiles) and Fork (forkSession option) —
+   * without it these actions are disabled for the message. Undefined for
+   * legacy messages persisted before the feature landed.
+   */
+  sdkUuid?: string;
 }
 
 // ── 统计 API 响应类型 ──

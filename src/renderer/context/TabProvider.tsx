@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { TabContext, TabApiContext, TabActiveContext, type TabState, type TabApiContextValue } from './TabContext';
 import { SseConnection } from '../api/SseConnection';
 import { startSessionSidecar, stopSessionSidecar, getSessionServerUrl, listRunningSidecars, cancelBackgroundCompletion, startBackgroundCompletion } from '../api/tauriClient';
-import { apiGetJson, apiPostJson } from '../api/apiFetch';
+import { apiGetJson, apiPostJson, apiPutJson } from '../api/apiFetch';
 import { isTauri } from '../utils/env';
 import type { Message, ContentBlock, ChatImage, TurnMeta } from '../types/chat';
 import type { LogEntry } from '../../shared/types/log';
@@ -54,7 +54,7 @@ interface Props {
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const IDLE_CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds
-const AUTO_TITLE_MIN_ROUNDS = 3;
+const AUTO_TITLE_MIN_ROUNDS = 1;
 
 interface TitleRound { user: string; assistant: string }
 
@@ -118,7 +118,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   const [sidecarReady, setSidecarReady] = useState(false);
   const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
+  const [, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
   const queuedMessagesRef = useRef<QueuedMessageInfo[]>([]);
   // Track queueIds that have already started (queue:started arrived before .then() replaced opt-)
   const startedQueueIdsRef = useRef(new Set<string>());
@@ -444,10 +444,25 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         stopTimeoutRef.current = null;
       }
 
-      // 非活跃 tab 收到完成事件 → 标记未读
+      // 活跃 tab 完成助手回复 → 更新 lastViewedAt，避免任务中心显示 approval 点
+      if (isActiveRef.current) {
+        const sid = sessionIdRef.current;
+        const url = serverUrlRef.current;
+        if (sid && url) {
+          apiPutJson(url, `/chat/sessions/${sid}/viewed`, {}).catch(() => {});
+        }
+      }
+
+      // 非活跃 tab 收到完成事件 → 标记未读（保留旧字段兼容，UI 主要靠 lastMessageRole 计算）
       if (!isActiveRef.current) {
         onUnreadChangeRef.current?.(true);
       }
+
+      // Dispatch 全局事件 → 让 useSidebarSessions 立即刷新 session 列表，
+      // 保证左侧栏/任务中心/tab 栏的 approval 点实时出现，不等 10s 轮询
+      window.dispatchEvent(new CustomEvent('soagents:session-activity', {
+        detail: { sessionId: sessionIdRef.current }
+      }));
     });
 
     sse.on('chat:message-stopped', () => {
@@ -463,6 +478,41 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         clearTimeout(stopTimeoutRef.current);
         stopTimeoutRef.current = null;
       }
+    });
+
+    sse.on('chat:messages-truncated', (data) => {
+      // 后端 Rewind 成功：截断到 truncatedAtMessageId 之前
+      const payload = data as { truncatedAtMessageId?: string };
+      if (!payload.truncatedAtMessageId) return;
+      setHistoryMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === payload.truncatedAtMessageId);
+        return idx >= 0 ? prev.slice(0, idx) : prev;
+      });
+      updateStreamingMessage(null);
+      isStreamingRef.current = false;
+    });
+
+    sse.on('chat:message-sdk-uuid', (data) => {
+      // SDK 回传了某条消息的 UUID（user 在 SDK 消费时回来、assistant 在 turn
+      // 结束时回来）。写入对应 Message.sdkUuid 后，前端 Message.tsx 才能启用
+      // Rewind / Fork 按钮（两者都需要 sdkUuid 才能在后端调 SDK 对应 API）。
+      const payload = data as { messageId?: string; sdkUuid?: string };
+      if (!payload.messageId || !payload.sdkUuid) return;
+      const { messageId, sdkUuid } = payload;
+      // Streaming 中的 assistant 消息还没 moveStreamingToHistory → 更新 streamingMessage
+      updateStreamingMessage((prev) => {
+        if (prev && prev.id === messageId) return { ...prev, sdkUuid };
+        return prev;
+      });
+      // 已完成的历史消息 → 更新 historyMessages
+      setHistoryMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === messageId);
+        if (idx < 0) return prev;
+        if (prev[idx].sdkUuid === sdkUuid) return prev;
+        const next = [...prev];
+        next[idx] = { ...next[idx], sdkUuid };
+        return next;
+      });
     });
 
     sse.on('chat:message-error', () => {
@@ -496,17 +546,24 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     });
 
     sse.on('queue:started', (data) => {
-      const evt = data as { queueId: string; text: string };
+      const evt = data as { queueId: string; text?: string; userMessage?: { id: string; content: string; attachments?: unknown[] }; midTurnBreak?: boolean };
       if (!evt.queueId) return;
       // Track started IDs to prevent .then() from re-adding
       startedQueueIdsRef.current.add(evt.queueId);
       // Remove both real queueId and any opt- entry
       queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== evt.queueId && !q.queueId.startsWith('opt-'));
       setQueuedMessages(queuedMessagesRef.current);
+
+      // Mid-turn break: finalize current streaming message into history first
+      if (evt.midTurnBreak) {
+        moveStreamingToHistory();
+      }
+
+      const displayText = evt.userMessage?.content ?? evt.text ?? '';
       const userMsg: Message = {
-        id: crypto.randomUUID(),
+        id: evt.userMessage?.id ?? crypto.randomUUID(),
         role: 'user',
-        blocks: [{ type: 'text', text: evt.text }],
+        blocks: [{ type: 'text', text: displayText }],
         createdAt: Date.now(),
       };
       setHistoryMessages((prev) => [...prev, userMsg]);
@@ -693,7 +750,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   useEffect(() => {
     if (!sessionId) return;
     const unlisteners: Array<() => void> = [];
-    listen<{ sessionId: string; workingDirectory: string }>('cron:session-started', (event) => {
+    listen<{ sessionId: string; workingDirectory: string }>('scheduled-task:session-started', (event) => {
       if (event.payload.sessionId !== sessionId) return;
       // 发现并连接定时任务的 sidecar
       (async () => {
@@ -716,7 +773,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
         } catch { /* sidecar may not be ready yet */ }
       })();
     }).then(fn => unlisteners.push(fn));
-    listen<{ sessionId: string; workingDirectory: string }>('cron:session-finished', (event) => {
+    listen<{ sessionId: string; workingDirectory: string }>('scheduled-task:session-finished', (event) => {
       if (event.payload.sessionId !== sessionId) return;
       isRunningRef.current = false;
       setIsRunning(false);
@@ -752,11 +809,15 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   }, [isRunning, sessionId]);
 
   // ── 空闲回收 ──
+  // 有 pending 权限请求 / 问题 / plan mode 时不回收：否则用户看到的 modal 按钮
+  // 会因 sidecar 已死而点击无响应，整个 UI 卡住
   useEffect(() => {
     const interval = setInterval(() => {
       if (!sessionIdRef.current) return;
       if (isRunningRef.current) return;
       if (!serverUrlRef.current) return;
+      // Pending 请求尚未被用户处理 → 保留 sidecar
+      if (pendingPermission || pendingQuestion || pendingExitPlanMode || pendingEnterPlanMode) return;
       const idle = Date.now() - lastActivityRef.current;
       if (idle > IDLE_TIMEOUT_MS) {
         console.log(`[TabProvider] Reclaiming idle sidecar for session ${sessionIdRef.current.slice(0, 8)}`);
@@ -764,7 +825,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       }
     }, IDLE_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [stopSidecarCleanup]);
+  }, [stopSidecarCleanup, pendingPermission, pendingQuestion, pendingExitPlanMode, pendingEnterPlanMode]);
 
   const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]): Promise<boolean> => {
     let currentSessionId = sessionIdRef.current;
@@ -1040,24 +1101,88 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
     [getGlobalUrl]
   );
 
-  const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
-    const url = serverUrlRef.current;
-    if (!url) return null;
-    const resp = await apiPostJson<{ ok: boolean; text?: string }>(url, '/chat/queue/cancel', { queueId });
-    if (resp.ok) {
-      queuedMessagesRef.current = queuedMessagesRef.current.filter((q) => q.queueId !== queueId);
-      setQueuedMessages(queuedMessagesRef.current);
-      return resp.text ?? null;
-    }
-    return null;
-  }, []);
 
-  const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
-    const url = serverUrlRef.current;
-    if (!url) return false;
-    const resp = await apiPostJson<{ ok: boolean }>(url, '/chat/queue/force', { queueId });
-    return resp.ok;
-  }, []);
+  // ── Message Actions: Rewind / Retry / Fork ────────────────────────
+  //
+  // Rewind：截断消息到 userMessageId 之前，尝试回滚工作区文件
+  // Retry：找到前最近 user message，Rewind + 自动重发
+  // Fork：从 assistantMessageId 克隆新 session → 由父组件决定如何开新 Tab
+  //
+  // 三个 action 都是"单向"操作：乐观截断/创建后调后端，失败只给 toast 不回滚
+  // （避免引入复杂的快照机制；后端失败时消息和文件系统已不一致，用户应手动修复）
+
+  const rewindToUserMessage = useCallback(async (userMessageId: string): Promise<{
+    success: boolean;
+    content?: string;
+    error?: string;
+  }> => {
+    const sid = sessionIdRef.current;
+    if (!sid) {
+      console.warn('[rewind] no sessionId yet');
+      return { success: false, error: '当前对话还没有 sessionId' };
+    }
+    // 懒启动 sidecar — 老对话的 tab 没 sendMessage 过时 serverUrlRef 为 null。
+    let url: string;
+    try {
+      url = await ensureSessionSidecar(sid);
+    } catch (err) {
+      console.error('[rewind] ensureSessionSidecar failed', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    try {
+      const result = await apiPostJson<{
+        success: boolean;
+        content?: string;
+        error?: string;
+      }>(url, '/chat/rewind', { userMessageId, sessionId: sid });
+      if (result.success) {
+        // 乐观截断前端消息列表（chat:messages-truncated SSE 也会触发，这是兜底）
+        setHistoryMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === userMessageId);
+          return idx >= 0 ? prev.slice(0, idx) : prev;
+        });
+      } else {
+        console.error('[rewind] backend returned failure:', result.error);
+      }
+      return result;
+    } catch (err) {
+      console.error('[rewind] network error', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }, [ensureSessionSidecar]);
+
+  const forkFromAssistantMessage = useCallback(async (assistantMessageId: string): Promise<{
+    success: boolean;
+    newSessionId?: string;
+    agentDir?: string;
+    title?: string;
+    error?: string;
+  }> => {
+    const sid = sessionIdRef.current;
+    if (!sid) {
+      console.warn('[fork] no sessionId yet');
+      return { success: false, error: '当前对话还没有 sessionId' };
+    }
+    let url: string;
+    try {
+      url = await ensureSessionSidecar(sid);
+    } catch (err) {
+      console.error('[fork] ensureSessionSidecar failed', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    try {
+      return await apiPostJson<{
+        success: boolean;
+        newSessionId?: string;
+        agentDir?: string;
+        title?: string;
+        error?: string;
+      }>(url, '/sessions/fork', { assistantMessageId, sessionId: sid });
+    } catch (err) {
+      console.error('[fork] network error', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }, [ensureSessionSidecar]);
 
   const respondPermission = useCallback(async (toolUseId: string, decision: 'deny' | 'allow_once' | 'always_allow') => {
     const url = serverUrlRef.current;
@@ -1119,13 +1244,12 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       respondEnterPlanMode,
       deleteSession,
       updateSessionTitle,
+      rewindToUserMessage,
+      forkFromAssistantMessage,
       unifiedLogs,
       clearUnifiedLogs,
-      queuedMessages,
-      cancelQueuedMessage,
-      forceExecuteQueuedMessage,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, deleteSession, updateSessionTitle, unifiedLogs, clearUnifiedLogs, queuedMessages, cancelQueuedMessage, forceExecuteQueuedMessage]
+    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, deleteSession, updateSessionTitle, rewindToUserMessage, forkFromAssistantMessage, unifiedLogs, clearUnifiedLogs]
   );
 
   return (

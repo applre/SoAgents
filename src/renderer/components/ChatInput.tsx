@@ -1,10 +1,8 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Paperclip, Puzzle, Wrench, ChevronDown, ChevronLeft, Send, Square, FileText, X, Image as ImageIcon, Lock, Check, Sparkles, ShieldCheck, Shield, Zap, Search } from 'lucide-react';
-import type { QueuedMessageInfo } from '../../shared/types/queue';
-import QueuedMessagesPanel from './QueuedMessagesPanel';
 import type { LucideIcon } from 'lucide-react';
-import SlashCommandMenu, { type CommandItem } from './SlashCommandMenu';
+import SlashCommandMenu, { filterSlashCommands, type CommandItem } from './SlashCommandMenu';
 import FileSearchMenu, { type FileSearchResult } from './FileSearchMenu';
 import { globalApiGetJson } from '../api/apiFetch';
 import { fetchMcpServers, pushEffectiveMcpServers } from '../services/mcpService';
@@ -15,9 +13,11 @@ import type { PermissionMode } from '../../shared/types/permission';
 import type { ModelEntity, Provider, ProviderEnv } from '../../shared/types/config';
 import { getEffectiveModelAliases } from '../../shared/providers';
 import type { ChatImage } from '../types/chat';
+import type { SkillItem } from '../../shared/types/skill';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { isTauri } from '../utils/env';
 import { formatSize } from '../utils/formatSize';
+import { Tag } from './Tag';
 
 const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string; Icon: LucideIcon; color: string; recommended?: boolean }[] = [
   { value: 'plan',              label: '规划模式', desc: 'Agent 仅研究信息并与你确认规划',       Icon: Shield,      color: '#3b82f6' },
@@ -39,9 +39,6 @@ interface Props {
   onInjectConsumed?: () => void;
   injectRefText?: string | null;
   onRefTextConsumed?: () => void;
-  queuedMessages?: QueuedMessageInfo[];
-  onCancelQueued?: (queueId: string) => Promise<string | null>;
-  onForceExecuteQueued?: (queueId: string) => Promise<boolean>;
 }
 
 interface MCPServerItem {
@@ -60,9 +57,7 @@ interface AttachedFile {
   base64?: string; // 图片的 base64 数据
 }
 
-const MAX_FRONTEND_QUEUE = 5;
-
-export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed, queuedMessages = [], onCancelQueued, onForceExecuteQueued }: Props) {
+export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectText, onInjectConsumed, injectRefText, onRefTextConsumed }: Props) {
   const { config, allProviders, currentProvider, updateConfig, isLoading: configLoading, workspaces, updateWorkspaceConfig } = useConfig();
   const { apiGet, hasMessages } = useTabApi();
   const isActive = useTabActive();
@@ -83,7 +78,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   const [showSlash, setShowSlash] = useState(false);
   const [slashPosition, setSlashPosition] = useState<number | null>(null);
   const [slashSearchQuery, setSlashSearchQuery] = useState('');
-  const [_selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   // @ 文件搜索
   const [showFileSearch, setShowFileSearch] = useState(false);
   const [atPosition, setAtPosition] = useState<number | null>(null);
@@ -98,6 +93,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     setPermissionMode(wsEntry?.permissionMode ?? 'acceptEdits');
   }
   const [skillCommands, setSkillCommands] = useState<CommandItem[]>([]);
+  const [allSkills, setAllSkills] = useState<SkillItem[]>([]);
   const [showSkillPopover, setShowSkillPopover] = useState(false);
   const [showMCPPopover, setShowMCPPopover] = useState(false);
   const [showModelPopover, setShowModelPopover] = useState(false);
@@ -183,6 +179,20 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       } catch { /* 静默失败 */ }
     };
     loadCommands();
+  }, [agentDir]);
+
+  // 加载所有 skills（全局 + 项目级）用于技能选择器
+  useEffect(() => {
+    const loadSkills = async () => {
+      try {
+        const path = agentDir
+          ? `/api/skills?agentDir=${encodeURIComponent(agentDir)}`
+          : '/api/skills';
+        const skills = await globalApiGetJson<SkillItem[]>(path);
+        setAllSkills(skills);
+      } catch { /* 静默失败 */ }
+    };
+    loadSkills();
   }, [agentDir]);
 
   // @ 文件搜索 API — 搜索逻辑已下沉到 FileSearchMenu 内部
@@ -345,11 +355,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     // skills 信息单独传递
     const skills = selectedSkills.length > 0 ? selectedSkills : undefined;
     if (!userText && !skills && imageFiles.length === 0) return;
-    // Allow sending while AI is responding (messages will be queued by backend)
-    if (isLoading && queuedMessages.length >= MAX_FRONTEND_QUEUE) return;
-    // Prevent double-fire
-    if (sendingRef.current) return;
-    sendingRef.current = true;
+    // Prevent double-fire — skip guard when already loading (queued send is intentional)
+    if (!isLoading && sendingRef.current) return;
+    if (!isLoading) sendingRef.current = true;
 
     try {
       // 提取图片的 mimeType 和纯 base64 数据
@@ -394,7 +402,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     } finally {
       sendingRef.current = false;
     }
-  }, [text, attachedFiles, selectedSkills, isLoading, queuedMessages.length, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
+  }, [text, attachedFiles, selectedSkills, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers, isLoading]);
 
   const handleFileSelect = useCallback((file: FileSearchResult) => {
     if (atPosition === null) return;
@@ -407,50 +415,26 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     textareaRef.current?.focus();
   }, [atPosition, text]);
 
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // @ 文件搜索键盘导航 — 由 FileSearchMenu 内部处理
-      if (showFileSearch) {
-        // 阻止 Enter 发送消息和其他键盘事件传播到 textarea
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setShowFileSearch(false);
-          setAtPosition(null);
-          return;
+  // 追加 skill 到 selectedSkills（不重复）— 先乐观更新 UI，再异步拉内容
+  const addSkill = useCallback((name: string) => {
+    setSelectedSkills((prev) => {
+      if (prev.some((s) => s.name === name)) return prev;
+      return [...prev, { name, content: `/${name}` }];
+    });
+    // 异步拉取完整 content，不阻塞 UI
+    const path = agentDir
+      ? `/api/skills/${name}?agentDir=${encodeURIComponent(agentDir)}`
+      : `/api/skills/${name}`;
+    globalApiGetJson<{ content: string }>(path)
+      .then((skill) => {
+        if (skill.content) {
+          setSelectedSkills((prev) =>
+            prev.map((s) => s.name === name ? { ...s, content: skill.content } : s)
+          );
         }
-        return;
-      }
-      // / 技能键盘导航（由 SlashCommandMenu 内部处理，这里仅阻止 Enter 发送）
-      if (showSlash) {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setShowSlash(false);
-          setSlashPosition(null);
-          return;
-        }
-        if (e.key === 'Enter' || e.key === 'ArrowDown' || e.key === 'ArrowUp') return; // 交给 SlashCommandMenu
-      }
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend, showSlash, showFileSearch]
-  );
-
-  // 追加 skill 到 selectedSkills（不重复）
-  const addSkill = useCallback(async (name: string) => {
-    if (selectedSkills.some((s) => s.name === name)) return;
-    try {
-      const path = agentDir
-        ? `/api/skills/${name}?agentDir=${encodeURIComponent(agentDir)}`
-        : `/api/skills/${name}`;
-      const skill = await globalApiGetJson<{ content: string }>(path);
-      setSelectedSkills((prev) => prev.some((s) => s.name === name) ? prev : [...prev, { name, content: skill.content || `/${name}` }]);
-    } catch {
-      setSelectedSkills((prev) => prev.some((s) => s.name === name) ? prev : [...prev, { name, content: `/${name}` }]);
-    }
-  }, [agentDir, selectedSkills]);
+      })
+      .catch(() => { /* 保留占位 content */ });
+  }, [agentDir]);
 
   const removeSkill = useCallback((name: string) => {
     setSelectedSkills((prev) => prev.filter((s) => s.name !== name));
@@ -467,33 +451,85 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
       return '';
     };
 
-    if (cmd === 'clear' || cmd === 'reset') {
-      if (slashPosition !== null) {
-        const before = text.slice(0, slashPosition);
-        const cursorEnd = textareaRef.current?.selectionStart ?? (slashPosition + slashSearchQuery.length + 1);
-        const after = text.slice(cursorEnd);
-        setText(`${before}/${cmd} ${after}`.trim());
-      } else {
-        setText(`/${cmd}`);
-      }
+    // SDK 内置命令 — 填入输入框作为消息发送
+    const SDK_BUILTINS = ['compact', 'context', 'cost', 'init', 'pr-comments', 'release-notes', 'review', 'security-review'];
+    if (SDK_BUILTINS.includes(cmd)) {
+      const before = slashPosition !== null ? text.slice(0, slashPosition) : '';
+      const cursorEnd = textareaRef.current?.selectionStart ?? (slashPosition !== null ? slashPosition + slashSearchQuery.length + 1 : 0);
+      const after = text.slice(cursorEnd);
+      setText(`${before}/${cmd} ${after}`.trim());
       setShowSlash(false);
       setSlashPosition(null);
       textareaRef.current?.focus();
       return;
     }
 
-    await addSkill(cmd);
+    // Skill — 作为 skill 附加到对话
+    addSkill(cmd);
     setText(removeTriggerText());
     setShowSlash(false);
     setSlashPosition(null);
     textareaRef.current?.focus();
   }, [slashPosition, text, slashSearchQuery, addSkill]);
 
-  const handleSkillToggle = useCallback(async (name: string) => {
+  // Compute filtered slash commands for keyboard nav
+  const filteredSlashCommands = useMemo(
+    () => filterSlashCommands(skillCommands, slashSearchQuery),
+    [skillCommands, slashSearchQuery],
+  );
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // @ 文件搜索键盘导航 — 由 FileSearchMenu 内部处理
+      if (showFileSearch) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowFileSearch(false);
+          setAtPosition(null);
+          return;
+        }
+        return;
+      }
+      // / 技能键盘导航 — 在父组件中处理
+      if (showSlash && filteredSlashCommands.length > 0) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowSlash(false);
+          setSlashPosition(null);
+          return;
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setSelectedSlashIndex((i) => Math.min(i + 1, filteredSlashCommands.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setSelectedSlashIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const cmd = filteredSlashCommands[selectedSlashIndex];
+          if (cmd) handleSlashSelect(cmd.name);
+          return;
+        }
+      }
+      // IME composition guard — 防止中文输入法 Enter 触发发送
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      }
+    },
+    [handleSend, handleSlashSelect, showSlash, showFileSearch, filteredSlashCommands, selectedSlashIndex]
+  );
+
+  const handleSkillToggle = useCallback((name: string) => {
     if (selectedSkills.some((s) => s.name === name)) {
       removeSkill(name);
     } else {
-      await addSkill(name);
+      addSkill(name);
     }
   }, [selectedSkills, addSkill, removeSkill]);
 
@@ -686,27 +722,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
   }, [agentDir, wsEntry?.mcpEnabledServers, updateWorkspaceConfig, mcpServers]);
   const workspaceMcpCount = mcpServers.filter((s) => workspaceMcpEnabled.has(s.id)).length;
 
-  // Cancel a queued message and restore its text to input
-  const handleCancelQueued = useCallback(async (queueId: string) => {
-    const cancelledText = await onCancelQueued?.(queueId);
-    if (cancelledText) {
-      setText(cancelledText);
-      textareaRef.current?.focus();
-    }
-  }, [onCancelQueued]);
-
-  const handleForceExecuteQueued = useCallback(async (queueId: string) => {
-    await onForceExecuteQueued?.(queueId);
-  }, [onForceExecuteQueued]);
-
   return (
     <div className="px-6 pb-4 pt-2 mx-auto w-full" style={{ maxWidth: 860 }}>
-      {/* Queued messages floating above the input */}
-      <QueuedMessagesPanel
-        queuedMessages={queuedMessages}
-        onCancel={handleCancelQueued}
-        onForceExecute={handleForceExecuteQueued}
-      />
       <div
         className="relative rounded-2xl border border-[var(--border)] bg-white"
         style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}
@@ -736,8 +753,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
         {showSlash && (
           <SlashCommandMenu
             query={slashSearchQuery}
+            selectedIndex={selectedSlashIndex}
             onSelect={handleSlashSelect}
-            onClose={() => { setShowSlash(false); setSlashPosition(null); }}
             skillCommands={skillCommands}
           />
         )}
@@ -750,10 +767,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               <span className="text-xs font-medium text-[var(--ink-secondary)]">技能列表</span>
               <div className="flex items-center gap-2 text-xs">
                 <button
-                  onClick={async () => {
-                    const attachableSkills = skillCommands.filter((s) => s.source === 'skill' || s.source === 'custom');
-                    for (const s of attachableSkills) {
-                      if (!selectedSkills.some((ss) => ss.name === s.name)) await addSkill(s.name);
+                  onClick={() => {
+                    for (const s of allSkills) {
+                      addSkill(s.name);
                     }
                   }}
                   className="text-[var(--ink-tertiary)] hover:text-[var(--ink)] transition-colors"
@@ -804,10 +820,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             {/* 列表 */}
             <div className="flex-1 overflow-y-auto">
               {(() => {
-                const attachableSkills = skillCommands.filter((s) => s.source === 'skill' || s.source === 'custom');
                 const baseList = skillPanelTab === 'selected'
-                  ? attachableSkills.filter((s) => selectedSkills.some((ss) => ss.name === s.name))
-                  : attachableSkills;
+                  ? allSkills.filter((s) => selectedSkills.some((ss) => ss.name === s.name))
+                  : allSkills;
                 const filtered = skillSearchQuery
                   ? baseList.filter((s) =>
                       s.name.toLowerCase().includes(skillSearchQuery.toLowerCase()) ||
@@ -821,7 +836,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                   const isSelected = selectedSkills.some((ss) => ss.name === s.name);
                   return (
                     <button
-                      key={s.name}
+                      key={`${s.source}:${s.name}`}
                       onClick={() => handleSkillToggle(s.name)}
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
                         isSelected ? 'bg-[var(--accent)]/5' : 'hover:bg-[var(--hover)]'
@@ -836,13 +851,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                           <span className="text-xs text-[var(--ink-tertiary)] truncate block">{s.description}</span>
                         )}
                       </div>
-                      {s.scope && (
-                        <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
-                          s.scope === 'project' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--hover)] text-[var(--ink-tertiary)]'
-                        }`}>
-                          {s.scope === 'project' ? '项目' : '全局'}
-                        </span>
-                      )}
+                      <Tag variant="scope" tone={s.source === 'project' ? 'accent' : 'neutral'}>
+                        {s.source === 'project' ? '项目' : '全局'}
+                      </Tag>
                     </button>
                   );
                 });
@@ -936,7 +947,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                       }`}
                     >
                       <span className="font-medium">{p.name}</span>
-                      <span className="text-[9px] text-[var(--ink-tertiary)] bg-[var(--hover)] px-1 py-0.5 rounded">
+                      <span className="text-[10px] text-[var(--ink-tertiary)] bg-[var(--hover)] px-1 py-0.5 rounded">
                         {available ? p.cloudProvider : '未配置'}
                       </span>
                     </button>
@@ -1073,7 +1084,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
           onPaste={handlePaste}
           placeholder={selectedSkills.length > 0 || attachedFiles.length > 0 || text.includes('@') ? "输入消息..." : "输入消息，使用 @ 引用文件，/ 使用技能..."}
           rows={1}
-          className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-[15px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none"
+          className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none"
           style={{ minHeight: 44, maxHeight: 160 }}
         />
 
@@ -1099,7 +1110,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             >
               <Puzzle size={16} />
               {selectedSkills.length > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[9px] font-bold leading-none">
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[10px] font-bold leading-none">
                   {selectedSkills.length}
                 </span>
               )}
@@ -1115,7 +1126,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             >
               <Wrench size={16} />
               {workspaceMcpCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[9px] font-bold leading-none">
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[10px] font-bold leading-none">
                   {workspaceMcpCount}
                 </span>
               )}
@@ -1224,8 +1235,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               <ChevronDown size={12} className="shrink-0" />
             </button>
 
-            {/* Streaming: show stop button; Normal: show send button */}
-            {isLoading ? (
+            {/* Streaming 时：Stop + Send 并排；空闲时：仅 Send */}
+            {isLoading && (
               <button
                 onClick={onStop}
                 className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
@@ -1234,20 +1245,19 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               >
                 <Square size={12} color="white" fill="white" />
               </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!canSend || !isCurrentProviderAvailable}
-                className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
-                style={{
-                  background: canSend && isCurrentProviderAvailable ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
-                  cursor: canSend && isCurrentProviderAvailable ? 'pointer' : 'default',
-                }}
-                title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : '发送 (Enter)'}
-              >
-                <Send size={14} color="white" strokeWidth={2} />
-              </button>
             )}
+            <button
+              onClick={handleSend}
+              disabled={!canSend || !isCurrentProviderAvailable}
+              className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
+              style={{
+                background: canSend && isCurrentProviderAvailable ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
+                cursor: canSend && isCurrentProviderAvailable ? 'pointer' : 'default',
+              }}
+              title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : '发送 (Enter)'}
+            >
+              <Send size={14} color="white" strokeWidth={2} />
+            </button>
           </div>
         </div>
       </div>

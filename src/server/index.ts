@@ -1,5 +1,5 @@
-import { createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers } from './agent-session';
+import { broadcast, createSseHandler, setLogHistoryProvider } from './sse';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers, stripYamlFrontmatter, waitForSessionIdle, enqueueUserMessage, initSocksBridgeFromEnv } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -19,7 +19,7 @@ import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSy
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import { setCronTaskContext, clearCronTaskContext, resetCronExitStatus, isCronExitRequested } from './tools/cron-tools';
+import { setScheduledTaskContext, resetScheduledTaskExitStatus, isScheduledTaskExitRequested } from './tools/scheduled-task-tools';
 
 // Allow SDK to spawn Claude Code subprocess even when launched from inside Claude Code session
 delete process.env.CLAUDECODE;
@@ -79,7 +79,7 @@ Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/chat/send") {
-      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }>; cronTaskId?: string; aiCanExit?: boolean };
+      const body = await req.json() as { message: string; agentDir: string; sessionId?: string; providerEnv?: ProviderEnv; model?: string; permissionMode?: string; mcpEnabledServerIds?: string[]; images?: Array<{ name: string; mimeType: string; data: string }>; scheduledTaskId?: string; aiCanExit?: boolean; metadata?: { source: string; sourceId: string; senderName?: string } };
       const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
       const mode: PermissionMode = VALID_MODES.includes(body.permissionMode as PermissionMode)
         ? (body.permissionMode as PermissionMode)
@@ -126,22 +126,185 @@ Bun.serve({
       }
       const runner = getOrCreateRunner(sessionId);
 
-      // Set cron task context if this is a scheduled task invocation
-      if (body.cronTaskId) {
-        resetCronExitStatus();
-        setCronTaskContext(sessionId, body.cronTaskId, body.aiCanExit ?? false);
+      // Set scheduled task context if this is a scheduled task invocation
+      if (body.scheduledTaskId) {
+        resetScheduledTaskExitStatus();
+        setScheduledTaskContext(sessionId, body.scheduledTaskId, body.aiCanExit ?? false);
       }
 
+      // Note: scheduled task context is NOT cleared here. sendMessage() returns
+      // immediately after queuing — the agent runs asynchronously and may call
+      // exit_scheduled_task during execution. Context is reset at the start of
+      // the next execution via resetScheduledTaskExitStatus() + setScheduledTaskContext().
+      const sendResult = await runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images);
+      if (!sendResult.ok) {
+        return Response.json({ ok: false, error: sendResult.error }, { status: 429 });
+      }
+      return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
+    }
+
+    // ============= IM BOT API =============
+    // POST /api/im/chat — Process an IM message and return SSE stream
+    if (req.method === 'POST' && url.pathname === '/api/im/chat') {
       try {
-        const sendResult = await runner.sendMessage(body.message, body.agentDir, resolvedProviderEnv, resolvedModel, mode, body.mcpEnabledServerIds, body.images);
-        if (!sendResult.ok) {
-          return Response.json({ ok: false, error: sendResult.error }, { status: 429 });
+        const payload = await req.json() as {
+          message: string;
+          agentDir: string;
+          permissionMode?: string;
+          providerEnv?: ProviderEnv;
+          model?: string;
+          sessionId?: string;
+          metadata?: { source: string; sourceId: string; senderName?: string };
+        };
+
+        if (!payload.message?.trim()) {
+          return Response.json({ success: false, error: 'Message required' }, { status: 400 });
         }
-        return Response.json({ ok: true, sessionId, queued: sendResult.queued, queueId: sendResult.queueId });
-      } finally {
-        if (body.cronTaskId) {
-          clearCronTaskContext(sessionId);
+
+        // Auto-resolve provider/model
+        let resolvedProviderEnv = payload.providerEnv;
+        let resolvedModel = payload.model;
+        if (!resolvedProviderEnv) {
+          const config = ConfigStore.readConfig();
+          const allProviders = [...PROVIDERS, ...(config.customProviders ?? [])];
+          const provider = allProviders.find(p => p.id === config.currentProviderId);
+          if (provider && provider.type !== 'subscription') {
+            const apiKey = config.apiKeys?.[provider.id];
+            if (apiKey) {
+              resolvedProviderEnv = {
+                baseUrl: provider.config?.baseUrl as string | undefined,
+                apiKey,
+                authType: provider.authType as ProviderAuthType | undefined,
+                apiProtocol: provider.apiProtocol,
+                timeout: provider.config?.timeout as number | undefined,
+                disableNonessential: provider.config?.disableNonessential as boolean | undefined,
+                maxOutputTokens: provider.maxOutputTokens,
+                upstreamFormat: provider.upstreamFormat,
+                modelAliases: getEffectiveModelAliases(provider, config.providerModelAliases),
+              };
+            }
+          }
+          if (!resolvedModel && config.currentModelId) {
+            resolvedModel = config.currentModelId;
+          } else if (!resolvedModel && provider?.primaryModel) {
+            resolvedModel = provider.primaryModel;
+          }
+          if (resolvedProviderEnv || provider?.type === 'subscription') {
+            console.log(`[im/chat] Auto-resolved provider: ${provider?.id ?? 'unknown'}, model: ${resolvedModel ?? 'default'}`);
+          }
         }
+
+        const VALID_MODES = ['plan', 'acceptEdits', 'bypassPermissions'] as const;
+        const mode: PermissionMode = VALID_MODES.includes(payload.permissionMode as PermissionMode)
+          ? (payload.permissionMode as PermissionMode)
+          : 'bypassPermissions';
+
+        // Reuse session from Rust router, fall back to current Sidecar session, or create new
+        let sessionId = payload.sessionId ?? getCurrentSessionId();
+        if (!sessionId) {
+          const session = SessionStore.createSession(payload.agentDir, payload.message.slice(0, 50));
+          sessionId = session.id;
+        }
+        const runner = getOrCreateRunner(sessionId);
+
+        // Tag session source from IM metadata
+        const imSource = payload.metadata?.source;
+        if (imSource) {
+          SessionStore.updateSessionSource(sessionId, imSource);
+        }
+
+        // Broadcast to desktop UI that an IM message arrived
+        broadcast('im:message_received', {
+          sessionId,
+          source: imSource ?? 'unknown',
+          senderName: payload.metadata?.senderName ?? null,
+          content: payload.message.slice(0, 200),
+        });
+
+        // SSE stream response
+        const encoder = new TextEncoder();
+        let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+        let closed = false;
+        let imAccText = '';
+
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(': connected\n\n'));
+
+            heartbeatTimer = setInterval(() => {
+              try { if (!closed) controller.enqueue(encoder.encode(': ping\n\n')); }
+              catch { /* closed */ }
+            }, 15000);
+
+            const sendEvent = (data: object) => {
+              if (closed) return;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+            };
+            const closeStream = () => {
+              if (closed) return;
+              closed = true;
+              if (heartbeatTimer) clearInterval(heartbeatTimer);
+              runner.setImStreamCallback(null);
+              try { controller.close(); } catch { /* already closed */ }
+            };
+
+            runner.setImStreamCallback((event, data) => {
+              if (event === 'delta') {
+                imAccText += data;
+                sendEvent({ type: 'partial', text: imAccText });
+              } else if (event === 'block-end') {
+                sendEvent({ type: 'block-end', text: imAccText });
+                imAccText = '';
+              } else if (event === 'complete') {
+                if (imAccText) {
+                  sendEvent({ type: 'block-end', text: imAccText });
+                  imAccText = '';
+                }
+                sendEvent({ type: 'complete', sessionId: getCurrentSessionId() });
+                broadcast('im:response_sent', { sessionId });
+                closeStream();
+              } else if (event === 'activity') {
+                sendEvent({ type: 'activity' });
+              } else if (event === 'error') {
+                sendEvent({ type: 'error', error: data });
+                closeStream();
+              }
+            });
+
+            // Send message (async — don't block stream start)
+            runner.sendMessage(payload.message, payload.agentDir, resolvedProviderEnv, resolvedModel, mode)
+              .then(result => {
+                if (!result.ok) {
+                  sendEvent({ type: 'error', error: result.error ?? 'Failed to send' });
+                  closeStream();
+                }
+              })
+              .catch(err => {
+                sendEvent({ type: 'error', error: String(err) });
+                closeStream();
+              });
+          },
+          cancel() {
+            closed = true;
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+            runner.setImStreamCallback(null);
+          }
+        });
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        });
+      } catch (error) {
+        console.error('[im/chat] Error:', error);
+        return Response.json(
+          { success: false, error: error instanceof Error ? error.message : 'IM chat error' },
+          { status: 500 },
+        );
       }
     }
 
@@ -236,8 +399,8 @@ Bun.serve({
       });
     }
 
-    if (req.method === 'GET' && url.pathname === '/cron/exit-status') {
-      return Response.json({ exitRequested: isCronExitRequested() });
+    if (req.method === 'GET' && url.pathname === '/scheduled-task/exit-status') {
+      return Response.json({ exitRequested: isScheduledTaskExitRequested() });
     }
 
     if (req.method === 'GET' && url.pathname === '/chat/sessions') {
@@ -278,6 +441,70 @@ Bun.serve({
       return Response.json({ sessionId: session.id });
     }
 
+    // POST /chat/rewind — 回溯到指定 user message 之前。
+    //
+    // 两条路径：
+    //   A) 目标 session 正是当前活跃 runner → 完整 Rewind（含 SDK rewindFiles 文件回滚）
+    //   B) 目标 session 无活跃 runner（如用户切回旧对话 Tab）→ 降级为纯磁盘截断
+    //      + 广播 chat:messages-truncated 事件。文件不回滚（没有活 SDK session 持有检查点）。
+    if (req.method === 'POST' && url.pathname === '/chat/rewind') {
+      const body = await req.json() as { userMessageId?: string; sessionId?: string };
+      if (!body.userMessageId) {
+        return Response.json({ success: false, error: 'Missing userMessageId' }, { status: 400 });
+      }
+      const targetSessionId = body.sessionId;
+      if (!targetSessionId) {
+        return Response.json({ success: false, error: 'Missing sessionId' }, { status: 400 });
+      }
+      const r = getRunner();
+      const runnerSid = getCurrentSessionId();
+      if (r && runnerSid === targetSessionId) {
+        // Path A: 活跃 session，完整 Rewind
+        const result = await r.rewindSession(body.userMessageId);
+        return Response.json(result);
+      }
+      // Path B: 降级，仅磁盘截断
+      const truncated = SessionStore.truncateMessagesAfter(targetSessionId, body.userMessageId);
+      if (!truncated) {
+        return Response.json({ success: false, error: '消息未找到或截断失败' });
+      }
+      broadcast('chat:messages-truncated', {
+        sessionId: targetSessionId,
+        truncatedAtMessageId: body.userMessageId,
+      });
+      return Response.json({
+        success: true,
+        content: truncated.truncatedUserContent,
+        attachments: truncated.truncatedAttachments,
+      });
+    }
+
+    // POST /sessions/fork — 从指定 assistant message 分叉新 session。
+    // Fork 是纯磁盘操作，无需活跃 runner。
+    if (req.method === 'POST' && url.pathname === '/sessions/fork') {
+      const body = await req.json() as { assistantMessageId?: string; sessionId?: string };
+      if (!body.assistantMessageId) {
+        return Response.json({ success: false, error: 'Missing assistantMessageId' }, { status: 400 });
+      }
+      const targetSessionId = body.sessionId;
+      if (!targetSessionId) {
+        return Response.json({ success: false, error: 'Missing sessionId' }, { status: 400 });
+      }
+      // 校验 assistant 消息存在 + 有 sdkUuid（和 SessionRunner.forkSession 一致）
+      const messages = SessionStore.getSessionMessages(targetSessionId);
+      const target = messages.find((m) => m.id === body.assistantMessageId && m.role === 'assistant');
+      if (!target) return Response.json({ success: false, error: 'Assistant 消息未找到' });
+      if (!target.sdkUuid) return Response.json({ success: false, error: '该消息无 SDK UUID（旧数据不支持 Fork）' });
+      const cloned = SessionStore.cloneSession(targetSessionId, body.assistantMessageId);
+      if (!cloned) return Response.json({ success: false, error: '克隆 session 失败' });
+      return Response.json({
+        success: true,
+        newSessionId: cloned.newSessionId,
+        agentDir: cloned.agentDir,
+        title: cloned.title,
+      });
+    }
+
     if (req.method === 'GET' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/messages$/)) {
       const sessionId = url.pathname.split('/')[3];
       try {
@@ -292,6 +519,13 @@ Bun.serve({
       } catch {
         return Response.json([]);
       }
+    }
+
+    // PUT /chat/sessions/:id/viewed — mark session as viewed
+    if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/viewed$/)) {
+      const sessionId = url.pathname.split('/')[3];
+      SessionStore.markViewed(sessionId);
+      return Response.json({ ok: true });
     }
 
     if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/archive$/)) {
@@ -312,7 +546,7 @@ Bun.serve({
     if (req.method === 'PUT' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/title$/)) {
       const sessionId = url.pathname.split('/')[3];
       const body = await req.json() as { title: string };
-      SessionStore.updateTitle(sessionId, body.title);
+      SessionStore.updateTitle(sessionId, body.title, true);
       return Response.json({ ok: true });
     }
 
@@ -330,6 +564,7 @@ Bun.serve({
       const sessions = SessionStore.listSessions();
       const session = sessions.find(s => s.id === body.sessionId);
       if (!session) return Response.json({ success: false, error: 'session_not_found' });
+      if (session.manuallyRenamed) return Response.json({ success: false, error: 'manually_renamed' });
 
       try {
         const title = await generateTitle(rounds, body.model, body.providerEnv);
@@ -1600,8 +1835,175 @@ Bun.serve({
       }
     }
 
+    // ── Agent Heartbeat & Memory Auto-Update API ──
+
+    // POST /api/agent/heartbeat — Execute HEARTBEAT.md as autonomous prompt
+    if (req.method === 'POST' && url.pathname === '/api/agent/heartbeat') {
+      try {
+        const body = await req.json() as { agentId?: string; workspacePath?: string; ackMaxChars?: number };
+
+        // Resolve agent dir
+        const runner = getRunner();
+        if (!runner) {
+          return Response.json({ status: 'error', text: 'No active runner' });
+        }
+        const sid = getCurrentSessionId();
+        if (!sid) {
+          return Response.json({ status: 'error', text: 'No active session' });
+        }
+        const allSessions = SessionStore.listSessions();
+        const sessionMeta = allSessions.find(s => s.id === sid);
+        const agentDir = body.workspacePath ?? sessionMeta?.agentDir;
+        if (!agentDir) {
+          return Response.json({ status: 'error', text: 'No agentDir' });
+        }
+
+        // 1. Read HEARTBEAT.md
+        const heartbeatMdPath = join(agentDir, 'HEARTBEAT.md');
+        let heartbeatContent = '';
+        try {
+          const raw = readFileSync(heartbeatMdPath, 'utf-8');
+          heartbeatContent = stripYamlFrontmatter(raw);
+        } catch {
+          // File not found — create default with frontmatter only (no body = skip)
+          try {
+            const defaultContent = `---\ndescription: >\n  心跳清单 — Agent 按心跳间隔定时苏醒时会读取本文件的正文部分作为指令执行。\n  正文为空时心跳会直接跳过，不请求 AI（节省 token）。\n---\n`;
+            writeFileSync(heartbeatMdPath, defaultContent, 'utf-8');
+          } catch { /* ignore write failure */ }
+        }
+
+        // 2. Skip if HEARTBEAT.md body is empty
+        if (!heartbeatContent.trim()) {
+          return Response.json({ status: 'silent', reason: 'empty_heartbeat_md' });
+        }
+
+        // 3. Build prompt
+        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        const prompt = `<system-reminder>\n<HEARTBEAT>\nThis is a heartbeat from the system.\nRead HEARTBEAT.md if it exists (workspace context). Follow it strictly.\nDo not infer or repeat old tasks from prior chats.\nIf there is nothing that needs attention, reply exactly: HEARTBEAT_OK\nIf something needs attention, do NOT include "HEARTBEAT_OK"\n\nCurrent time: ${now}\n</HEARTBEAT>\n</system-reminder>`;
+
+        // 4. Inject with bypassPermissions
+        const result = await enqueueUserMessage(prompt, agentDir, 'bypassPermissions');
+        if (!result.ok) {
+          return Response.json({ status: 'error', text: result.error ?? 'enqueue failed' });
+        }
+
+        // 5. Wait for completion (5 min timeout)
+        const completed = await waitForSessionIdle(300000, 500);
+        if (!completed) {
+          return Response.json({ status: 'error', text: 'Heartbeat timeout' });
+        }
+
+        // 6. Extract last assistant message
+        const messages = SessionStore.getSessionMessages(sid);
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+        if (!lastAssistant?.content) {
+          return Response.json({ status: 'silent', reason: 'no_response' });
+        }
+
+        // 7. Check HEARTBEAT_OK
+        const text = lastAssistant.content;
+        const ackMaxChars = body.ackMaxChars ?? 300;
+        const hbResult = stripHeartbeatToken(text, ackMaxChars);
+        console.log(`[Heartbeat] ${hbResult.status} for session ${sid?.slice(0, 8)}`);
+        return Response.json(hbResult);
+      } catch (error) {
+        console.error('[Heartbeat] Error:', error);
+        return Response.json(
+          { status: 'error', text: error instanceof Error ? error.message : String(error) },
+          { status: 500 }
+        );
+      }
+    }
+
+    // POST /api/agent/memory-update — Inject UPDATE_MEMORY.md as autonomous prompt
+    if (req.method === 'POST' && url.pathname === '/api/agent/memory-update') {
+      try {
+        const body = await req.json() as { source?: string };
+        const source = body.source ?? 'manual';
+
+        // 1. Resolve agent dir from current runner
+        const runner = getRunner();
+        if (!runner) {
+          return Response.json({ status: 'skipped', reason: 'No active runner' });
+        }
+
+        // Read agentDir from the current session's config
+        const sid = getCurrentSessionId();
+        if (!sid) {
+          return Response.json({ status: 'skipped', reason: 'No active session' });
+        }
+        const allSessions = SessionStore.listSessions();
+        const sessionMeta = allSessions.find(s => s.id === sid);
+        const agentDir = sessionMeta?.agentDir;
+        if (!agentDir) {
+          return Response.json({ status: 'skipped', reason: 'No agentDir for session' });
+        }
+
+        // 2. Read UPDATE_MEMORY.md
+        const updateMdPath = join(agentDir, 'UPDATE_MEMORY.md');
+        let rawContent: string;
+        try {
+          rawContent = readFileSync(updateMdPath, 'utf-8');
+        } catch {
+          return Response.json({ status: 'skipped', reason: 'UPDATE_MEMORY.md not found' });
+        }
+
+        // 3. Strip YAML frontmatter
+        const promptContent = stripYamlFrontmatter(rawContent);
+        if (!promptContent.trim()) {
+          return Response.json({ status: 'skipped', reason: 'UPDATE_MEMORY.md body is empty' });
+        }
+
+        // 4. Build injection prompt
+        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        const prompt = `<system-reminder>\n<MEMORY_UPDATE>\n${promptContent}\n\nCurrent time: ${now}\n\n完成所有记忆维护操作后（包括文件读写和 git 操作），仅回复 MEMORY_UPDATE_OK，不要输出其他内容。\n</MEMORY_UPDATE>\n</system-reminder>`;
+
+        // 5. Inject with bypassPermissions (fullAgency)
+        const result = await enqueueUserMessage(prompt, agentDir, 'bypassPermissions');
+        if (!result.ok) {
+          return Response.json({ status: 'skipped', reason: result.error ?? 'enqueue failed' });
+        }
+
+        // 6. Wait for session idle (60 min timeout, 1s poll)
+        const completed = await waitForSessionIdle(3600000, 1000);
+
+        console.log(`[MemoryUpdate] ${source} update ${completed ? 'completed' : 'timed out'} for session ${sid?.slice(0, 8)}`);
+        return Response.json({ status: completed ? 'completed' : 'timeout' });
+      } catch (error) {
+        console.error('[MemoryUpdate] Error:', error);
+        return Response.json(
+          { status: 'error', reason: error instanceof Error ? error.message : String(error) },
+          { status: 500 }
+        );
+      }
+    }
+
     return new Response("Not Found", { status: 404 });
   },
 });
 
+// ── Heartbeat helpers ──
+
+function stripHeartbeatToken(text: string, ackMaxChars: number): { status: string; text?: string; reason?: string } {
+  if (!text?.trim()) {
+    return { status: 'silent', reason: 'empty' };
+  }
+  if (!/HEARTBEAT_OK/i.test(text)) {
+    return { status: 'content', text };
+  }
+  const stripped = text
+    .replace(/\*{0,2}HEARTBEAT_OK\*{0,2}/gi, '')
+    .replace(/`HEARTBEAT_OK`/gi, '')
+    .trim();
+  if (stripped.length <= ackMaxChars) {
+    return { status: 'silent', reason: 'heartbeat_ok' };
+  }
+  return { status: 'content', text: stripped };
+}
+
 console.log(`[Sidecar] Bun server listening on port ${port}`);
+
+// Initialize SOCKS5→HTTP bridge if Rust injected socks5:// proxy env vars.
+// Bun's fetch() doesn't understand socks5://, so we transparently wrap it
+// into a local HTTP CONNECT proxy. No-op when HTTP_PROXY isn't socks5://.
+void initSocksBridgeFromEnv();

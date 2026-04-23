@@ -6,6 +6,7 @@ import { safeWriteJsonSync, safeLoadJsonSync } from './safeJson';
 export type { SkillItem, SkillDetail, SkillFrontmatter } from '../shared/types/skill';
 
 const GLOBAL_SKILLS_DIR = join(homedir(), '.soagents', 'skills');
+const CLAUDE_SKILLS_DIR = join(homedir(), '.claude', 'skills');
 const SKILLS_CONFIG_PATH = join(homedir(), '.soagents', 'skills-config.json');
 
 export interface SkillInfo {
@@ -111,7 +112,12 @@ function scanSkillsDir(skillsDir: string, source: 'user' | 'project'): Omit<Skil
     let skillFilePath: string | null = null;
 
     try {
-      const stat = statSync(entryPath);
+      // 跳过 symlink — 项目 skills 目录中的 symlink 指向全局 skills，
+      // 由 syncProjectSkillLinks 创建用于 SDK 运行时，不应被当作项目级 skill
+      const lstat = lstatSync(entryPath);
+      if (source === 'project' && lstat.isSymbolicLink()) continue;
+
+      const stat = lstat.isSymbolicLink() ? statSync(entryPath) : lstat;
       if (stat.isDirectory()) {
         // Check {name}/SKILL.md
         const candidate = join(entryPath, 'SKILL.md');
@@ -272,7 +278,21 @@ export function list(agentDir?: string): SkillInfo[] {
   const disabledSet = new Set(config.disabled);
   const builtinNames = getBuiltinSkillNames();
 
-  const globalSkills = scanSkillsDir(GLOBAL_SKILLS_DIR, 'user');
+  // 合并 ~/.soagents/skills/ 和 ~/.claude/skills/，soagents 优先
+  // 同一目录内可能存在 frontmatter name 冲突（不同目录名但声明了相同 name），需要去重
+  const dedup = (skills: Omit<SkillInfo, 'isBuiltin' | 'enabled'>[]) => {
+    const seen = new Set<string>();
+    return skills.filter((s) => {
+      if (seen.has(s.name)) return false;
+      seen.add(s.name);
+      return true;
+    });
+  };
+  const soagentsSkills = dedup(scanSkillsDir(GLOBAL_SKILLS_DIR, 'user'));
+  const claudeSkills = dedup(scanSkillsDir(CLAUDE_SKILLS_DIR, 'user'));
+  const soagentsNameSet = new Set(soagentsSkills.map(s => s.name));
+  const uniqueClaudeSkills = claudeSkills.filter(s => !soagentsNameSet.has(s.name));
+  const globalSkills = [...soagentsSkills, ...uniqueClaudeSkills];
 
   const enriched = (skills: Omit<SkillInfo, 'isBuiltin' | 'enabled'>[]): SkillInfo[] =>
     skills.map((s) => ({
@@ -288,11 +308,13 @@ export function list(agentDir?: string): SkillInfo[] {
   const projectSkillsDir = join(agentDir, '.claude', 'skills');
   const projectSkills = scanSkillsDir(projectSkillsDir, 'project');
 
-  // Project skills override global skills with same name
-  const nameSet = new Set(projectSkills.map(s => s.name));
-  const filtered = globalSkills.filter(s => !nameSet.has(s.name));
+  // 全局目录中也存在同名 skill 的，视为全局 skill（项目目录只是运行时副本）
+  const globalNameSet = new Set(globalSkills.map(s => s.name));
+  const trueProjectSkills = projectSkills.filter(s => !globalNameSet.has(s.name));
+  const trueProjectNameSet = new Set(trueProjectSkills.map(s => s.name));
+  const filtered = globalSkills.filter(s => !trueProjectNameSet.has(s.name));
 
-  return enriched([...filtered, ...projectSkills]);
+  return enriched([...filtered, ...trueProjectSkills]);
 }
 
 export function get(name: string, agentDir?: string): SkillInfo | null {
@@ -328,22 +350,24 @@ export function get(name: string, agentDir?: string): SkillInfo | null {
     }
   }
 
-  // Check global
-  const globalPath = findSkillPath(GLOBAL_SKILLS_DIR, name);
-  if (globalPath) {
-    try {
-      const rawContent = readFileSync(globalPath, 'utf-8');
-      const { meta, body } = parseFrontmatter(rawContent);
-      return enrich({
-        name: meta['name'] || name,
-        description: meta['description'] || '',
-        content: body,
-        rawContent,
-        source: 'user',
-        path: globalPath,
-      });
-    } catch {
-      // fall through
+  // Check global: ~/.soagents/skills/ first, then ~/.claude/skills/
+  for (const dir of [GLOBAL_SKILLS_DIR, CLAUDE_SKILLS_DIR]) {
+    const globalPath = findSkillPath(dir, name);
+    if (globalPath) {
+      try {
+        const rawContent = readFileSync(globalPath, 'utf-8');
+        const { meta, body } = parseFrontmatter(rawContent);
+        return enrich({
+          name: meta['name'] || name,
+          description: meta['description'] || '',
+          content: body,
+          rawContent,
+          source: 'user',
+          path: globalPath,
+        });
+      } catch {
+        // fall through
+      }
     }
   }
 
@@ -474,7 +498,8 @@ export function syncToProject(agentDir: string): void {
   for (const skill of enabledSkills) {
     try {
       // skill.path 指向 SKILL.md，符号链接应指向其父目录（{name}/）
-      const sourcePath = join(GLOBAL_SKILLS_DIR, skill.name);
+      // skill 可能来自 ~/.soagents/skills/ 或 ~/.claude/skills/
+      const sourcePath = dirname(skill.path);
       if (!existsSync(sourcePath)) continue;
 
       const linkPath = join(targetDir, skill.name);

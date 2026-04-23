@@ -7,9 +7,15 @@ mod proxy;
 mod proxy_config;
 mod sse_proxy;
 mod updater;
-mod cron_task;
+mod scheduled_task;
 mod local_http;
 mod tray;
+mod im;
+mod openclaw;
+mod process_cmd;
+mod system_binary;
+pub mod heartbeat;
+pub mod memory_update;
 pub mod logger;
 
 use std::sync::{Arc, Mutex};
@@ -22,13 +28,22 @@ use tokio::sync::RwLock;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let sidecar_state: SidecarState = Arc::new(Mutex::new(sidecar::SidecarManager::new()));
-    let cron_task_state: cron_task::CronTaskState = Arc::new(RwLock::new(cron_task::CronTaskManager::new()));
+    let scheduled_task_state: scheduled_task::ScheduledTaskState = Arc::new(RwLock::new(scheduled_task::ScheduledTaskManager::new()));
+    let im_state: im::ImManagerState = Arc::new(tokio::sync::Mutex::new(im::ImManager::new()));
+    let heartbeat_state: commands::HeartbeatManagerState = Arc::new(heartbeat::HeartbeatManager::new(Arc::clone(&sidecar_state)));
 
     let cleanup_state = Arc::clone(&sidecar_state);
     let cleanup_state_for_exit = Arc::clone(&sidecar_state);
-    let cron_task_cleanup = cron_task_state.clone();
-    let cron_task_cleanup_for_exit = cron_task_state.clone();
-    let cron_task_setup = cron_task_state.clone();
+    let scheduled_task_cleanup = scheduled_task_state.clone();
+    let scheduled_task_cleanup_for_exit = scheduled_task_state.clone();
+    let scheduled_task_setup = scheduled_task_state.clone();
+    let im_cleanup_for_tray = im_state.clone();
+    let im_cleanup_for_window = im_state.clone();
+    let im_cleanup_for_exit = im_state.clone();
+    let heartbeat_setup = heartbeat_state.clone();
+    let heartbeat_cleanup_for_window = heartbeat_state.clone();
+    let heartbeat_cleanup_for_exit = heartbeat_state.clone();
+    let heartbeat_cleanup_for_tray = heartbeat_state.clone();
 
     // Track if cleanup has been performed to avoid duplicate cleanup
     let cleanup_done = Arc::new(AtomicBool::new(false));
@@ -37,7 +52,7 @@ pub fn run() {
     let cleanup_done_for_tray_exit = cleanup_done.clone();
 
     let sidecar_state_for_tray_exit = Arc::clone(&sidecar_state);
-    let cron_task_cleanup_for_tray_exit = cron_task_state.clone();
+    let scheduled_task_cleanup_for_tray_exit = scheduled_task_state.clone();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
@@ -47,7 +62,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(sidecar_state)
-        .manage(cron_task_state)
+        .manage(scheduled_task_state)
+        .manage(im_state)
+        .manage(heartbeat_state.clone())
         .manage(sse_proxy::SseProxyState::new())
         .invoke_handler(tauri::generate_handler![
             commands::cmd_start_session_sidecar,
@@ -69,15 +86,36 @@ pub fn run() {
             updater::restart_app,
             updater::test_update_connectivity,
             updater::cmd_shutdown_for_update,
-            cron_task::cmd_cron_list_tasks,
-            cron_task::cmd_cron_create_task,
-            cron_task::cmd_cron_update_task,
-            cron_task::cmd_cron_delete_task,
-            cron_task::cmd_cron_toggle_task,
-            cron_task::cmd_cron_run_task,
-            cron_task::cmd_cron_stop_task,
-            cron_task::cmd_cron_list_runs,
-            cron_task::cmd_cron_list_all_runs,
+            scheduled_task::cmd_scheduled_task_list,
+            scheduled_task::cmd_scheduled_task_create,
+            scheduled_task::cmd_scheduled_task_update,
+            scheduled_task::cmd_scheduled_task_delete,
+            scheduled_task::cmd_scheduled_task_toggle,
+            scheduled_task::cmd_scheduled_task_run,
+            scheduled_task::cmd_scheduled_task_stop,
+            scheduled_task::cmd_scheduled_task_list_runs,
+            scheduled_task::cmd_scheduled_task_list_all_runs,
+            im::cmd_start_agent_channel,
+            im::cmd_stop_agent_channel,
+            im::cmd_agent_channel_status,
+            im::cmd_all_agent_channels_status,
+            im::cmd_update_agent_channel_config,
+            im::cmd_im_reset_session,
+            im::cmd_im_verify_token,
+            im::cmd_im_verify_feishu_credentials,
+            im::cmd_im_verify_dingtalk_credentials,
+            im::cmd_im_approve_group,
+            im::cmd_im_reject_group,
+            im::cmd_im_remove_group,
+            commands::cmd_heartbeat_sync,
+            commands::cmd_heartbeat_resume,
+            commands::cmd_heartbeat_status,
+            commands::cmd_heartbeat_all_status,
+            commands::cmd_install_openclaw_plugin,
+            commands::cmd_uninstall_openclaw_plugin,
+            commands::cmd_list_openclaw_plugins,
+            commands::cmd_openclaw_spawn_bridge_test,
+            commands::cmd_openclaw_kill_all_smoke_bridges,
         ])
         .setup(|app| {
             // Initialize logging
@@ -112,6 +150,18 @@ pub fn run() {
                 log::error!("[App] Failed to setup system tray: {}", e);
             }
 
+            // Auto-start enabled IM agent channels (4s delay)
+            im::schedule_agent_auto_start(app.handle().clone());
+
+            // Start heartbeat runners for enabled agents
+            let hb_app = app.handle().clone();
+            let hb_state = heartbeat_setup;
+            tauri::async_runtime::spawn(async move {
+                // Wait a bit for sidecars to be ready
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                hb_state.start(&hb_app).await;
+            });
+
             // Setup tray exit handler (for when user confirms exit from tray menu)
             let app_handle_for_tray = app.handle().clone();
             app.listen("tray:confirm-exit", move |_| {
@@ -122,10 +172,13 @@ pub fn run() {
                     if let Ok(mut manager) = sidecar_state_for_tray_exit.lock() {
                         manager.stop_all();
                     }
-                    let cron_clone = cron_task_cleanup_for_tray_exit.clone();
+                    im::signal_all_shutdown(&im_cleanup_for_tray);
+                    let cron_clone = scheduled_task_cleanup_for_tray_exit.clone();
+                    let hb_clone = heartbeat_cleanup_for_tray.clone();
                     tauri::async_runtime::spawn(async move {
                         let mut mgr = cron_clone.write().await;
                         mgr.stop();
+                        hb_clone.shutdown().await;
                     });
                 }
                 app_handle_for_tray.exit(0);
@@ -141,15 +194,15 @@ pub fn run() {
                 updater::check_update_on_startup(app_handle).await;
             });
 
-            // Start cron task scheduler
-            let cron_task_app_handle = app.handle().clone();
+            // Start scheduled task scheduler
+            let scheduled_task_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 {
-                    let mut mgr = cron_task_setup.write().await;
-                    mgr.set_app_handle(cron_task_app_handle);
+                    let mut mgr = scheduled_task_setup.write().await;
+                    mgr.set_app_handle(scheduled_task_app_handle);
                     mgr.start().await;
                 }
-                cron_task::cron_task_loop(cron_task_setup).await;
+                scheduled_task::scheduled_task_loop(scheduled_task_setup).await;
             });
 
             Ok(())
@@ -170,10 +223,13 @@ pub fn run() {
                         if let Ok(mut manager) = cleanup_state.lock() {
                             manager.stop_all();
                         }
-                        let cron_clone = cron_task_cleanup.clone();
+                        im::signal_all_shutdown(&im_cleanup_for_window);
+                        let cron_clone = scheduled_task_cleanup.clone();
+                        let hb_clone = heartbeat_cleanup_for_window.clone();
                         tauri::async_runtime::spawn(async move {
                             let mut mgr = cron_clone.write().await;
                             mgr.stop();
+                            hb_clone.shutdown().await;
                         });
                     }
                 }
@@ -194,10 +250,13 @@ pub fn run() {
                     if let Ok(mut manager) = cleanup_state_for_exit.lock() {
                         manager.stop_all();
                     }
-                    let cron_clone = cron_task_cleanup_for_exit.clone();
+                    im::signal_all_shutdown(&im_cleanup_for_exit);
+                    let cron_clone = scheduled_task_cleanup_for_exit.clone();
+                    let hb_clone = heartbeat_cleanup_for_exit.clone();
                     tauri::async_runtime::spawn(async move {
                         let mut mgr = cron_clone.write().await;
                         mgr.stop();
+                        hb_clone.shutdown().await;
                     });
                 }
             }
