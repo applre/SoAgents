@@ -57,7 +57,7 @@ src-tauri/gen/
 package-lock.json
 
 # Misc generated files
-config/
+/config/
 icon-changes-report.html
 tab-style-preview.html
 
