@@ -480,6 +480,41 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       }
     });
 
+    sse.on('chat:messages-truncated', (data) => {
+      // 后端 Rewind 成功：截断到 truncatedAtMessageId 之前
+      const payload = data as { truncatedAtMessageId?: string };
+      if (!payload.truncatedAtMessageId) return;
+      setHistoryMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === payload.truncatedAtMessageId);
+        return idx >= 0 ? prev.slice(0, idx) : prev;
+      });
+      updateStreamingMessage(null);
+      isStreamingRef.current = false;
+    });
+
+    sse.on('chat:message-sdk-uuid', (data) => {
+      // SDK 回传了某条消息的 UUID（user 在 SDK 消费时回来、assistant 在 turn
+      // 结束时回来）。写入对应 Message.sdkUuid 后，前端 Message.tsx 才能启用
+      // Rewind / Fork 按钮（两者都需要 sdkUuid 才能在后端调 SDK 对应 API）。
+      const payload = data as { messageId?: string; sdkUuid?: string };
+      if (!payload.messageId || !payload.sdkUuid) return;
+      const { messageId, sdkUuid } = payload;
+      // Streaming 中的 assistant 消息还没 moveStreamingToHistory → 更新 streamingMessage
+      updateStreamingMessage((prev) => {
+        if (prev && prev.id === messageId) return { ...prev, sdkUuid };
+        return prev;
+      });
+      // 已完成的历史消息 → 更新 historyMessages
+      setHistoryMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === messageId);
+        if (idx < 0) return prev;
+        if (prev[idx].sdkUuid === sdkUuid) return prev;
+        const next = [...prev];
+        next[idx] = { ...next[idx], sdkUuid };
+        return next;
+      });
+    });
+
     sse.on('chat:message-error', () => {
       // Move whatever streaming content we have to history
       moveStreamingToHistory();
@@ -774,11 +809,15 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   }, [isRunning, sessionId]);
 
   // ── 空闲回收 ──
+  // 有 pending 权限请求 / 问题 / plan mode 时不回收：否则用户看到的 modal 按钮
+  // 会因 sidecar 已死而点击无响应，整个 UI 卡住
   useEffect(() => {
     const interval = setInterval(() => {
       if (!sessionIdRef.current) return;
       if (isRunningRef.current) return;
       if (!serverUrlRef.current) return;
+      // Pending 请求尚未被用户处理 → 保留 sidecar
+      if (pendingPermission || pendingQuestion || pendingExitPlanMode || pendingEnterPlanMode) return;
       const idle = Date.now() - lastActivityRef.current;
       if (idle > IDLE_TIMEOUT_MS) {
         console.log(`[TabProvider] Reclaiming idle sidecar for session ${sessionIdRef.current.slice(0, 8)}`);
@@ -786,7 +825,7 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       }
     }, IDLE_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [stopSidecarCleanup]);
+  }, [stopSidecarCleanup, pendingPermission, pendingQuestion, pendingExitPlanMode, pendingEnterPlanMode]);
 
   const sendMessage = useCallback(async (text: string, permissionMode?: string, skills?: { name: string; content: string }[], images?: ChatImage[], model?: string, providerEnv?: ProviderEnv, mcpEnabledServerIds?: string[]): Promise<boolean> => {
     let currentSessionId = sessionIdRef.current;
@@ -1063,6 +1102,88 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
   );
 
 
+  // ── Message Actions: Rewind / Retry / Fork ────────────────────────
+  //
+  // Rewind：截断消息到 userMessageId 之前，尝试回滚工作区文件
+  // Retry：找到前最近 user message，Rewind + 自动重发
+  // Fork：从 assistantMessageId 克隆新 session → 由父组件决定如何开新 Tab
+  //
+  // 三个 action 都是"单向"操作：乐观截断/创建后调后端，失败只给 toast 不回滚
+  // （避免引入复杂的快照机制；后端失败时消息和文件系统已不一致，用户应手动修复）
+
+  const rewindToUserMessage = useCallback(async (userMessageId: string): Promise<{
+    success: boolean;
+    content?: string;
+    error?: string;
+  }> => {
+    const sid = sessionIdRef.current;
+    if (!sid) {
+      console.warn('[rewind] no sessionId yet');
+      return { success: false, error: '当前对话还没有 sessionId' };
+    }
+    // 懒启动 sidecar — 老对话的 tab 没 sendMessage 过时 serverUrlRef 为 null。
+    let url: string;
+    try {
+      url = await ensureSessionSidecar(sid);
+    } catch (err) {
+      console.error('[rewind] ensureSessionSidecar failed', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    try {
+      const result = await apiPostJson<{
+        success: boolean;
+        content?: string;
+        error?: string;
+      }>(url, '/chat/rewind', { userMessageId, sessionId: sid });
+      if (result.success) {
+        // 乐观截断前端消息列表（chat:messages-truncated SSE 也会触发，这是兜底）
+        setHistoryMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === userMessageId);
+          return idx >= 0 ? prev.slice(0, idx) : prev;
+        });
+      } else {
+        console.error('[rewind] backend returned failure:', result.error);
+      }
+      return result;
+    } catch (err) {
+      console.error('[rewind] network error', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }, [ensureSessionSidecar]);
+
+  const forkFromAssistantMessage = useCallback(async (assistantMessageId: string): Promise<{
+    success: boolean;
+    newSessionId?: string;
+    agentDir?: string;
+    title?: string;
+    error?: string;
+  }> => {
+    const sid = sessionIdRef.current;
+    if (!sid) {
+      console.warn('[fork] no sessionId yet');
+      return { success: false, error: '当前对话还没有 sessionId' };
+    }
+    let url: string;
+    try {
+      url = await ensureSessionSidecar(sid);
+    } catch (err) {
+      console.error('[fork] ensureSessionSidecar failed', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    try {
+      return await apiPostJson<{
+        success: boolean;
+        newSessionId?: string;
+        agentDir?: string;
+        title?: string;
+        error?: string;
+      }>(url, '/sessions/fork', { assistantMessageId, sessionId: sid });
+    } catch (err) {
+      console.error('[fork] network error', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }, [ensureSessionSidecar]);
+
   const respondPermission = useCallback(async (toolUseId: string, decision: 'deny' | 'allow_once' | 'always_allow') => {
     const url = serverUrlRef.current;
     if (!url) return;
@@ -1123,10 +1244,12 @@ export function TabProvider({ tabId, agentDir, sessionId: propSessionId, isActiv
       respondEnterPlanMode,
       deleteSession,
       updateSessionTitle,
+      rewindToUserMessage,
+      forkFromAssistantMessage,
       unifiedLogs,
       clearUnifiedLogs,
     }),
-    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, deleteSession, updateSessionTitle, unifiedLogs, clearUnifiedLogs]
+    [tabId, agentDir, sessionId, sidecarReady, historyMessages, streamingMessage, messages, isLoading, sessionState, sendMessage, stopResponse, resetSession, pendingPermission, pendingQuestion, respondPermission, respondQuestion, pendingExitPlanMode, pendingEnterPlanMode, respondExitPlanMode, respondEnterPlanMode, deleteSession, updateSessionTitle, rewindToUserMessage, forkFromAssistantMessage, unifiedLogs, clearUnifiedLogs]
   );
 
   return (
