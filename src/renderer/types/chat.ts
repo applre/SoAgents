@@ -37,4 +37,10 @@ export interface Message {
   blocks: ContentBlock[];
   createdAt: number;
   turnMeta?: TurnMeta;
+  /**
+   * SDK-assigned UUID from Claude Agent SDK. Required for Rewind / Fork —
+   * without it those actions are disabled in the UI. Populated via the
+   * `chat:message-sdk-uuid` SSE event once the SDK emits it for a message.
+   */
+  sdkUuid?: string;
 }

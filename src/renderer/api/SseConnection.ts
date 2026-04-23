@@ -28,6 +28,8 @@ export class SseConnection {
         'chat:tool-result',
         'chat:system-init',
         'chat:status',
+        'chat:message-sdk-uuid',
+        'chat:messages-truncated',
         'permission:request',
         'question:request',
         'exit-plan-mode:request',

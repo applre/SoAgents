@@ -38,6 +38,21 @@ export interface TabState {
   respondEnterPlanMode: (requestId: string, approved: boolean) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
+  /** Rewind to a user message — truncate chat + try to roll back workspace files. */
+  rewindToUserMessage: (userMessageId: string) => Promise<{
+    success: boolean;
+    content?: string;
+    error?: string;
+  }>;
+  /** Fork a new session from an assistant message. Returns the new session info
+   *  for the caller to open in a new tab. */
+  forkFromAssistantMessage: (assistantMessageId: string) => Promise<{
+    success: boolean;
+    newSessionId?: string;
+    agentDir?: string;
+    title?: string;
+    error?: string;
+  }>;
   unifiedLogs: LogEntry[];
   clearUnifiedLogs: () => void;
 }

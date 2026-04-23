@@ -190,17 +190,17 @@ export default function LeftSidebar({
         </div>
 
         {/* 主菜单 */}
-        <div className="flex flex-col gap-1 mt-3" onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+        <div className="flex flex-col gap-0 mt-3" onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
           <button
             onClick={onNewChat}
-            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
+            className="flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium text-[var(--ink)] hover:bg-[var(--hover)] transition-colors text-left"
           >
             <MessageSquarePlus size={16} className="shrink-0" style={{ color: 'var(--ink-secondary)' }} />
             新建对话
           </button>
           <button
             onClick={onOpenTaskCenter}
-            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium transition-colors text-left ${
+            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium transition-colors text-left ${
               isTaskCenterActive
                 ? 'bg-[var(--hover)] text-[var(--ink)]'
                 : 'text-[var(--ink)] hover:bg-[var(--hover)]'
@@ -211,7 +211,7 @@ export default function LeftSidebar({
           </button>
           <button
             onClick={onOpenScheduledTasks}
-            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium transition-colors text-left ${
+            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium transition-colors text-left ${
               isScheduledTasksActive
                 ? 'bg-[var(--hover)] text-[var(--ink)]'
                 : 'text-[var(--ink)] hover:bg-[var(--hover)]'
@@ -222,7 +222,7 @@ export default function LeftSidebar({
           </button>
           <button
             onClick={onOpenWorkspaces}
-            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[15px] font-medium transition-colors text-left ${
+            className={`flex items-center gap-2.5 h-[38px] px-2 rounded-lg text-[14px] font-medium transition-colors text-left ${
               isWorkspacesActive
                 ? 'bg-[var(--hover)] text-[var(--ink)]'
                 : 'text-[var(--ink)] hover:bg-[var(--hover)]'
@@ -234,8 +234,9 @@ export default function LeftSidebar({
         </div>
       </div>
 
-      {/* 最近对话标题 + 新建 + 筛选（固定） */}
-      {!isSettingsActive && sessions.length > 0 && (
+      {/* 最近对话标题 + 新建 + 筛选（固定）— 任何 tab 激活态下都保留，
+          与任务中心 / 定时任务 / 工作区等 tab 行为一致 */}
+      {sessions.length > 0 && (
         <div className="shrink-0 flex items-center justify-between" style={{ padding: '12px 22px 6px' }}>
           <span className="text-[13px] font-semibold text-[var(--ink-secondary)]">最近对话</span>
           <div className="relative flex items-center gap-2">
@@ -282,7 +283,7 @@ export default function LeftSidebar({
 
       {/* 可滚动区：session 列表（按工作区分组） */}
       <div className="flex-1 overflow-y-auto min-h-0" style={{ paddingLeft: 14, paddingRight: 14 }}>
-        {!isSettingsActive && sessions.length > 0 && (
+        {sessions.length > 0 && (
           <div className="flex flex-col gap-0.5">
             {menuOpenId && (
               <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />

@@ -565,31 +565,10 @@ pub fn start_sidecar(
         cmd.process_group(0);
     }
 
-    // Inject proxy environment variables if configured
-    if let Some(proxy_settings) = crate::proxy_config::read_proxy_settings() {
-        match crate::proxy_config::get_proxy_url(&proxy_settings) {
-            Ok(proxy_url) => {
-                log::info!("[sidecar] Injecting proxy: {}", proxy_url);
-                cmd.env("HTTP_PROXY", &proxy_url);
-                cmd.env("HTTPS_PROXY", &proxy_url);
-                cmd.env("http_proxy", &proxy_url);
-                cmd.env("https_proxy", &proxy_url);
-                cmd.env("NO_PROXY", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
-                cmd.env("no_proxy", "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]");
-            }
-            Err(e) => {
-                log::error!("[sidecar] Invalid proxy config: {}, stripping proxy vars", e);
-                for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
-                    cmd.env_remove(var);
-                }
-            }
-        }
-    } else {
-        // No proxy configured: strip inherited system proxy env vars
-        for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
-            cmd.env_remove(var);
-        }
-    }
+    // Inject proxy env vars via the pit-of-success module. When no proxy is
+    // configured this inherits system env (respecting Clash TUN / global
+    // proxy) while still forcing NO_PROXY to protect localhost Bun calls.
+    crate::proxy_config::apply_to_subprocess(&mut cmd);
 
     let mut child = cmd.spawn()
         .map_err(|e| format!("Failed to spawn bun process: {}", e))?;

@@ -167,9 +167,7 @@ export default function WorkspacesView({ onNewChatInDir, onAddWorkspace }: Props
             const agent = agentByPath.get(ws.path);
             const isActiveAgent = !!agent?.enabled;
             const agentStatus = isActiveAgent ? statuses[agent!.id] : undefined;
-            const onlineChannels = agentStatus?.channels.filter((ch) => ch.status === 'online' || ch.status === 'connecting').length ?? 0;
             const totalChannels = isActiveAgent ? (agent?.channels?.length ?? 0) : 0;
-            const hasHeartbeat = isActiveAgent && agent?.heartbeat?.enabled;
             const isLoading = launchingPath === ws.path;
 
             return (
@@ -184,8 +182,8 @@ export default function WorkspacesView({ onNewChatInDir, onAddWorkspace }: Props
                   onClick={() => handleCardClick(ws)}
                   disabled={isLoading}
                 >
-                  {/* Icon */}
-                  <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--hover)]">
+                  {/* Icon — no status dot; channel tags carry the live state */}
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--hover)]">
                     {isLoading ? (
                       <Loader2 size={16} className="animate-spin text-[var(--ink-secondary)]" />
                     ) : isActiveAgent ? (
@@ -193,29 +191,18 @@ export default function WorkspacesView({ onNewChatInDir, onAddWorkspace }: Props
                     ) : (
                       <Folder size={16} className="text-[var(--ink-tertiary)]" />
                     )}
-                    {!isLoading && isActiveAgent && totalChannels > 0 && (
-                      <div
-                        className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--surface)]"
-                        style={{
-                          background: onlineChannels > 0 ? 'var(--success)' : 'var(--ink-tertiary)',
-                        }}
-                      />
-                    )}
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    {/* Name + badges (single line) */}
+                    {/* Name + proactive-mode heart icon.
+                        MyAgents parity: `enabled: false` looks like a plain folder;
+                        the heart is the opt-in "proactive mode is on" cue. */}
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-[13px] font-semibold text-[var(--ink)]">
                         {ws.displayName || agent?.name || dirName(ws.path)}
                       </span>
-                      {hasHeartbeat && (
+                      {isActiveAgent && (
                         <HeartPulse size={11} className="shrink-0 text-[var(--accent)]" />
-                      )}
-                      {agent && !isActiveAgent && (
-                        <span className="shrink-0 rounded px-1 py-px text-[10px] bg-[var(--hover)] text-[var(--ink-tertiary)]">
-                          停用
-                        </span>
                       )}
                     </div>
 
@@ -226,24 +213,36 @@ export default function WorkspacesView({ onNewChatInDir, onAddWorkspace }: Props
                       </span>
                     </div>
 
-                    {/* Channel badges with status colors */}
+                    {/* Channel badges — whole pill picks up a semantic color
+                        (online green / error red / paused neutral). */}
                     {isActiveAgent && totalChannels > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1">
                         {agent.channels.map((ch) => {
                           const chStatus = agentStatus?.channels.find((s) => s.channelId === ch.id);
                           const isOnline = chStatus?.status === 'online' || chStatus?.status === 'connecting';
                           const isError = chStatus?.status === 'error';
+                          const textColor = isError
+                            ? 'text-[var(--error)]'
+                            : isOnline
+                              ? 'text-[var(--success)]'
+                              : 'text-[var(--ink-tertiary)]';
+                          const bgStyle: React.CSSProperties = isError
+                            ? { backgroundColor: 'color-mix(in srgb, var(--error) 12%, transparent)' }
+                            : isOnline
+                              ? { backgroundColor: 'color-mix(in srgb, var(--success) 12%, transparent)' }
+                              : { backgroundColor: 'var(--hover)' };
+                          const dotColor = isError
+                            ? 'bg-[var(--error)]'
+                            : isOnline
+                              ? 'bg-[var(--success)]'
+                              : 'bg-[var(--ink-tertiary)]';
                           return (
                             <span
                               key={ch.id}
-                              className="inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] bg-[var(--hover)] text-[var(--ink-tertiary)]"
+                              className={`inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] ${textColor}`}
+                              style={bgStyle}
                             >
-                              <span
-                                className="inline-block h-1.5 w-1.5 rounded-full"
-                                style={{
-                                  background: isOnline ? 'var(--success)' : isError ? 'var(--error)' : 'var(--ink-tertiary)',
-                                }}
-                              />
+                              <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
                               {PLATFORM_LABELS[ch.type] || ch.type}
                             </span>
                           );

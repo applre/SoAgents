@@ -134,29 +134,29 @@ const BlockquoteComponent: Components['blockquote'] = ({ children }) => (
   </blockquote>
 );
 
-// Custom heading components - H1:22px H2:20px H3:18px H4-H6:16px
+// Custom heading components - H1:18px H2:16px H3:15px H4-H6:14px
 const H1Component: Components['h1'] = ({ children }) => (
-  <h1 className="mb-4 mt-6 text-[22px] font-bold text-[var(--ink)]">{children}</h1>
+  <h1 className="mb-4 mt-6 text-[18px] font-bold text-[var(--ink)]">{children}</h1>
 );
 
 const H2Component: Components['h2'] = ({ children }) => (
-  <h2 className="mb-3 mt-5 text-[20px] font-semibold text-[var(--ink)]">{children}</h2>
+  <h2 className="mb-3 mt-5 text-[16px] font-semibold text-[var(--ink)]">{children}</h2>
 );
 
 const H3Component: Components['h3'] = ({ children }) => (
-  <h3 className="mb-2 mt-4 text-[18px] font-semibold text-[var(--ink)]">{children}</h3>
+  <h3 className="mb-2 mt-4 text-[16px] font-semibold text-[var(--ink)]">{children}</h3>
 );
 
 const H4Component: Components['h4'] = ({ children }) => (
-  <h4 className="mb-2 mt-3 text-[16px] font-semibold text-[var(--ink-secondary)]">{children}</h4>
+  <h4 className="mb-2 mt-3 text-[14px] font-semibold text-[var(--ink-secondary)]">{children}</h4>
 );
 
 const H5Component: Components['h5'] = ({ children }) => (
-  <h5 className="mb-2 mt-3 text-[16px] font-medium text-[var(--ink-secondary)]">{children}</h5>
+  <h5 className="mb-2 mt-3 text-[14px] font-medium text-[var(--ink-secondary)]">{children}</h5>
 );
 
 const H6Component: Components['h6'] = ({ children }) => (
-  <h6 className="mb-2 mt-3 text-[16px] font-medium text-[var(--ink-tertiary)]">{children}</h6>
+  <h6 className="mb-2 mt-3 text-[14px] font-medium text-[var(--ink-tertiary)]">{children}</h6>
 );
 
 // Custom list components
@@ -222,7 +222,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
   const processedContent = preprocessContent(children);
 
   return (
-    <div className={`break-words ${compact ? 'text-sm' : 'text-base'}`}>
+    <div className={`break-words ${compact ? 'text-[13px]' : 'text-sm'}`}>
       <ReactMarkdown
         remarkPlugins={preserveNewlines ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS_DEFAULT}
         rehypePlugins={REHYPE_PLUGINS}

@@ -131,6 +131,158 @@ export function saveMessage(sessionId: string, msg: SessionMessage): void {
   }, msg.role as 'user' | 'assistant');
 }
 
+/**
+ * Back-fill a message's `sdkUuid` in persisted JSONL.
+ *
+ * Used by SessionRunner after the Claude Agent SDK replies with its own UUID
+ * for a user/assistant message (needed for Rewind / Fork). Reads the whole
+ * file, patches the matching line by `msg.id`, and rewrites.
+ *
+ * O(n) per call; acceptable at per-turn frequency. If a session grows huge
+ * and this becomes hot, move to an index file keyed by messageId.
+ */
+export function updateMessageSdkUuid(
+  sessionId: string,
+  messageId: string,
+  sdkUuid: string,
+): void {
+  if (!isValidId(sessionId)) return;
+  const filePath = join(SESSIONS_DIR, `${sessionId}.jsonl`);
+  if (!existsSync(filePath)) return;
+  return withLock(() => {
+    const raw = readFileSync(filePath, 'utf8');
+    const lines = raw.split('\n');
+    let dirty = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      try {
+        const msg = JSON.parse(line) as SessionMessage;
+        if (msg.id === messageId && !msg.sdkUuid) {
+          msg.sdkUuid = sdkUuid;
+          lines[i] = JSON.stringify(msg);
+          dirty = true;
+          break;
+        }
+      } catch {
+        // Malformed line — skip.
+      }
+    }
+    if (dirty) {
+      writeFileSync(filePath, lines.join('\n'), 'utf8');
+    }
+  });
+}
+
+/**
+ * Truncate a session's JSONL to remove `messageId` and everything after.
+ *
+ * Returns the removed user message's content + attachments (used by Rewind
+ * to restore the input field). If the target isn't a user message the
+ * returned content is empty but truncation still proceeds.
+ */
+export function truncateMessagesAfter(
+  sessionId: string,
+  messageId: string,
+): { truncatedUserContent: string; truncatedAttachments: SessionMessage['attachments'] } | null {
+  if (!isValidId(sessionId)) return null;
+  const filePath = join(SESSIONS_DIR, `${sessionId}.jsonl`);
+  if (!existsSync(filePath)) return null;
+  return withLock(() => {
+    const raw = readFileSync(filePath, 'utf8');
+    const lines = raw.split('\n').filter((l) => l.length > 0);
+    let targetIdx = -1;
+    let truncatedContent = '';
+    let truncatedAttachments: SessionMessage['attachments'];
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        const msg = JSON.parse(lines[i]) as SessionMessage;
+        if (msg.id === messageId) {
+          targetIdx = i;
+          if (msg.role === 'user') {
+            truncatedContent = msg.content;
+            truncatedAttachments = msg.attachments;
+          }
+          break;
+        }
+      } catch {
+        /* skip malformed */
+      }
+    }
+    if (targetIdx < 0) return null;
+    const kept = lines.slice(0, targetIdx);
+    writeFileSync(filePath, kept.length > 0 ? kept.join('\n') + '\n' : '', 'utf8');
+    lineCountCache.set(sessionId, kept.length);
+    return { truncatedUserContent: truncatedContent, truncatedAttachments };
+  });
+}
+
+/**
+ * Clone a session's messages up to (and including) `upToMessageId` into a
+ * brand new session. The new session has its own id/metadata; source session
+ * is untouched. Used by Fork.
+ */
+export function cloneSession(
+  sourceSessionId: string,
+  upToMessageId: string,
+  options?: { titlePrefix?: string },
+): { newSessionId: string; agentDir: string; title: string } | null {
+  if (!isValidId(sourceSessionId)) return null;
+  const srcMeta = readIndex().find((s) => s.id === sourceSessionId);
+  if (!srcMeta) return null;
+  const srcPath = join(SESSIONS_DIR, `${sourceSessionId}.jsonl`);
+  if (!existsSync(srcPath)) return null;
+
+  const raw = readFileSync(srcPath, 'utf8');
+  const lines = raw.split('\n').filter((l) => l.length > 0);
+  let cutoff = -1;
+  for (let i = 0; i < lines.length; i++) {
+    try {
+      const msg = JSON.parse(lines[i]) as SessionMessage;
+      if (msg.id === upToMessageId) {
+        cutoff = i;
+        break;
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  if (cutoff < 0) return null;
+
+  const prefix = options?.titlePrefix ?? '🌿 ';
+  const newSession = createSession(
+    srcMeta.agentDir,
+    `${prefix}${srcMeta.title ?? '对话'}`,
+  );
+
+  const kept = lines.slice(0, cutoff + 1); // include fork point
+  const newPath = join(SESSIONS_DIR, `${newSession.id}.jsonl`);
+  writeFileSync(newPath, kept.join('\n') + '\n', 'utf8');
+  lineCountCache.set(newSession.id, kept.length);
+
+  // Aggregate stats from copied messages so the new session shows accurate counts.
+  let msgCount = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const line of kept) {
+    try {
+      const m = JSON.parse(line) as SessionMessage;
+      msgCount += 1;
+      inputTokens += m.usage?.inputTokens ?? 0;
+      outputTokens += m.usage?.outputTokens ?? 0;
+    } catch {
+      /* skip */
+    }
+  }
+  updateSessionStats(newSession.id, {
+    messageCount: msgCount,
+    totalInputTokens: inputTokens,
+    totalOutputTokens: outputTokens,
+  });
+
+  return { newSessionId: newSession.id, agentDir: srcMeta.agentDir, title: newSession.title ?? '' };
+}
+
 export function getSessionMessages(sessionId: string): SessionMessage[] {
   if (!isValidId(sessionId)) throw new Error('Invalid session ID');
   const filePath = join(SESSIONS_DIR, `${sessionId}.jsonl`);

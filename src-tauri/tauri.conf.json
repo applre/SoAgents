@@ -68,7 +68,9 @@
     "resources": {
       "resources/server-dist.js": "server-dist.js",
       "resources/claude-agent-sdk": "claude-agent-sdk",
-      "resources/bundled-skills": "bundled-skills"
+      "resources/bundled-skills": "bundled-skills",
+      "resources/nodejs": "nodejs",
+      "../src/server/plugin-bridge/sdk-shim": "plugin-bridge-sdk-shim"
     },
     "externalBin": [
       "binaries/bun"

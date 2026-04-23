@@ -866,6 +866,15 @@ export default function App() {
                           injectRefText={pendingRefText[t.id] ?? null}
                           onRefTextConsumed={() => setPendingRefText((prev) => { const { [t.id]: _, ...rest } = prev; return rest; })}
                           onOpenUrl={openUrl}
+                          onForkSession={(newSessionId, forkedAgentDir, forkedTitle) => {
+                            const forkedTab = createTab({
+                              agentDir: forkedAgentDir,
+                              title: forkedTitle,
+                              sessionId: newSessionId,
+                            });
+                            setTabs((prev) => [...prev, forkedTab]);
+                            setActiveTabId(forkedTab.id);
+                          }}
                         />
                       </TabProvider>
                     ) : (

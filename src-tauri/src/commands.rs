@@ -263,3 +263,68 @@ pub async fn cmd_uninstall_openclaw_plugin(plugin_id: String) -> Result<(), Stri
 pub async fn cmd_list_openclaw_plugins() -> Result<Vec<serde_json::Value>, String> {
     crate::openclaw::list_plugins().await
 }
+
+// ── Dev-only smoke test for Plugin Bridge (stage 1.3c) ─────────────
+//
+// These commands exist to validate the Plugin Bridge runtime before the
+// full BridgeAdapter (stage 1.3d) is wired up. They'll be replaced by
+// the real IM channel flow once 1.3d lands. Keep them as debug tools.
+
+/// Global holder so spawned BridgeProcess instances aren't dropped
+/// (which would kill them). Stage 1.3d will replace this with a proper
+/// `BridgeSenderEntry` registry keyed by bot_id.
+static SMOKE_BRIDGES: std::sync::OnceLock<
+    std::sync::Mutex<Vec<crate::openclaw::bridge_process::BridgeProcess>>,
+> = std::sync::OnceLock::new();
+
+/// Spawn a Plugin Bridge for an installed plugin. Returns the port on
+/// success. Kept process is held in a global Vec so it stays alive
+/// between command calls.
+#[tauri::command]
+pub async fn cmd_openclaw_spawn_bridge_test(
+    app_handle: tauri::AppHandle,
+    plugin_id: String,
+    port: u16,
+) -> Result<u16, String> {
+    let plugin_dir = crate::openclaw::paths::plugin_install_dir(&plugin_id);
+    if !plugin_dir.exists() {
+        return Err(format!(
+            "Plugin '{}' not installed (expected at {:?})",
+            plugin_id, plugin_dir
+        ));
+    }
+
+    let bridge = crate::openclaw::bridge_process::spawn_plugin_bridge(
+        &app_handle,
+        plugin_dir.to_string_lossy().as_ref(),
+        port,
+        0, // rust_port — stage 1.3d fills this in
+        &format!("smoke-{}", plugin_id),
+        None,
+    )
+    .await?;
+
+    let port = bridge.port;
+    SMOKE_BRIDGES
+        .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+        .lock()
+        .map_err(|e| format!("smoke lock: {}", e))?
+        .push(bridge);
+
+    Ok(port)
+}
+
+/// Kill every Bridge spawned via `cmd_openclaw_spawn_bridge_test`.
+#[tauri::command]
+pub async fn cmd_openclaw_kill_all_smoke_bridges() -> Result<usize, String> {
+    let Some(cell) = SMOKE_BRIDGES.get() else {
+        return Ok(0);
+    };
+    let mut guard = cell.lock().map_err(|e| format!("smoke lock: {}", e))?;
+    let count = guard.len();
+    for proc in guard.drain(..) {
+        let mut proc = proc;
+        proc.kill_sync();
+    }
+    Ok(count)
+}

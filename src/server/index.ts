@@ -1,5 +1,5 @@
 import { broadcast, createSseHandler, setLogHistoryProvider } from './sse';
-import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers, stripYamlFrontmatter, waitForSessionIdle, enqueueUserMessage } from './agent-session';
+import { getOrCreateRunner, getRunner, getCurrentSessionId, resetState, removeRunner, isRunning, getPendingState, setProxyConfig, respondExitPlanMode, respondEnterPlanMode, setMcpServers, stripYamlFrontmatter, waitForSessionIdle, enqueueUserMessage, initSocksBridgeFromEnv } from './agent-session';
 import * as SessionStore from './SessionStore';
 import * as ConfigStore from './ConfigStore';
 import * as MCPConfigStore from './MCPConfigStore';
@@ -439,6 +439,70 @@ Bun.serve({
       const body = await req.json() as { agentDir: string; title?: string };
       const session = SessionStore.createSession(body.agentDir, body.title);
       return Response.json({ sessionId: session.id });
+    }
+
+    // POST /chat/rewind — 回溯到指定 user message 之前。
+    //
+    // 两条路径：
+    //   A) 目标 session 正是当前活跃 runner → 完整 Rewind（含 SDK rewindFiles 文件回滚）
+    //   B) 目标 session 无活跃 runner（如用户切回旧对话 Tab）→ 降级为纯磁盘截断
+    //      + 广播 chat:messages-truncated 事件。文件不回滚（没有活 SDK session 持有检查点）。
+    if (req.method === 'POST' && url.pathname === '/chat/rewind') {
+      const body = await req.json() as { userMessageId?: string; sessionId?: string };
+      if (!body.userMessageId) {
+        return Response.json({ success: false, error: 'Missing userMessageId' }, { status: 400 });
+      }
+      const targetSessionId = body.sessionId;
+      if (!targetSessionId) {
+        return Response.json({ success: false, error: 'Missing sessionId' }, { status: 400 });
+      }
+      const r = getRunner();
+      const runnerSid = getCurrentSessionId();
+      if (r && runnerSid === targetSessionId) {
+        // Path A: 活跃 session，完整 Rewind
+        const result = await r.rewindSession(body.userMessageId);
+        return Response.json(result);
+      }
+      // Path B: 降级，仅磁盘截断
+      const truncated = SessionStore.truncateMessagesAfter(targetSessionId, body.userMessageId);
+      if (!truncated) {
+        return Response.json({ success: false, error: '消息未找到或截断失败' });
+      }
+      broadcast('chat:messages-truncated', {
+        sessionId: targetSessionId,
+        truncatedAtMessageId: body.userMessageId,
+      });
+      return Response.json({
+        success: true,
+        content: truncated.truncatedUserContent,
+        attachments: truncated.truncatedAttachments,
+      });
+    }
+
+    // POST /sessions/fork — 从指定 assistant message 分叉新 session。
+    // Fork 是纯磁盘操作，无需活跃 runner。
+    if (req.method === 'POST' && url.pathname === '/sessions/fork') {
+      const body = await req.json() as { assistantMessageId?: string; sessionId?: string };
+      if (!body.assistantMessageId) {
+        return Response.json({ success: false, error: 'Missing assistantMessageId' }, { status: 400 });
+      }
+      const targetSessionId = body.sessionId;
+      if (!targetSessionId) {
+        return Response.json({ success: false, error: 'Missing sessionId' }, { status: 400 });
+      }
+      // 校验 assistant 消息存在 + 有 sdkUuid（和 SessionRunner.forkSession 一致）
+      const messages = SessionStore.getSessionMessages(targetSessionId);
+      const target = messages.find((m) => m.id === body.assistantMessageId && m.role === 'assistant');
+      if (!target) return Response.json({ success: false, error: 'Assistant 消息未找到' });
+      if (!target.sdkUuid) return Response.json({ success: false, error: '该消息无 SDK UUID（旧数据不支持 Fork）' });
+      const cloned = SessionStore.cloneSession(targetSessionId, body.assistantMessageId);
+      if (!cloned) return Response.json({ success: false, error: '克隆 session 失败' });
+      return Response.json({
+        success: true,
+        newSessionId: cloned.newSessionId,
+        agentDir: cloned.agentDir,
+        title: cloned.title,
+      });
     }
 
     if (req.method === 'GET' && url.pathname.match(/^\/chat\/sessions\/[^/]+\/messages$/)) {
@@ -1938,3 +2002,8 @@ function stripHeartbeatToken(text: string, ackMaxChars: number): { status: strin
 }
 
 console.log(`[Sidecar] Bun server listening on port ${port}`);
+
+// Initialize SOCKS5→HTTP bridge if Rust injected socks5:// proxy env vars.
+// Bun's fetch() doesn't understand socks5://, so we transparently wrap it
+// into a local HTTP CONNECT proxy. No-op when HTTP_PROXY isn't socks5://.
+void initSocksBridgeFromEnv();

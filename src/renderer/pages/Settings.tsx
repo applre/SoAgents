@@ -148,7 +148,7 @@ function ProviderCard({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="text-[15px] font-semibold text-[var(--ink)] truncate">{provider.name}</span>
+          <span className="text-[16px] font-semibold text-[var(--ink)] truncate">{provider.name}</span>
           {isActive && (
             <span className="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold bg-[var(--accent)] text-white">
               使用中
@@ -457,7 +457,7 @@ function ProviderEditModal({
         {/* 头部 */}
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+            <h3 className="text-[18px] font-bold text-[var(--ink)]">
               {isNew ? '添加自定义供应商' : isBuiltin ? '管理供应商' : '编辑供应商'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">
@@ -851,7 +851,7 @@ function ProviderEditModal({
               style={{ border: '1px solid var(--border)' }}
               onClick={(e) => e.stopPropagation()}
             >
-              <h4 className="text-[15px] font-bold text-[var(--ink)]">确认删除</h4>
+              <h4 className="text-[16px] font-bold text-[var(--ink)]">确认删除</h4>
               <p className="mt-2 text-[13px] text-[var(--ink-secondary)]">
                 确定要删除供应商 &quot;<span className="font-medium text-[var(--ink)]">{provider?.name}</span>&quot; 吗？
               </p>
@@ -1165,7 +1165,7 @@ function ProviderTab() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[22px] font-bold text-[var(--ink)]">模型供应商</h2>
+          <h2 className="text-[20px] font-bold text-[var(--ink)]">模型供应商</h2>
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">配置 API 密钥以使用不同的模型供应商</p>
         </div>
         <button
@@ -1537,7 +1537,7 @@ function MCPEditModal({
         {/* 头部 */}
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+            <h3 className="text-[18px] font-bold text-[var(--ink)]">
               {isReadonly ? '查看 MCP Server' : isNew ? '添加 MCP Server' : '编辑 MCP Server'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">
@@ -1887,7 +1887,7 @@ function MCPTab() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[22px] font-bold text-[var(--ink)]">MCP Servers</h2>
+          <h2 className="text-[20px] font-bold text-[var(--ink)]">MCP Servers</h2>
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理 MCP Server 配置，开关控制全局启用</p>
         </div>
         <div className="flex items-center gap-2">
@@ -2215,7 +2215,7 @@ function SkillEditModal({
         {/* 头部 */}
         <div className="flex items-start justify-between px-6 pt-6 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h3 className="text-[17px] font-bold text-[var(--ink)]">
+            <h3 className="text-[18px] font-bold text-[var(--ink)]">
               {isNew ? '新建 Skill' : '编辑 Skill'}
             </h3>
             <p className="mt-0.5 text-[13px] text-[var(--ink-tertiary)]">配置 Skill 基本信息</p>
@@ -2345,7 +2345,7 @@ function SkillsSection() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[22px] font-bold text-[var(--ink)]">Skills</h2>
+          <h2 className="text-[20px] font-bold text-[var(--ink)]">Skills</h2>
           <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">管理自定义 Skill，共 {skills.length} 个</p>
         </div>
         <button
@@ -2530,13 +2530,13 @@ function GeneralTab() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-[22px] font-bold text-[var(--ink)]">General</h2>
+        <h2 className="text-[20px] font-bold text-[var(--ink)]">General</h2>
         <p className="mt-1 text-[14px] text-[var(--ink-secondary)]">应用基本设置</p>
       </div>
 
       {/* 启动设置 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">启动设置</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">启动设置</p>
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[13px] font-medium text-[var(--ink)]">开机自动启动</p>
@@ -2562,7 +2562,7 @@ function GeneralTab() {
 
       {/* 默认工作区 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">默认工作区</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">默认工作区</p>
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[13px] font-medium text-[var(--ink)]">默认工作区路径</p>
@@ -2596,7 +2596,7 @@ function GeneralTab() {
       {/* 网络代理 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <p className="text-[15px] font-semibold text-[var(--ink)]">网络代理</p>
+          <p className="text-[16px] font-semibold text-[var(--ink)]">网络代理</p>
           <ToggleSwitch checked={proxy.enabled} onChange={handleProxyToggle} />
         </div>
 
@@ -2677,7 +2677,7 @@ function LogExportSection() {
 
   return (
     <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-4">
-      <p className="text-[15px] font-semibold text-[var(--ink)]">运行日志</p>
+      <p className="text-[16px] font-semibold text-[var(--ink)]">运行日志</p>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-[13px] font-medium text-[var(--ink)]">导出日志</p>
@@ -2810,7 +2810,7 @@ function AboutTab({
 
       {/* 产品描述 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">关于 SoAgents</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">关于 SoAgents</p>
         <p className="mt-2 text-[13px] text-[var(--ink-secondary)] leading-relaxed">
           SoAgents 是基于 Claude Agent SDK 的桌面端 Agent 客户端，通过 Tauri + React + Bun 全栈架构构建，
           提供多工作区隔离、MCP 服务器管理、自定义 Skills 等功能。
@@ -2819,7 +2819,7 @@ function AboutTab({
 
       {/* 联系/链接 */}
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-3">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">链接</p>
+        <p className="text-[16px] font-semibold text-[var(--ink)]">链接</p>
         <div className="space-y-2">
           <button
             onClick={() => handleOpenLink('https://github.com/applre/SoAgents')}
@@ -2848,7 +2848,7 @@ function AboutTab({
       {/* 开发者模式（隐藏，需 5 次点击 SoAgents 标题解锁） */}
       {devMode && (
         <div className="rounded-[14px] border border-dashed border-[var(--accent)]/40 bg-[var(--accent)]/5 p-5 space-y-4">
-          <p className="text-[15px] font-semibold text-[var(--accent)]">开发者选项</p>
+          <p className="text-[16px] font-semibold text-[var(--accent)]">开发者选项</p>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[13px] font-medium text-[var(--ink)]">显示 DevTools</p>

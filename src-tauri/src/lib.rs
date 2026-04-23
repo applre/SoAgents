@@ -114,6 +114,8 @@ pub fn run() {
             commands::cmd_install_openclaw_plugin,
             commands::cmd_uninstall_openclaw_plugin,
             commands::cmd_list_openclaw_plugins,
+            commands::cmd_openclaw_spawn_bridge_test,
+            commands::cmd_openclaw_kill_all_smoke_bridges,
         ])
         .setup(|app| {
             // Initialize logging

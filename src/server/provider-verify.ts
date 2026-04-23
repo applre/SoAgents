@@ -6,7 +6,7 @@
 import { randomUUID } from 'crypto';
 import { createRequire } from 'module';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 
 const requireModule = createRequire(import.meta.url);
@@ -45,15 +45,32 @@ export function resolveClaudeCodeCli(): string {
     console.log(`[sdk] CLI resolved via bundled path in ${Date.now() - t0}ms: ${bundledPath}`);
     return bundledPath;
   }
-  console.warn(`[sdk] Bundled SDK not found at ${bundledPath} (cwd=${cwd}), falling back to require.resolve`);
+  console.warn(`[sdk] Bundled SDK not found at ${bundledPath} (cwd=${cwd}), falling back to package-root probe`);
 
-  // Development: resolve from node_modules
+  // Dev / monorepo / pnpm: resolve the SDK's main export (a legal path in the
+  // package's `exports` field), then derive cli.js from the package directory.
+  //
+  // SDK 0.2.80+ dropped `./cli.js` from `exports`, so
+  //   require.resolve('@anthropic-ai/claude-agent-sdk/cli.js')
+  // throws ERR_PACKAGE_PATH_NOT_EXPORTED. This indirection works with:
+  //   - npm/yarn hoisted node_modules
+  //   - pnpm virtual store
+  //   - monorepo workspaces with upward resolution
+  // — anywhere that Node's standard `require.resolve` works at all.
   try {
-    const cliPath = requireModule.resolve('@anthropic-ai/claude-agent-sdk/cli.js');
-    console.log(`[sdk] CLI resolved via require.resolve in ${Date.now() - t0}ms: ${cliPath}`);
+    const sdkMain = requireModule.resolve('@anthropic-ai/claude-agent-sdk');
+    const sdkDir = dirname(sdkMain);
+    const cliPath = join(sdkDir, 'cli.js');
+    if (!existsSync(cliPath)) {
+      throw new Error(`cli.js not found at ${cliPath} (resolved SDK root: ${sdkDir})`);
+    }
+    console.log(`[sdk] CLI resolved via package-root probe in ${Date.now() - t0}ms: ${cliPath}`);
     return cliPath;
   } catch (error) {
-    console.error(`[sdk] CLI resolve FAILED in ${Date.now() - t0}ms. Bundled: ${bundledPath}, cwd: ${cwd}`, error);
+    console.error(
+      `[sdk] CLI resolve FAILED in ${Date.now() - t0}ms. Bundled: ${bundledPath}, cwd: ${cwd}`,
+      error,
+    );
     throw error;
   }
 }

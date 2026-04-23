@@ -355,9 +355,9 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     // skills 信息单独传递
     const skills = selectedSkills.length > 0 ? selectedSkills : undefined;
     if (!userText && !skills && imageFiles.length === 0) return;
-    // Prevent double-fire
-    if (sendingRef.current) return;
-    sendingRef.current = true;
+    // Prevent double-fire — skip guard when already loading (queued send is intentional)
+    if (!isLoading && sendingRef.current) return;
+    if (!isLoading) sendingRef.current = true;
 
     try {
       // 提取图片的 mimeType 和纯 base64 数据
@@ -402,7 +402,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
     } finally {
       sendingRef.current = false;
     }
-  }, [text, attachedFiles, selectedSkills, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers]);
+  }, [text, attachedFiles, selectedSkills, onSend, permissionMode, effectiveModel, effectiveProvider, config.apiKeys, config.providerModelAliases, wsEntry?.mcpEnabledServers, isLoading]);
 
   const handleFileSelect = useCallback((file: FileSearchResult) => {
     if (atPosition === null) return;
@@ -947,7 +947,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
                       }`}
                     >
                       <span className="font-medium">{p.name}</span>
-                      <span className="text-[9px] text-[var(--ink-tertiary)] bg-[var(--hover)] px-1 py-0.5 rounded">
+                      <span className="text-[10px] text-[var(--ink-tertiary)] bg-[var(--hover)] px-1 py-0.5 rounded">
                         {available ? p.cloudProvider : '未配置'}
                       </span>
                     </button>
@@ -1084,7 +1084,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
           onPaste={handlePaste}
           placeholder={selectedSkills.length > 0 || attachedFiles.length > 0 || text.includes('@') ? "输入消息..." : "输入消息，使用 @ 引用文件，/ 使用技能..."}
           rows={1}
-          className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-[15px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none"
+          className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-tertiary)] outline-none"
           style={{ minHeight: 44, maxHeight: 160 }}
         />
 
@@ -1110,7 +1110,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             >
               <Puzzle size={16} />
               {selectedSkills.length > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[9px] font-bold leading-none">
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[10px] font-bold leading-none">
                   {selectedSkills.length}
                 </span>
               )}
@@ -1126,7 +1126,7 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
             >
               <Wrench size={16} />
               {workspaceMcpCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[9px] font-bold leading-none">
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white text-[10px] font-bold leading-none">
                   {workspaceMcpCount}
                 </span>
               )}
@@ -1235,8 +1235,8 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               <ChevronDown size={12} className="shrink-0" />
             </button>
 
-            {/* Streaming: show stop button; Normal: show send button */}
-            {isLoading ? (
+            {/* Streaming 时：Stop + Send 并排；空闲时：仅 Send */}
+            {isLoading && (
               <button
                 onClick={onStop}
                 className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
@@ -1245,20 +1245,19 @@ export default function ChatInput({ onSend, onStop, isLoading, agentDir, injectT
               >
                 <Square size={12} color="white" fill="white" />
               </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!canSend || !isCurrentProviderAvailable}
-                className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
-                style={{
-                  background: canSend && isCurrentProviderAvailable ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
-                  cursor: canSend && isCurrentProviderAvailable ? 'pointer' : 'default',
-                }}
-                title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : '发送 (Enter)'}
-              >
-                <Send size={14} color="white" strokeWidth={2} />
-              </button>
             )}
+            <button
+              onClick={handleSend}
+              disabled={!canSend || !isCurrentProviderAvailable}
+              className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
+              style={{
+                background: canSend && isCurrentProviderAvailable ? 'var(--accent-warm, #3d3d3d)' : 'var(--border)',
+                cursor: canSend && isCurrentProviderAvailable ? 'pointer' : 'default',
+              }}
+              title={!isCurrentProviderAvailable ? '请前往设置页面配置供应商 API Key' : '发送 (Enter)'}
+            >
+              <Send size={14} color="white" strokeWidth={2} />
+            </button>
           </div>
         </div>
       </div>

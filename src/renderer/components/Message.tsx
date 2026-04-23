@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Copy, Check, Puzzle } from 'lucide-react';
+import { Copy, Check, Puzzle, Undo2, RotateCcw, GitBranch } from 'lucide-react';
 import type { Message, TurnMeta, ContentBlock } from '../types/chat';
 import BlockGroup from './BlockGroup';
 import Markdown from './Markdown';
@@ -8,6 +8,13 @@ import { formatTokens, formatDuration } from '../utils/formatTokens';
 interface Props {
   message: Message;
   isStreaming?: boolean;
+  /** Rewind to a user message (truncate chat + roll back files). Disabled when
+   *  the message has no sdkUuid or while the assistant is streaming. */
+  onRewind?: (messageId: string) => void;
+  /** Retry an assistant message — rewind to the preceding user message and resend. */
+  onRetry?: (assistantMessageId: string) => void;
+  /** Fork a new session from an assistant message. Disabled without sdkUuid. */
+  onFork?: (assistantMessageId: string) => void;
 }
 
 /** Lightweight CSS-only tooltip */
@@ -22,8 +29,9 @@ function Tip({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function MessageItemInner({ message, isStreaming }: Props) {
+function MessageItemInner({ message, isStreaming, onRewind, onRetry, onFork }: Props) {
   const isUser = message.role === 'user';
+  const hasSdkUuid = !!message.sdkUuid;
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -78,9 +86,14 @@ function MessageItemInner({ message, isStreaming }: Props) {
 
   if (isUser) {
     return (
-      <div className="group/user relative flex justify-end select-none">
+      <div
+        className="group/user relative flex justify-end select-none"
+        data-chat-search-scope
+        data-role="user"
+        data-message-id={message.id}
+      >
         <div className="flex w-full flex-col items-end">
-          <article className="relative w-fit max-w-[66%] rounded-2xl border border-[var(--border)] bg-[var(--paper)] px-4 py-3 text-base leading-relaxed text-[var(--ink)] shadow-md select-text">
+          <article className="relative w-fit max-w-[66%] rounded-2xl border border-[var(--border)] bg-[var(--paper)] px-4 py-3 text-sm leading-relaxed text-[var(--ink)] shadow-md select-text">
             {message.blocks.map((block, i) => {
               if (block.type === 'skill') {
                 return (
@@ -108,6 +121,18 @@ function MessageItemInner({ message, isStreaming }: Props) {
           {/* Hover action menu */}
           <div className="flex items-center gap-0.5 mt-1 opacity-0 transition-opacity group-hover/user:opacity-100">
             {copyButton}
+            {onRewind && (
+              <Tip label={hasSdkUuid ? '回溯到此条（撤销之后对话 + 工作区文件改动）' : '此消息无 SDK 追踪信息，无法回溯'}>
+                <button
+                  type="button"
+                  onClick={() => hasSdkUuid && !isStreaming && onRewind(message.id)}
+                  disabled={!hasSdkUuid || isStreaming}
+                  className="rounded-lg p-1 text-[var(--ink-tertiary)] transition-all hover:bg-[var(--surface)] hover:text-[var(--ink-secondary)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <Undo2 className="size-3.5" />
+                </button>
+              </Tip>
+            )}
           </div>
         </div>
       </div>
@@ -128,7 +153,12 @@ function MessageItemInner({ message, isStreaming }: Props) {
   const isAssistantStreaming = !!isStreaming && hasIncompleteBlocks;
 
   return (
-    <div className="group/assistant flex flex-col items-start select-none">
+    <div
+      className="group/assistant flex flex-col items-start select-none"
+      data-chat-search-scope
+      data-role="assistant"
+      data-message-id={message.id}
+    >
       <article className="w-full px-3 py-2">
         <div className="space-y-3">
           {groupedBlocks.map((group, gi) => {
@@ -172,8 +202,32 @@ function MessageItemInner({ message, isStreaming }: Props) {
       {showActions && (
         <div className="flex items-center gap-2 mt-1 px-4">
           {message.turnMeta && <TurnMetaDisplay meta={message.turnMeta} />}
-          <div className="opacity-0 transition-opacity group-hover/assistant:opacity-100">
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/assistant:opacity-100">
             {copyButton}
+            {onRetry && (
+              <Tip label="重新生成（从上一条用户消息重新请求）">
+                <button
+                  type="button"
+                  onClick={() => !isStreaming && onRetry(message.id)}
+                  disabled={isStreaming}
+                  className="rounded-lg p-1 text-[var(--ink-tertiary)] transition-all hover:bg-[var(--surface)] hover:text-[var(--ink-secondary)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <RotateCcw className="size-3.5" />
+                </button>
+              </Tip>
+            )}
+            {onFork && (
+              <Tip label={hasSdkUuid ? '从此处分叉新对话（源对话不变）' : '此消息无 SDK 追踪信息，无法分叉'}>
+                <button
+                  type="button"
+                  onClick={() => hasSdkUuid && onFork(message.id)}
+                  disabled={!hasSdkUuid}
+                  className="rounded-lg p-1 text-[var(--ink-tertiary)] transition-all hover:bg-[var(--surface)] hover:text-[var(--ink-secondary)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <GitBranch className="size-3.5" />
+                </button>
+              </Tip>
+            )}
           </div>
         </div>
       )}

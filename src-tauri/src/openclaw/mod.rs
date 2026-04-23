@@ -11,9 +11,11 @@
 
 use serde_json::{json, Value};
 
+pub mod bridge_process;
 pub mod manifest;
 pub mod npm_runner;
 pub mod paths;
+pub mod shim;
 
 /// Install an OpenClaw plugin from an npm spec.
 ///
@@ -56,15 +58,22 @@ pub async fn install_plugin<R: tauri::Runtime>(
         base_dir
     );
 
-    // Two-level fallback
-    let via_npm = npm_runner::try_system_npm(&base_dir, &install_spec).await?;
-    if !via_npm {
+    // Three-level fallback: system npm → bundled npm → bundled bun add.
+    // Matches MyAgents' strategy — npm is preferred for its wider ecosystem
+    // compatibility; bun is last resort to avoid tripping over edge cases
+    // like axios's fetch-adapter hang.
+    let mut installed = npm_runner::try_system_npm(&base_dir, &install_spec).await?;
+    if !installed {
+        installed = npm_runner::try_bundled_npm(app_handle, &base_dir, &install_spec).await?;
+    }
+    if !installed {
         npm_runner::try_bundled_bun(app_handle, &base_dir, &install_spec).await?;
     }
 
-    // TODO(stage 1.3): install_sdk_shim(&base_dir).await?;
-    // Without the shim, plugins requiring `import 'openclaw'` will fail at
-    // load time. This is fine for stage 1.2 (no BridgeAdapter yet).
+    // Overlay our lightweight sdk-shim on top of the installed tree.
+    // MUST run last — npm/bun may overwrite node_modules/openclaw/ during
+    // lockfile reconciliation, and our shim must always win (last-write-wins).
+    shim::install_sdk_shim(app_handle, &base_dir).await?;
 
     let npm_pkg_name = paths::resolve_npm_pkg_name(&trimmed);
     let npm_pkg_dir = base_dir.join("node_modules").join(&npm_pkg_name);

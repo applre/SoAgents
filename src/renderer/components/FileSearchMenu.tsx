@@ -286,9 +286,9 @@ export default function FileSearchMenu({ agentDir, onSelect, onClose }: Props) {
 
       {/* Bottom hint bar */}
       <div className="flex items-center gap-3 border-t border-[var(--border)] px-3 py-1.5 text-[10px] text-[var(--ink-tertiary)]">
-        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[9px]">↑↓</kbd> 导航</span>
-        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[9px]">Enter</kbd> 选中</span>
-        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[9px]">Esc</kbd> 关闭</span>
+        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[10px]">↑↓</kbd> 导航</span>
+        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[10px]">Enter</kbd> 选中</span>
+        <span><kbd className="rounded bg-[var(--paper-dark)] px-1 py-0.5 font-mono text-[10px]">Esc</kbd> 关闭</span>
       </div>
     </div>
   );

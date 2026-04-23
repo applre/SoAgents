@@ -60,6 +60,13 @@ export interface SessionMessage {
   usage?: MessageUsage;
   toolCount?: number;
   durationMs?: number;
+  /**
+   * SDK-assigned UUID for this message (from Claude Agent SDK).
+   * Required for Rewind (Query.rewindFiles) and Fork (forkSession option) —
+   * without it these actions are disabled for the message. Undefined for
+   * legacy messages persisted before the feature landed.
+   */
+  sdkUuid?: string;
 }
 
 // ── 统计 API 响应类型 ──
