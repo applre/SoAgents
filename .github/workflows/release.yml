@@ -44,6 +44,9 @@ jobs:
           chmod +x src-tauri/binaries/bun-aarch64-apple-darwin
           rm -rf /tmp/bun.zip /tmp/bun-extract
 
+      - name: Download Node.js runtime for OpenClaw plugin bridge
+        run: bash scripts/download_nodejs.sh --target arm64
+
       - name: Import Apple certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
